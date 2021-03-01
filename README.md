@@ -82,6 +82,20 @@ aws lambda create-function \
     --role arn:aws:iam::400907146110:role/rm-lambda-demo-role
 ```
 
+#### Update function
+
+Code change:
+
+`zip -g my-deployment-package.zip demo_lambda.py`
+
+Then upload:
+
+```bash
+aws lambda update-function-code \
+    --function-name  MyPyLambdaFunction \
+    --zip-file fileb://my-deployment-package.zip \
+```
+
 #### Invoke function
 
 ```bash
