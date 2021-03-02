@@ -160,11 +160,102 @@ aws lambda invoke out.txt \
 
 ## Keys
 
+### States
+
+<https://docs.aws.amazon.com/kms/latest/developerguide/key-state.html>
+
+### Tech notes
+
+<https://docs.aws.amazon.com/kms/latest/developerguide/importing-keys-create-cmk.html>
+
+- Imported keys have an `Origin value` of `External`
+- The `import token` contains metadata to ensure that your key material is imported correctly
+- Until you generate the Key Material and encrypt with the `wrapping key`, you have nothing
+
 ### Generate Symmetric Key
 
 `aws kms create-key --origin EXTERNAL --region eu-west-2`
 
-### Enable
+At this point, there is NO key.  You have just generated `meta-data` and uploaded to `aws`.  You have not generated or uploaded actual `key material` to `AWS`.
 
-`aws kms enable-key --key-id xxx`
+### List
 
+`aws kms list-keys`
+
+### Get Wrapping Key from KMS Portal
+
+< login >
+
+### Get the Wrapping Key and Spec
+
+```bash
+export REGION=eu-west-2
+export KEY_ALIAS=cmk_with_externalmaterial
+export KEY_ID=<key ID>
+export KEY=`aws kms --region eu-west-2 get-parameters-for-import --key-id $KEY_ID --wrapping-algorithm RSAES_OAEP_SHA_256 --wrapping-key-spec RSA_2048 --query '{Key:PublicKey,Token:ImportToken}' --output text`
+```
+
+### Copy the Base64 encoded Wrapping Key and Import Token
+
+```bash
+echo $KEY | awk '{print $1}' > PublicKey.b64
+echo $KEY | awk '{print $2}' > ImportToken.b64
+openssl enc -d -base64 -A -in PublicKey.b64 -out PublicKey.bin
+openssl enc -d -base64 -A -in ImportToken.b64 -out ImportToken.bin
+```
+
+### Generate Key Material
+
+```bash
+openssl rand -out PlaintextKeyMaterial.bin 32
+xxd PlaintextKeyMaterial.bin                    # print key to stdio
+```
+
+### Encrypt Key Material
+
+```bash
+openssl rsautl -encrypt \                                                             
+                 -in PlaintextKeyMaterial.bin \
+                 -oaep \
+                 -inkey PublicKey.pem \   
+                 -keyform PEM \   
+                 -pubin \
+                 -out EncryptedKeyMaterial.bin
+```
+
+### Encrypt Key Material with the public key
+
+openssl pkeyutl \
+    -in PlaintextKeyMaterial.bin \
+    -out EncryptedKeyMaterial.bin \
+    -inkey PublicKey.bin \
+    -keyform DER \
+    -pubin \
+    -encrypt \
+    -pkeyopt rsa_padding_mode:oaep \
+    -pkeyopt rsa_oaep_md:sha256 \
+
+### Import Key Material
+
+You do NOT need to manually ENABLE a key.  It is auto-enabled after import:
+
+```bash
+aws kms import-key-material \
+    --region ${REGION} \
+    --key-id ${KEY_ID} \
+    --encrypted-key-material fileb://EncryptedKeyMaterial.bin \
+    --import-token fileb://ImportToken.bin \
+    --expiration-model KEY_MATERIAL_EXPIRES \
+    --valid-to 2021-05-05T12:00:00-08:00
+```
+
+### Test key is registered
+
+```bash
+aws kms describe-key \
+    --key-id ${KEY_ID}
+```
+
+### Reference
+
+<https://aws.amazon.com/premiumsupport/knowledge-center/import-keys-kms/>
