@@ -16,6 +16,14 @@
 
 `cat ~/.aws/credentials`
 
+#### Remove credentials / profiles
+
+`vi ~/.aws/config`
+
+#### Update
+
+`pip3 install awscli --upgrade`
+
 #### List
 
 ```bash
@@ -42,13 +50,21 @@ Default output format [None]: json
 
 ## Create lambda
 
-#### Create role
+### Info
+
+```bash
+aws lambda list-functions --max-items 10
+aws lambda get-function --function-name MyPyLambdaFunction
+aws lambda get-function-configuration --function-name MyPyLambdaFunction
+```
+
+### Create role
 
 The `file://` is required:
 
 `aws iam create-role --role-name rm-lambda-demo-role --assume-role-policy-document file://trust-policy.json`
 
-#### Get role ARN
+### Get role ARN
 
 `aws iam get-role --role-name rm-lambda-demo-role`
 
@@ -61,7 +77,7 @@ def rm_handler(event, context):
     send_cake_recipe()
 ```
 
-#### Zip up code and dependencies
+### Zip up code and dependencies
 
 ```bash
  pip3 install -r requirements.txt --target ./package
@@ -71,7 +87,7 @@ cd ..
 zip -g my-deployment-package.zip demo_lambda.py
 ```
 
-#### Create function
+### Create
 
 ```bash
 aws lambda create-function \
@@ -82,13 +98,13 @@ aws lambda create-function \
     --role arn:aws:iam::400907146110:role/rm-lambda-demo-role
 ```
 
-#### Update function
+### Update code
 
 Code change:
 
 `zip -g my-deployment-package.zip demo_lambda.py`
 
-Then upload:
+Then push:
 
 ```bash
 aws lambda update-function-code \
@@ -96,11 +112,59 @@ aws lambda update-function-code \
     --zip-file fileb://my-deployment-package.zip \
 ```
 
-#### Invoke function
+### Update environmental variable
 
 ```bash
-aws lambda invoke --function-name MyPyLambdaFunction \
+aws lambda update-function-code \
+    --function-name  MyPyLambdaFunction \
+    --environment Variables={LD_LIBRARY_PATH=/usr/bin/test/lib64}
+```
+
+### Invoke
+
+```bash
+aws lambda invoke out.txt \
+    --function-name MyPyLambdaFunction \
+    --log-type Tail \
+    --query 'LogResult' \
+    --output text |  base64 -d
+```
+
+### Invoke and debug
+
+```bash
+ aws lambda invoke out.txt --debug\
+    --function-name MyPyLambdaFunction \
+    --log-type Tail \
+    --query 'LogResult' \
+    --output text |  base64 -d
+```
+
+### Invoke with inline json ( BROKEN )
+
+```bash
+aws lambda invoke out.txt \
+    --function-name MyPyLambdaFunction \
     --invocation-type Event \
     --cli-binary-format raw-in-base64-out \
-    --payload '{"new_ingrediant": "eggs"}' response.json 
+    --payload $(echo "{\"foo\":\"bar\"}" | base64)
 ```
+
+#### Payload from file ( BROKEN )
+
+aws lambda invoke out.txt \
+    --function-name MyPyLambdaFunction \
+    --invocation-type Event \
+    --cli-binary-format raw-in-base64-out \
+    --payload file://input.json
+
+## Keys
+
+### Generate Symmetric Key
+
+`aws kms create-key --origin EXTERNAL --region eu-west-2`
+
+### Enable
+
+`aws kms enable-key --key-id xxx`
+
