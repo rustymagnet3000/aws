@@ -259,3 +259,29 @@ aws kms describe-key \
 ### Reference
 
 <https://aws.amazon.com/premiumsupport/knowledge-center/import-keys-kms/>
+
+## Container Registry
+
+#### Create repo
+
+```bash
+aws ecr create-repository --repository-name demo_lambda_repo
+
+export REG_ID=< repo ID >
+export REPO_NAME=< repo name >
+export REGION=eu-west-2
+
+aws ecr put-lifecycle-policy \   
+    --registry-id ${REG_ID} \
+    --repository-name ${REPO_NAME} \        
+    --lifecycle-policy-text '{"rules":[{"rulePriority":10,"description":"Expire old images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":800},"action":{"type":"expire"}}]}'
+{
+```
+
+#### authenticate local Docker daemon against the ECR registry
+
+`$(aws ecr get-login --registry-ids ${REG_ID} --no-include-email)`
+
+### Reference
+
+https://dev.to/vumdao/deploy-python-lambda-functions-with-container-image-5hgj
