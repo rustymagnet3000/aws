@@ -34,8 +34,9 @@ aws configure list-profiles
 #### Region
 
 ```bash
-aws configure set region eu-west-2 --profile integ
-aws configure get region --profile integ
+aws configure get region
+aws configure set region eu-west-2 --profile foobar
+aws configure get region --profile foobar
 ```
 
 #### Configure profile
@@ -46,6 +47,27 @@ AWS Access Key ID [None]: ....XW
 AWS Secret Access Key [None]: ...zO0
 Default region name [None]: eu-west-2
 Default output format [None]: json
+```
+
+## saml2aws
+
+> CLI tool which enables you to login and retrieve AWS temporary credentials.
+
+#### Set up
+
+```bash
+brew install awscli
+brew install saml2aws
+saml2aws --version
+```
+
+#### Day-2-Day use
+
+```bash
+eval $(saml2aws script)     // check if logged in
+saml2aws login
+saml2aws login --verbose
+aws --profile saml ec2 describe-instances --region ${REGION}
 ```
 
 ## Create lambda
@@ -63,6 +85,10 @@ aws lambda get-function-configuration --function-name MyPyLambdaFunction
 The `file://` is required:
 
 `aws iam create-role --role-name rm-lambda-demo-role --assume-role-policy-document file://trust-policy.json`
+
+### display info about IAM identity used to authenticate the request
+
+`aws sts get-caller-identity`
 
 ### Get role ARN
 
@@ -265,7 +291,7 @@ aws kms describe-key \
 #### Create repo
 
 ```bash
-aws ecr create-repository --repository-name demo_lambda_repo
+aws ecr create-repository --repository-name ${REPO_NAME}
 
 export REG_ID=< repo ID >
 export REPO_NAME=< repo name >
@@ -278,10 +304,23 @@ aws ecr put-lifecycle-policy \
 {
 ```
 
-#### authenticate local Docker daemon against the ECR registry
+#### Create repo with auto vulnerability scan
+
+```bash
+aws ecr create-repository \
+ --repository-name ${REPO_NAME} \
+ --image-tag-mutability IMMUTABLE \
+ --image-scanning-configuration scanOnPush=true
+```
+
+#### Login in to managed Docker service that ECR provides
+
+```bash
+aws ecr get-login-password \
+ --region ${REGION} | docker login --username AWS \
+ --password-stdin <account id>.dkr.ecr.<region>.amazonaws.com
+```
+
+#### Authenticate local Docker daemon against the ECR registry
 
 `$(aws ecr get-login --registry-ids ${REG_ID} --no-include-email)`
-
-### Reference
-
-https://dev.to/vumdao/deploy-python-lambda-functions-with-container-image-5hgj
