@@ -1,4 +1,24 @@
-# aws
+# AWS
+
+## Tips
+
+- [aws-in-plain-english](https://expeditedsecurity.com/aws-in-plain-english/)
+- [gcp-in-plain-english](https://cloudblog.withgoogle.com/topics/developers-practitioners/back-popular-demand-google-cloud-products-4-words-or-less-2021-edition/amp/)
+
+## Deploy AWS Infrastructure as Code (IaC)
+
+Great intro to writing [AWS Terraform files](https://blog.gruntwork.io/an-introduction-to-terraform-f17df9c6d180):
+
+```terraform
+brew upgrade hashicorp/tap/terraform
+terraform --version
+terraform -install-autocomplete
+terraform init
+terraform plan
+terraform apply
+terraform output
+terraform output public_ip
+```
 
 ## CLI
 
@@ -69,6 +89,12 @@ saml2aws login
 saml2aws login --verbose
 aws --profile saml ec2 describe-instances --region ${REGION}
 ```
+
+## IAM
+
+### Best practice
+
+[IAM Security Best Practices](https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html)
 
 ## Create lambda
 
