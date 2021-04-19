@@ -5,21 +5,6 @@
 - [aws-in-plain-english](https://expeditedsecurity.com/aws-in-plain-english/)
 - [gcp-in-plain-english](https://cloudblog.withgoogle.com/topics/developers-practitioners/back-popular-demand-google-cloud-products-4-words-or-less-2021-edition/amp/)
 
-## Deploy AWS Infrastructure as Code (IaC)
-
-Great intro to writing [AWS Terraform files](https://blog.gruntwork.io/an-introduction-to-terraform-f17df9c6d180):
-
-```terraform
-brew upgrade hashicorp/tap/terraform
-terraform --version
-terraform -install-autocomplete
-terraform init
-terraform plan
-terraform apply
-terraform output
-terraform output public_ip
-```
-
 ## CLI
 
 ### Starting
@@ -91,6 +76,20 @@ aws --profile saml ec2 describe-instances --region ${REGION}
 ```
 
 ## IAM
+
+#### List users
+
+`aws iam list-users --output json`
+
+#### List all Access Key IDs
+
+List all [Key IDs](https://stackoverflow.com/questions/24028610/find-the-owner-of-an-aws-access-key).
+
+```bash
+for user in $(aws iam list-users --output text | awk '{print $NF}'); do
+    aws iam list-access-keys --user $user --output text
+done
+```
 
 ### Best practice
 
@@ -350,3 +349,18 @@ aws ecr get-login-password \
 #### Authenticate local Docker daemon against the ECR registry
 
 `$(aws ecr get-login --registry-ids ${REG_ID} --no-include-email)`
+
+## Deploy AWS Infrastructure as Code (IaC)
+
+Great intro to writing [AWS Terraform files](https://blog.gruntwork.io/an-introduction-to-terraform-f17df9c6d180):
+
+```terraform
+brew upgrade hashicorp/tap/terraform
+terraform --version
+terraform -install-autocomplete
+terraform init
+terraform plan
+terraform apply
+terraform output
+terraform output public_ip
+```
