@@ -1,5 +1,53 @@
 # AWS
 
+## dynamodb
+
+#### List table and fields
+
+```bash
+export AWS_DEFAULT_REGION=us-east-x
+aws dynamodb list-tables
+```
+
+#### Describe table
+
+`aws dynamodb describe-table   --table-name footable`
+
+#### Read table
+
+`aws dynamodb scan --table-name footable`
+
+#### Query table
+
+```bash
+aws dynamodb query --table-name footable \
+	--key-condition-expression "email=:email" \
+	--expression-attribute-values file://expression_attributes.json
+```
+
+Inside of the `expression_attributes.json` file:
+
+```json
+{
+   ":email": {"S": "alice.bob@example.com"}
+}
+```
+
+## Athena
+
+#### List table and fields
+
+```bash
+aws athena list-table-metadata \
+    --catalog-name AwsDataCatalog \
+    --database-name sampledb \
+    --max-items 2 \
+    --region=us-east-2
+```
+
+
+
+
 ## Tips
 
 - [aws-in-plain-english](https://expeditedsecurity.com/aws-in-plain-english/)
