@@ -13,27 +13,45 @@
 
 `aws --version`
 
-#### Persisted config
+#### Upgrade ( macOS )
 
-`cat ~/.aws/config`
+```bash
+brew upgrade awscli
+// if errors due to Python version: `xcode-select --install`
+// if you installed via other methods and want to clean-up:
+pip3 uninstall awscli
+brew link awscli 
+```
 
-#### Persisted credentials
+#### Persisted config and credentials
 
-`cat ~/.aws/credentials`
+```bash
+ls -1 ~/.aws
+cat ~/.aws/config
+cat ~/.aws/credentials
+```
 
 #### Remove credentials / profiles
 
 `vi ~/.aws/config`
 
-#### Update
-
-`pip3 install awscli --upgrade`
-
-#### List
+### List
 
 ```bash
-aws configure list
-aws configure list-profiles
+> aws configure list
+         
+      Name                    Value             Type    Location
+      ----                    -----             ----    --------
+   profile                <not set>             None    None
+access_key     ****************DYXW shared-credentials-file    
+secret_key     ****************zO0/ shared-credentials-file    
+    region                eu-west-1      config-file    ~/.aws/config
+
+
+> aws configure list-profiles
+default
+rm_lambda_demo
+saml
 ```
 
 #### Region
