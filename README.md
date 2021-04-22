@@ -1,5 +1,20 @@
 # AWS
 
+<!-- TOC depthfrom:2 depthto:2 withlinks:true updateonsave:true orderedlist:false -->
+
+- [dynamodb](#dynamodb)
+- [Athena](#athena)
+- [Tips](#tips)
+- [CLI](#cli)
+- [saml2aws](#saml2aws)
+- [IAM](#iam)
+- [Create lambda](#create-lambda)
+- [Keys](#keys)
+- [Container Registry](#container-registry)
+- [Deploy AWS Infrastructure as Code IaC](#deploy-aws-infrastructure-as-code-iac)
+
+<!-- /TOC -->
+
 ## dynamodb
 
 #### List table and fields
