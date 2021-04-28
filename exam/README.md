@@ -13,4 +13,4 @@
 - [Somebody who passed](https://medium.com/datamindedbe/hooray-im-an-aws-certified-pro-architect-now-what-89f4d8b22596)
 - `acloud.guru` videos
 - `whizlabs` practice exams
-```
+

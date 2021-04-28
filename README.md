@@ -12,6 +12,7 @@
 - [Keys](#keys)
 - [Container Registry](#container-registry)
 - [Deploy AWS Infrastructure as Code IaC](#deploy-aws-infrastructure-as-code-iac)
+- [SSM Parameter Store](#ssm-parameter-store)
 
 <!-- /TOC -->
 
@@ -444,4 +445,35 @@ terraform plan
 terraform apply
 terraform output
 terraform output public_ip
+```
+
+## SSM Parameter Store
+
+#### Set
+
+```bash
+aws ssm put-parameter \
+    --name "username" \
+    --value "foobar" \
+    --type String \
+    --tags "Key=month,Value=april2021"
+```
+
+#### Set encrypted
+
+```bash
+aws ssm put-parameter \
+    --name "username" \
+    --value "foobar" \
+    --type SecureString \
+    --key-id "alias name"
+```
+
+#### Get
+
+```bash
+export AWS_PROFILE=foo
+aws ssm describe-parameters
+aws ssm get-parameters --name "username"
+aws ssm get-parameters --name "username" --with-decryption
 ```
