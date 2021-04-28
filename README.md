@@ -477,3 +477,15 @@ aws ssm describe-parameters
 aws ssm get-parameters --name "username"
 aws ssm get-parameters --name "username" --with-decryption
 ```
+
+#### Secrets Manager vs SSM
+
+```bash
+https://www.stackery.io/blog/serverless-secrets/
+
+https://acloudguru.com/blog/engineering/an-inside-look-at-aws-secrets-manager-vs-parameter-store?utm_source=legacyla&utm_medium=redirect&utm_campaign=one_platform
+
+https://www.1strategy.com/blog/2019/02/28/aws-parameter-store-vs-aws-secrets-manager/
+
+https://liuhongbo.medium.com/build-an-aws-serverless-application-using-sam-aae383e68b6f
+```
