@@ -476,6 +476,7 @@ export AWS_PROFILE=foo
 aws ssm describe-parameters
 aws ssm get-parameters --name "username"
 aws ssm get-parameters --name "username" --with-decryption
+aws ssm get-parameters-by-path --path "/foo/bar/"    <-- full path minus the parameter name
 ```
 
 #### Secrets Manager vs SSM
