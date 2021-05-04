@@ -2,6 +2,7 @@
 
 <!-- TOC depthfrom:2 depthto:2 withlinks:true updateonsave:true orderedlist:false -->
 
+- [s3](#s3)
 - [dynamodb](#dynamodb)
 - [Athena](#athena)
 - [Tips](#tips)
@@ -15,6 +16,16 @@
 - [SSM Parameter Store](#ssm-parameter-store)
 
 <!-- /TOC -->
+
+## s3
+
+#### List bucket
+
+```bash
+aws s3 ls s3://mybucket --recursive
+aws s3 ls s3://mybucket --recursive --human-readable --summarize
+aws s3 cp test.txt s3://mybucket/test2.txt
+```
 
 ## dynamodb
 
