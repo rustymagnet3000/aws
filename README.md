@@ -22,10 +22,38 @@
 #### List bucket
 
 ```bash
+aws s3 ls s3://mybucket
 aws s3 ls s3://mybucket --recursive
 aws s3 ls s3://mybucket --recursive --human-readable --summarize
-aws s3 cp test.txt s3://mybucket/test2.txt
+aws s3api get-bucket-location --bucket mybucket
 ```
+
+#### Copy to bucket
+
+`aws s3 cp test.txt s3://mybucket/test2.txt`
+
+#### Copy to local
+
+`AWS s3 cp s3://mybucket/test2.txt poc`
+
+#### Delete from bucket
+
+`aws s3 rm s3://mybucket/test2.txt`
+
+#### Delete bucket
+
+`aws s3 rb s3://mybucket/test2.txt`
+
+#### Find owner of Object
+
+```bash
+aws s3api get-object-acl --bucket mybucket --key poc
+aws s3api get-bucket-acl --bucket mybucket
+```
+
+#### Get Bucket Policy
+
+`aws s3api get-bucket-policy --bucket DOC-EXAMPLE-BUCKET1 --expected-bucket-owner 111122223333`
 
 ## dynamodb
 
