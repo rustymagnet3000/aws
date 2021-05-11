@@ -2,6 +2,7 @@
 
 <!-- TOC depthfrom:2 depthto:2 withlinks:true updateonsave:true orderedlist:false -->
 
+- [Databases](#databases)
 - [s3](#s3)
 - [dynamodb](#dynamodb)
 - [Athena](#athena)
@@ -16,6 +17,12 @@
 - [SSM Parameter Store](#ssm-parameter-store)
 
 <!-- /TOC -->
+
+## Databases
+
+#### Describe
+
+`aws rds describe-db-clusters | jq '.DBClusters[] | select(.EngineVersion | contains("9.6")) | { name: .DBClusterIdentifier, version: .EngineVersion }'`
 
 ## s3
 
