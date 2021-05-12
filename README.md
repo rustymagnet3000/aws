@@ -205,9 +205,37 @@ aws --profile saml ec2 describe-instances --region ${REGION}
 
 ## IAM
 
+#### Summary
+
+```bash
+aws iam get-account-summary
+
+```
+
+#### Dormant accounts
+
+```bash
+aws iam generate-credential-report
+aws iam get-credential-report
+```
+
+#### Dormant accounts manually
+
+```bash
+aws iam list-access-keys          // ListAccessKeys
+aws iam get-access-key-last-used  // GetAccessKeyLastUsed
+```
+
 #### List users
 
-`aws iam list-users --output json`
+```bash
+aws iam list-users --output json
+aws iam list-users --output text | awk '{print $NF}'        // just username
+aws iam list-users --output text > users.txt | wc -l        // count users
+```
+
+
+
 
 #### List all Access Key IDs
 
