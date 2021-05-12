@@ -209,14 +209,13 @@ aws --profile saml ec2 describe-instances --region ${REGION}
 
 ```bash
 aws iam get-account-summary
-
 ```
 
-#### Dormant accounts
+#### Get csv file of all accounts
 
 ```bash
 aws iam generate-credential-report
-aws iam get-credential-report
+aws iam get-credential-report --output text --query Content  | base64 -D > aws_cred_report.csv
 ```
 
 #### Dormant accounts manually
@@ -233,9 +232,6 @@ aws iam list-users --output json
 aws iam list-users --output text | awk '{print $NF}'        // just username
 aws iam list-users --output text > users.txt | wc -l        // count users
 ```
-
-
-
 
 #### List all Access Key IDs
 
