@@ -107,9 +107,6 @@ aws athena list-table-metadata \
     --region=us-east-2
 ```
 
-
-
-
 ## Tips
 
 - [aws-in-plain-english](https://expeditedsecurity.com/aws-in-plain-english/)
@@ -205,6 +202,16 @@ aws --profile saml ec2 describe-instances --region ${REGION}
 
 ## IAM
 
+#### Best practices
+
+- [AWS best practice guidance](https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html)
+- [Best practices for managing AWS access keys](https://docs.aws.amazon.com/general/latest/gr/aws-access-keys-best-practices.html)
+- [Good tips on Access Keys](https://ashishrajan.medium.com/aws-security-best-practices-access-keys-cloudsecurity-facb20aa0db6)
+
+#### Temporary credentials trump Access Keys
+
+>Use IAM roles instead of long-term access keys  In many scenarios, you don't need long-term access keys that never expire (as you have with an IAM user). Instead, you can create IAM roles and generate temporary security credentials. Temporary security credentials consist of an access key ID and a secret access key, but they also include a security token that indicates when the credentials expire.
+
 #### Summary
 
 ```bash
@@ -222,7 +229,8 @@ aws iam get-credential-report --output text --query Content  | base64 -D > aws_c
 
 ```bash
 aws iam list-access-keys          // ListAccessKeys
-aws iam get-access-key-last-used  // GetAccessKeyLastUsed
+aws iam get-access-key-last-used --access-key-id FFFFFFFFFFFFFFFF
+
 ```
 
 #### List users
@@ -231,6 +239,13 @@ aws iam get-access-key-last-used  // GetAccessKeyLastUsed
 aws iam list-users --output json
 aws iam list-users --output text | awk '{print $NF}'        // just username
 aws iam list-users --output text > users.txt | wc -l        // count users
+```
+
+#### List Access Keys by User
+
+```bash
+aws iam list-access-keys --user-name 'foobar'
+aws iam list-access-keys --user-name 'foobar_with_multiple_keys' --max-items 5
 ```
 
 #### List all Access Key IDs
