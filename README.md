@@ -213,6 +213,12 @@ aws --profile saml ec2 describe-instances --region ${REGION}
 
 ## IAM
 
+#### IAM account summary
+
+```bash
+aws iam get-account-summary
+```
+
 #### Best practices
 
 - [AWS best practice guidance](https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html)
@@ -223,23 +229,71 @@ aws --profile saml ec2 describe-instances --region ${REGION}
 
 >Use IAM roles instead of long-term access keys  In many scenarios, you don't need long-term access keys that never expire (as you have with an IAM user). Instead, you can create IAM roles and generate temporary security credentials. Temporary security credentials consist of an access key ID and a secret access key, but they also include a security token that indicates when the credentials expire.
 
-#### create policy and attach
+#### Retire long-term AWS keys for 2FA and temp credentials
+
+General [reference](https://mklein.io/2021/02/09/temporary-credentials-cli-console/) and [aws reference](https://docs.aws.amazon.com/IAM/latest/UserGuide/tutorial_users-self-manage-mfa-and-creds.html) or [Terraform reference](https://klaviyo.tech/implementing-mfa-for-aws-cd9aab246103).  I found an article that got me over the "assign a MFA device to a IAM User" was [this excellent article](https://www.vlent.nl/weblog/2019/02/24/using-mfa-with-aws-cli/):
 
 ```bash
-# Create role
+# Create PowerUserRole IAM role
 aws iam create-role --role-name PowerUserRole --assume-role-policy-document file://role-policy.json
 
-# Attach PowerUserAccess policy to the role
+# Attach PowerUserAccess policy
 aws iam attach-role-policy --role-name PowerUserRole --policy-arn arn:aws:iam::aws:policy/PowerUserAccess
 
+If you look inside this role, it has restrictions:
+
+            "NotAction": [
+                "iam:*",
+                "organizations:*",
+                "account:*"
+            ]
+            
 # Create policy
 aws iam create-policy --policy-name AllowAssumeRolePolicy --policy-document file://assume-role-policy.json
 
 # Attach policy to user
 aws iam attach-user-policy --user-name rm_lite --policy-arn arn:aws:iam::400000000000:policy/AllowAssumeRolePolicy
+```
 
+#### Add new 2FA device in AWS IAM Console
+
+```bash
+# Go into AWS Console
+Add Google Authenticator in the IAM section of the AWS Console next to the username
+
+# Get a SessionToken Token
+aws sts get-session-token \
+    --serial-number arn:aws:iam::400907146110:mfa/rm_lite \
+    --token-code < enter 6 digit code from Google Authenticator >
+
+{
+    "Credentials": {
+        "AccessKeyId": "....",
+        "SecretAccessKey": ".....",
+        "SessionToken": "IQoJb3JpZ....j",
+        "Expiration": "2021-05-17T22:26:57+00:00"
+    }
+}
+```
+
+
+#### Set new, temp profile
+
+```bash
+aws configure --profile mfa set source_profile default
+aws configure --profile mfa set role_arn arn:aws:iam::400000000000:user/rm_lite
+aws configure --profile mfa set duration_seconds 3600
+aws configure --profile mfa set mfa_serial arn:aws:iam::400000000000:mfa/rm_lite
+aws s3 ls --profile mfa
+# Enter MFA code for arn:aws:iam::________
+
+aws iam list-users --profile mfa 
+# Enter MFA code for arn:aws:iam::________
+
+```
+
+```json
 # role-policy.json
-cat role-policy.json            
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -264,16 +318,10 @@ cat role-policy.json
     "Effect": "Allow",
     "Action": "sts:AssumeRole",
     "Resource": [
-      "arn:aws:iam::40000000000:user/rm_lite"
+      "arn:aws:iam::400000000000:role/PowerUserRole"
     ]
   }
 }
-```
-
-#### Summary
-
-```bash
-aws iam get-account-summary
 ```
 
 #### Get csv file of all accounts
