@@ -2,6 +2,7 @@
 
 <!-- TOC depthfrom:2 depthto:2 withlinks:true updateonsave:true orderedlist:false -->
 
+- [whoami ?](#whoami-)
 - [Databases](#databases)
 - [s3](#s3)
 - [dynamodb](#dynamodb)
@@ -17,6 +18,16 @@
 - [SSM Parameter Store](#ssm-parameter-store)
 
 <!-- /TOC -->
+
+## whoami ?
+
+#### Get ARN, UserId and Account
+
+`aws sts get-caller-identity`
+
+#### Get username
+
+`aws iam get-user`
 
 ## Databases
 
@@ -212,6 +223,53 @@ aws --profile saml ec2 describe-instances --region ${REGION}
 
 >Use IAM roles instead of long-term access keys  In many scenarios, you don't need long-term access keys that never expire (as you have with an IAM user). Instead, you can create IAM roles and generate temporary security credentials. Temporary security credentials consist of an access key ID and a secret access key, but they also include a security token that indicates when the credentials expire.
 
+#### create policy and attach
+
+```bash
+# Create role
+aws iam create-role --role-name PowerUserRole --assume-role-policy-document file://role-policy.json
+
+# Attach PowerUserAccess policy to the role
+aws iam attach-role-policy --role-name PowerUserRole --policy-arn arn:aws:iam::aws:policy/PowerUserAccess
+
+# Create policy
+aws iam create-policy --policy-name AllowAssumeRolePolicy --policy-document file://assume-role-policy.json
+
+# Attach policy to user
+aws iam attach-user-policy --user-name rm_lite --policy-arn arn:aws:iam::400000000000:policy/AllowAssumeRolePolicy
+
+# role-policy.json
+cat role-policy.json            
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::400000000:user/rm_lite"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "Bool": {
+          "aws:MultiFactorAuthPresent": "true"
+        }
+      }
+    }
+  ]
+}
+# assume-role-policy.json
+{
+  "Version": "2012-10-17",
+  "Statement": {
+    "Effect": "Allow",
+    "Action": "sts:AssumeRole",
+    "Resource": [
+      "arn:aws:iam::40000000000:user/rm_lite"
+    ]
+  }
+}
+```
+
 #### Summary
 
 ```bash
@@ -230,7 +288,6 @@ aws iam get-credential-report --output text --query Content  | base64 -D > aws_c
 ```bash
 aws iam list-access-keys          // ListAccessKeys
 aws iam get-access-key-last-used --access-key-id FFFFFFFFFFFFFFFF
-
 ```
 
 #### List users
@@ -278,7 +335,7 @@ The `file://` is required:
 
 `aws iam create-role --role-name rm-lambda-demo-role --assume-role-policy-document file://trust-policy.json`
 
-### display info about IAM identity used to authenticate the request
+### whoami
 
 `aws sts get-caller-identity`
 
