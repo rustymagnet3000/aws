@@ -4,6 +4,7 @@
 
 - [whoami ?](#whoami-)
 - [Databases](#databases)
+- [Inspector](#inspector)
 - [s3](#s3)
 - [dynamodb](#dynamodb)
 - [Athena](#athena)
@@ -25,6 +26,10 @@
 
 `aws sts get-caller-identity`
 
+#### Get ARN, UserId, Account + Account Aliases
+
+`{ aws sts get-caller-identity & aws iam list-account-aliases; } | jq -s ".|add"`
+
 #### Get username
 
 `aws iam get-user`
@@ -34,6 +39,23 @@
 #### Describe
 
 `aws rds describe-db-clusters | jq '.DBClusters[] | select(.EngineVersion | contains("9.6")) | { name: .DBClusterIdentifier, version: .EngineVersion }'`
+
+## Inspector
+
+#### Tips
+
+`https://awsclibuilder.com/home/services/inspector`
+
+#### List ( with a max )
+
+```bash
+aws inspector list-findings --max-items 10
+aws inspector list-findings --max-items 10 --region eu-west-1 --output table
+```
+
+#### Describe finding
+
+`aws inspector describe-findings --finding-arns arn:aws:inspector:eu-west-2:......./finding/0-6xxxxxxx`
 
 ## s3
 
