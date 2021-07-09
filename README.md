@@ -20,6 +20,9 @@
 
 <!-- /TOC -->
 
+
+aws ec2 describe-vpc-endpoint-services
+
 ## whoami ?
 
 #### Get ARN, UserId and Account
@@ -51,6 +54,13 @@
 ```bash
 aws inspector list-findings --max-items 10
 aws inspector list-findings --max-items 10 --region eu-west-1 --output table
+aws inspector list-findings --max-items 10 --region eu-west-1 --output json | jq .
+```
+
+#### List Assessment Runs
+
+```bash
+aws inspector list-assessment-runs --max-items=10
 ```
 
 #### Describe finding
@@ -97,6 +107,8 @@ aws s3api get-bucket-acl --bucket mybucket
 
 ## dynamodb
 
+`aws ec2 describe-vpc-endpoint-services | grep -i dynamo`
+
 #### List table and fields
 
 ```bash
@@ -112,7 +124,60 @@ aws dynamodb list-tables
 
 `aws dynamodb scan --table-name footable`
 
-#### Query table
+#### Create table
+
+```bash
+aws dynamodb create-table \
+    --table-name DELETEme \
+    --attribute-definitions AttributeName=Name,AttributeType=S AttributeName=Age,AttributeType=N \
+    --key-schema AttributeName=Name,KeyType=HASH AttributeName=Age,KeyType=RANGE \
+    --provisioned-throughput ReadCapacityUnits=1,WriteCapacityUnits=1
+```
+
+#### Put item
+
+```bash
+aws dynamodb put-item \
+    --table-name DELETEme \
+    --item '{
+        "Name": {"S": "Alice"},
+        "Age": {"N": "99"} 
+      }' \
+    --return-consumed-capacity TOTAL
+```
+
+#### Query item
+
+<https://www.bmc.com/blogs/dynamodb-queries/>
+
+Works even for a Reserved Word like `Name`:
+
+```bash
+aws dynamodb query \
+	--table-name DELETEme \
+	--key-condition-expression "#nm = :name" \
+	--expression-attribute-name '{"#nm": "Name"}' \
+	--expression-attribute-values  '{ ":name":{"S":"Bob"}}'
+```
+
+#### Query individual items
+
+```bash
+ aws dynamodb get-item \
+        --table-name DELETEme \
+        --key file://key.json \
+        --return-consumed-capacity TOTAL
+```
+
+```json
+// key.json
+{
+    "Name": {"S": "Alice"},
+    "Age": {"N": "99"}
+}
+``
+
+#### Query item with file
 
 ```bash
 aws dynamodb query --table-name footable \
@@ -127,6 +192,14 @@ Inside of the `expression_attributes.json` file:
    ":email": {"S": "alice.bob@example.com"}
 }
 ```
+
+#### Delete table
+
+`aws dynamodb delete-table --table-name DELETEme`
+
+#### Reserved Words
+
+[reserved words](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ReservedWords.html).
 
 ## Athena
 
@@ -298,6 +371,9 @@ aws sts get-session-token \
 }
 ```
 
+#### Up to 12 hours CLI access via Temp Credentials
+
+[Set up 12 hours CLI access](https://aws.amazon.com/blogs/security/enable-federated-api-access-to-your-aws-resources-for-up-to-12-hours-using-iam-roles/)
 
 #### Set new, temp profile
 
