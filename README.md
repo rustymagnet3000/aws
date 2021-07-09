@@ -160,8 +160,6 @@ aws dynamodb query \
 	--expression-attribute-values  '{ ":name":{"S":"Bob"}}'
 ```
 
-#### Query individual items
-
 ```bash
  aws dynamodb get-item \
         --table-name DELETEme \
@@ -175,7 +173,31 @@ aws dynamodb query \
     "Name": {"S": "Alice"},
     "Age": {"N": "99"}
 }
-``
+```
+
+#### Query individual items with Projection Expression
+
+Only attributes of the desired item:
+
+```json
+aws dynamodb get-item \
+    --table-name DELETEme \
+    --key '{"Name": {"S": "Bob"},"Age": {"N": "77"}}' \
+    --projection-expression "#A, #N" \
+    --expression-attribute-names file://names.json
+```
+
+```json
+// names.json
+{
+    "#N": "Name",
+    "#A": "Age"
+}
+```
+
+If the Primary Key as `Hash` = Name and `Sort Key` = Age you need to search with both. [Reference](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_GetItem.html).
+
+>For the primary key, you must provide all of the attributes. For example, with a simple primary key, you only need to provide a value for the partition key. For a composite primary key, you must provide values for both the partition key and the sort key.
 
 #### Query item with file
 
