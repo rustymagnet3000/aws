@@ -2,7 +2,7 @@
 
 <!-- TOC depthfrom:2 depthto:2 withlinks:true updateonsave:true orderedlist:false -->
 
-- [whoami ?](#whoami-)
+- [whoami](#whoami)
 - [Databases](#databases)
 - [Inspector](#inspector)
 - [s3](#s3)
@@ -23,7 +23,7 @@
 
 aws ec2 describe-vpc-endpoint-services
 
-## whoami ?
+## whoami
 
 #### Get ARN, UserId and Account
 
@@ -118,10 +118,41 @@ docker run \
 	-p 8000:8000 \
 	--name dynamodb \
 	-d amazon/dynamodb-local \
-	-jar DynamoDBLocal.jar     
+	-jar DynamoDBLocal.jar \
+    -sharedDb
 
 # start container
 docker start dynamodb
+```
+
+The `-sharedDb` flag is essential to avoid `“Cannot do operations on a non-existent table”`. See [here](https://stackoverflow.com/questions/29558948/dynamo-local-from-node-aws-all-operations-fail-cannot-do-operations-on-a-non-e).
+
+### Verify local database
+
+`aws dynamodb describe-table --table-name DELETEme --endpoint-url http://localhost:8000`
+
+#### Add local data
+
+```bashq
+aws dynamodb put-item \
+	--table-name DELETEme \
+    	--item '{                
+        		"Name": {"S": "Alice"},             
+        		"Age": {"N": "99"}                 
+      		}' \
+	--endpoint-url http://localhost:8000 \
+    	--return-consumed-capacity TOTAL
+
+docker pull amazon/dynamodb-local
+docker run -p 8000:8000 amazon/dynamodb-local
+```
+
+#### Delete local table
+
+```bash
+aws dynamodb delete-table \
+    --table-name DELETEme \
+    --endpoint-url http://localhost:8000
 ```
 
 #### Query and list locally
@@ -158,9 +189,15 @@ aws dynamodb list-tables
 ```bash
 aws dynamodb create-table \
     --table-name DELETEme \
-    --attribute-definitions AttributeName=Name,AttributeType=S AttributeName=Age,AttributeType=N \
-    --key-schema AttributeName=Name,KeyType=HASH AttributeName=Age,KeyType=RANGE \
-    --provisioned-throughput ReadCapacityUnits=1,WriteCapacityUnits=1
+    --attribute-definitions \
+        AttributeName=Name,AttributeType=S \
+        AttributeName=Age,AttributeType=N \
+    --key-schema \
+        AttributeName=Name,KeyType=HASH \
+        AttributeName=Age,KeyType=RANGE \
+    --provisioned-throughput \
+        ReadCapacityUnits=1,WriteCapacityUnits=1 \
+    --endpoint-url http://localhost:8000
 ```
 
 #### Put item
