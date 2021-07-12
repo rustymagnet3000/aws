@@ -107,7 +107,32 @@ aws s3api get-bucket-acl --bucket mybucket
 
 ## dynamodb
 
-`aws ec2 describe-vpc-endpoint-services | grep -i dynamo`
+#### Set up locally
+
+```bash
+# get Docker image
+docker pull amazon/dynamodb-local
+
+# create the container in detached mode. This is a one-off step.
+docker run \
+	-p 8000:8000 \
+	--name dynamodb \
+	-d amazon/dynamodb-local \
+	-jar DynamoDBLocal.jar     
+
+# start container
+docker start dynamodb
+```
+
+#### Query and list locally
+
+```bash
+# create empty Profile
+aws configure --profile rm_local_db
+
+# list Tables
+aws dynamodb list-tables --endpoint-url http://localhost:8000
+```
 
 #### List table and fields
 
@@ -115,6 +140,10 @@ aws s3api get-bucket-acl --bucket mybucket
 export AWS_DEFAULT_REGION=us-east-x
 aws dynamodb list-tables
 ```
+
+#### Describe endpoints using DynamoDB
+
+`aws ec2 describe-vpc-endpoint-services | grep -i dynamo`
 
 #### Describe table
 
@@ -705,7 +734,7 @@ aws kms describe-key \
 
 ## Container Registry
 
-#### Create repo
+#### Create repo
 
 ```bash
 aws ecr create-repository --repository-name ${REPO_NAME}
@@ -721,7 +750,7 @@ aws ecr put-lifecycle-policy \
 {
 ```
 
-#### Create repo with auto vulnerability scan
+#### Create repo with auto vulnerability scan
 
 ```bash
 aws ecr create-repository \
