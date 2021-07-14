@@ -5,6 +5,7 @@
 - [whoami](#whoami)
 - [Databases](#databases)
 - [Inspector](#inspector)
+- [ec2](#ec2)
 - [s3](#s3)
 - [dynamodb](#dynamodb)
 - [Athena](#athena)
@@ -19,9 +20,6 @@
 - [SSM Parameter Store](#ssm-parameter-store)
 
 <!-- /TOC -->
-
-
-aws ec2 describe-vpc-endpoint-services
 
 ## whoami
 
@@ -66,6 +64,13 @@ aws inspector list-assessment-runs --max-items=10
 #### Describe finding
 
 `aws inspector describe-findings --finding-arns arn:aws:inspector:eu-west-2:......./finding/0-6xxxxxxx`
+
+## ec2
+
+```bash
+aws ec2 describe-vpc-endpoint-services
+aws --profile saml ec2 describe-instances --region ${AWS_REGION}
+```
 
 ## s3
 
@@ -388,10 +393,17 @@ saml2aws --version
 #### Day-2-Day use
 
 ```bash
-eval $(saml2aws script)     // check if logged in
+# Normal login
 saml2aws login
+
+# check if logged in
+eval $(saml2aws script)     
+
+# Kick off previous session
 saml2aws login --verbose
-aws --profile saml ec2 describe-instances --region ${REGION}
+
+# Reset configuration with 2 hour expiry
+saml2aws configure --session-duration 7200
 ```
 
 ## IAM
