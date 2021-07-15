@@ -205,6 +205,38 @@ aws dynamodb create-table \
     --endpoint-url http://localhost:8000
 ```
 
+#### Create DynamoDB table to local
+
+```bash
+# describe table
+aws dynamodb describe-table --table-name foo_table > foo_table.txt
+
+#copy json into files. Example: key-schema.json
+
+```json
+[
+            {
+                "AttributeName": "partition",
+                "KeyType": "HASH"
+            }
+]
+```
+
+Don't copy Attribution Definitions that are not part of the KeySchema, if you hit the error:
+
+> Number of attributes in key schema must match the number of attributes defined in attribute definitions
+
+[Reference](https://stackoverflow.com/questions/30866030/number-of-attributes-in-key-schema-must-match-the-number-of-attributes-defined-i)
+
+```bash
+aws dynamodb create-table \
+    --table-name DELETEme \
+    --attribute-definitions file://attribute-definitions.json \ 
+    --key-schema file://key-schema.json  \
+    --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 \
+    --endpoint-url http://localhost:8000
+```
+
 #### Put item
 
 ```bash
