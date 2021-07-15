@@ -205,7 +205,9 @@ aws dynamodb create-table \
     --endpoint-url http://localhost:8000
 ```
 
-#### Create DynamoDB table to local
+#### Replicate a DynamoDB table locally
+
+Original [article](https://medium.com/@balint_sera/replicate-a-dynamodb-table-409641215e8).
 
 ```bash
 # describe table
@@ -316,6 +318,36 @@ Inside of the `expression_attributes.json` file:
 {
    ":email": {"S": "alice.bob@example.com"}
 }
+```
+
+#### Query with Python Boto3
+
+##### Boto3 get a single Item
+
+```python
+        response = table.query(
+            KeyConditionExpression=Key('partition').eq('xxxxxxxx')
+        )
+```
+
+##### Boto3 get all columns where email matches
+
+```python
+
+from boto3.dynamodb.conditions import Key, And, Attr
+
+        response = table.scan(
+            FilterExpression=Attr("email").eq(entered_email)
+        )
+```
+
+##### Boto3 get email, name, age column where email matches
+
+```python
+        response = table.scan(
+            FilterExpression=Attr("email").eq(email),
+            ProjectionExpression="email, name, age"
+        )
 ```
 
 #### Delete table
