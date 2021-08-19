@@ -17,6 +17,7 @@
 - [Keys](#keys)
 - [Container Registry](#container-registry)
 - [Deploy AWS Infrastructure as Code IaC](#deploy-aws-infrastructure-as-code-iac)
+- [Proxy AWS CLI traffic](#proxy-aws-cli-traffic)
 - [SSM Parameter Store](#ssm-parameter-store)
 
 <!-- /TOC -->
@@ -898,6 +899,12 @@ terraform apply
 terraform output
 terraform output public_ip
 ```
+
+## Proxy AWS CLI traffic
+
+#### Set CLI not to verify the server's Certificate Chain
+
+`aws sts get-caller-identity --no-verify-ssl`
 
 ## SSM Parameter Store
 
