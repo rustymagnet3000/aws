@@ -3,6 +3,7 @@
 <!-- TOC depthfrom:2 depthto:2 withlinks:true updateonsave:true orderedlist:false -->
 
 - [whoami](#whoami)
+- [Cloudtrail](#cloudtrail)
 - [Databases](#databases)
 - [Inspector](#inspector)
 - [ec2](#ec2)
@@ -35,6 +36,31 @@
 #### Get username
 
 `aws iam get-user`
+
+## Cloudtrail
+
+`aws cloudtrail lookup-events help`
+
+#### Set a max-items
+
+`aws cloudtrail lookup-events --max-items 10`
+
+#### Events in 1 hour time period
+
+> Keep the space between date and time!
+
+`aws cloudtrail lookup-events --start-time "08-23-2021, 01:16PM" --end-time "08-23-2021, 02:16PM" --max-items 10`
+
+#### Filter by user
+
+```bash
+aws cloudtrail \
+	lookup-events \
+		--start-time "08-23-2021, 01:16PM" \
+		--end-time "08-23-2021, 02:16PM" \
+		--max-items 10 \
+	--lookup-attributes AttributeKey=Username,AttributeValue=foo.bar@foobar.com
+```
 
 ## Databases
 
