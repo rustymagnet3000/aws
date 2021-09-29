@@ -3,12 +3,13 @@
 <!-- TOC depthfrom:2 depthto:2 withlinks:true updateonsave:true orderedlist:false -->
 
 - [whoami](#whoami)
+- [s3](#s3)
+- [dynamodb](#dynamodb)
 - [Cloudtrail](#cloudtrail)
+- [Cloudwatch](#cloudwatch)
 - [Databases](#databases)
 - [Inspector](#inspector)
 - [ec2](#ec2)
-- [s3](#s3)
-- [dynamodb](#dynamodb)
 - [Athena](#athena)
 - [Tips](#tips)
 - [CLI](#cli)
@@ -25,117 +26,61 @@
 
 ## whoami
 
-#### Get ARN, UserId and Account
-
-`aws sts get-caller-identity`
-
-#### Get ARN, UserId, Account + Account Aliases
-
-`{ aws sts get-caller-identity & aws iam list-account-aliases; } | jq -s ".|add"`
-
-#### Get username
-
-`aws iam get-user`
-
-## Cloudtrail
-
-`aws cloudtrail lookup-events help`
-
-#### Set a max-items
-
-`aws cloudtrail lookup-events --max-items 10`
-
-#### Events in 1 hour time period
-
-> Keep the space between date and time!
-
-`aws cloudtrail lookup-events --start-time "08-23-2021, 01:16PM" --end-time "08-23-2021, 02:16PM" --max-items 10`
-
-#### Filter by user
-
 ```bash
-aws cloudtrail \
-	lookup-events \
-		--start-time "08-23-2021, 01:16PM" \
-		--end-time "08-23-2021, 02:16PM" \
-		--max-items 10 \
-	--lookup-attributes AttributeKey=Username,AttributeValue=foo.bar@foobar.com
-```
+# Get ARN, UserId and Account
+aws sts get-caller-identity
 
-## Databases
+# Get ARN, UserId, Account + Account Aliases
+{ aws sts get-caller-identity & aws iam list-account-aliases; } | jq -s ".|add"
 
-#### Describe
-
-`aws rds describe-db-clusters | jq '.DBClusters[] | select(.EngineVersion | contains("9.6")) | { name: .DBClusterIdentifier, version: .EngineVersion }'`
-
-## Inspector
-
-#### Tips
-
-`https://awsclibuilder.com/home/services/inspector`
-
-#### List ( with a max )
-
-```bash
-aws inspector list-findings --max-items 10
-aws inspector list-findings --max-items 10 --region eu-west-1 --output table
-aws inspector list-findings --max-items 10 --region eu-west-1 --output json | jq .
-```
-
-#### List Assessment Runs
-
-```bash
-aws inspector list-assessment-runs --max-items=10
-```
-
-#### Describe finding
-
-`aws inspector describe-findings --finding-arns arn:aws:inspector:eu-west-2:......./finding/0-6xxxxxxx`
-
-## ec2
-
-```bash
-aws ec2 describe-vpc-endpoint-services
-aws --profile saml ec2 describe-instances --region ${AWS_REGION}
+# Get username
+aws iam get-user
 ```
 
 ## s3
 
-#### List bucket
-
 ```bash
+# list
 aws s3 ls s3://mybucket
+
+# list with subfolders
 aws s3 ls s3://mybucket --recursive
 aws s3 ls s3://mybucket --recursive --human-readable --summarize
+
+# Enter MFA code for arn:aws:iam::________
+aws s3 ls --profile mfa
+
+# copy everything in bucket
+aws s3 cp s3://foos-bucket ./ --recursive
+
+# check if bucket is public
+aws s3api get-bucket-policy-status --bucket foos-bucket 
+
+# bucket location
 aws s3api get-bucket-location --bucket mybucket
-```
 
-#### Copy to bucket
+# check if I can pull a file from sub-folder
+aws s3 cp s3://foos-bucket /images/boo.jpg
 
-`aws s3 cp test.txt s3://mybucket/test2.txt`
+# Copy to bucket
+aws s3 cp test.txt s3://mybucket/test2.txt
 
-#### Copy to local
+# Copy to local
+AWS s3 cp s3://mybucket/test2.txt poc
 
-`AWS s3 cp s3://mybucket/test2.txt poc`
+# Delete from bucket
+aws s3 rm s3://mybucket/test2.txt
 
-#### Delete from bucket
+# Delete bucket
+aws s3 rb s3://mybucket/test2.txt
 
-`aws s3 rm s3://mybucket/test2.txt`
-
-#### Delete bucket
-
-`aws s3 rb s3://mybucket/test2.txt`
-
-#### Find owner of Object
-
-```bash
+# Find owner of Object
 aws s3api get-object-acl --bucket mybucket --key poc
 aws s3api get-bucket-acl --bucket mybucket
+
+# Get Bucket Policy
+aws s3api get-bucket-policy --bucket DOC-EXAMPLE-BUCKET1 --expected-bucket-owner 111122223333
 ```
-
-#### Get Bucket Policy
-
-`aws s3api get-bucket-policy --bucket DOC-EXAMPLE-BUCKET1 --expected-bucket-owner 111122223333`
 
 ## dynamodb
 
@@ -347,6 +292,108 @@ Inside of the `expression_attributes.json` file:
 }
 ```
 
+
+## Cloudtrail
+
+```bash
+aws cloudtrail lookup-events help
+
+# Set a max-items
+aws cloudtrail lookup-events --max-items 10
+
+# Events in 1 hour time period  
+## Keep the space between date and time!
+aws cloudtrail lookup-events --start-time "08-23-2021, 01:16PM" --end-time "08-23-2021, 02:16PM" --max-items 10
+
+# Filter by user
+aws cloudtrail \
+	lookup-events \
+		--start-time "08-23-2021, 01:16PM" \
+		--end-time "08-23-2021, 02:16PM" \
+		--max-items 10 \
+	--lookup-attributes AttributeKey=Username,AttributeValue=foo.bar@foobar.com
+
+# Filter by s3 bucket
+aws cloudtrail \
+	lookup-events \
+	--lookup-attributes \
+		AttributeKey=ResourceName,AttributeValue=foo-bucket \
+	--start-time "08-23-2021, 01:16PM" \
+	--end-time "08-23-2021, 04:36PM" \
+	--max-items 10 \
+	--query 'Events[].{username:Username,time:EventTime,event:EventName,eventid:EventId,accesskey:AccessKeyId,resource:(Resources[0].ResourceName)}' \
+	--output table \
+	--region ${AWS_REGION}
+
+
+aws cloudtrail put-event-selectors --trail-name TrailName --region ${AWS_REGION} \
+--advanced-event-selectors \
+'[
+    {
+            "Name": "S3EventSelector",
+            "FieldSelectors": [
+                { "Field": "eventCategory", "Equals": ["Data"] },
+                { "Field": "resources.type", "Equals": ["AWS::S3::Object"] },
+                { "Field": "resources.ARN", "Equals":  ["arn:aws:s3:::foo-bucket"] }
+            ]
+        }
+]'
+
+```
+
+## Cloudwatch
+
+```bash
+# AWS Get Log Events
+aws logs get-log-events --log-group-name my-logs --log-stream-name 20210802
+```
+
+## Databases
+
+#### Describe
+
+```bash
+aws rds describe-db-clusters | jq '.DBClusters[] | select(.EngineVersion | contains("9.6")) | { name: .DBClusterIdentifier, version: .EngineVersion }'
+
+aws rds describe-db-engine-versions --engine postgres | grep -A 1 AutoUpgrade| grep -A 2 true |grep PostgreSQL | sort --unique | sed -e 's/"Description": "//g'
+
+aws rds download-db-log-file-portion \
+	--db-instance-identifier foobar-db \
+	--log-file-name error/postgresql.log.2021-01-01 \
+	--output text > tail.txt
+```
+
+## Inspector
+
+#### Tips
+
+`https://awsclibuilder.com/home/services/inspector`
+
+#### List ( with a max )
+
+```bash
+aws inspector list-findings --max-items 10
+aws inspector list-findings --max-items 10 --region eu-west-1 --output table
+aws inspector list-findings --max-items 10 --region eu-west-1 --output json | jq .
+```
+
+#### List Assessment Runs
+
+``` bash
+aws inspector list-assessment-runs --max-items=10
+```
+
+#### Describe finding
+
+`aws inspector describe-findings --finding-arns arn:aws:inspector:eu-west-2:......./finding/0-6xxxxxxx`
+
+## ec2
+
+```bash
+aws ec2 describe-vpc-endpoint-services
+aws --profile saml ec2 describe-instances --region ${AWS_REGION}
+```
+
 #### Query with Python Boto3
 
 ##### Boto3 get a single Item
@@ -395,6 +442,16 @@ aws athena list-table-metadata \
     --database-name sampledb \
     --max-items 2 \
     --region=us-east-2
+
+SELECT *
+FROM "foobar_logs_test_env"
+WHERE dt < '2021/9/13'
+ AND dt > '2021/9/12'
+ AND zoneid = 'ffffff'
+ AND originip = '120.120.120.120'
+LIMIT 10
+
+
 ```
 
 ## Tips
@@ -502,7 +559,9 @@ saml2aws configure --session-duration 7200
 #### IAM account summary
 
 ```bash
+aws organizations list-accounts 
 aws iam get-account-summary
+aws iam list-roles
 ```
 
 #### Best practices
@@ -573,8 +632,7 @@ aws configure --profile mfa set source_profile default
 aws configure --profile mfa set role_arn arn:aws:iam::400000000000:user/rm_lite
 aws configure --profile mfa set duration_seconds 3600
 aws configure --profile mfa set mfa_serial arn:aws:iam::400000000000:mfa/rm_lite
-aws s3 ls --profile mfa
-# Enter MFA code for arn:aws:iam::________
+aws configure set aws_session_token dd --profile jd
 
 aws iam list-users --profile mfa 
 # Enter MFA code for arn:aws:iam::________
