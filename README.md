@@ -20,6 +20,7 @@
 - [Container Registry](#container-registry)
 - [Deploy AWS Infrastructure as Code IaC](#deploy-aws-infrastructure-as-code-iac)
 - [Proxy AWS CLI traffic](#proxy-aws-cli-traffic)
+- [Secrets Manager](#secrets-manager)
 - [SSM Parameter Store](#ssm-parameter-store)
 
 <!-- /TOC -->
@@ -41,46 +42,54 @@ aws iam get-user
 
 ```bash
 # list
-aws s3 ls s3://mybucket
+export BUCKET=s3://mybucket
+aws s3 ls ${BUCKET}
 
 # list with subfolders
-aws s3 ls s3://mybucket --recursive
-aws s3 ls s3://mybucket --recursive --human-readable --summarize
+aws s3 ls ${BUCKET}--recursive
+aws s3 ls ${BUCKET} --recursive --human-readable --summarize
 
 # Enter MFA code for arn:aws:iam::________
 aws s3 ls --profile mfa
 
 # copy everything in bucket
-aws s3 cp s3://foos-bucket ./ --recursive
+aws s3 cp ${BUCKET} ./ --recursive
 
 # check if bucket is public
-aws s3api get-bucket-policy-status --bucket foos-bucket 
+aws s3api get-bucket-policy-status --bucket ${BUCKET}
 
 # bucket location
-aws s3api get-bucket-location --bucket mybucket
+aws s3api get-bucket-location --bucket ${BUCKET}
 
 # check if I can pull a file from sub-folder
-aws s3 cp s3://foos-bucket /images/boo.jpg
+aws s3 cp ${BUCKET} /images/boo.jpg
 
 # Copy to bucket
-aws s3 cp test.txt s3://mybucket/test2.txt
+aws s3 cp test.txt ${BUCKET}
 
 # Copy to local
-AWS s3 cp s3://mybucket/test2.txt poc
+AWS s3 cp ${BUCKET} poc
+
+# Copy and print to stdout
+aws s3 cp ${BUCKET}/file.txt /dev/stdout
 
 # Delete from bucket
-aws s3 rm s3://mybucket/test2.txt
+aws s3 rm ${BUCKET}/test2.txt
 
 # Delete bucket
-aws s3 rb s3://mybucket/test2.txt
+aws s3 rb ${BUCKET}
 
 # Find owner of Object
-aws s3api get-object-acl --bucket mybucket --key poc
-aws s3api get-bucket-acl --bucket mybucket
+aws s3api get-object-acl --bucket ${BUCKET} --key poc
+aws s3api get-bucket-acl --bucket ${BUCKET}
 
 # Get Bucket Policy
-aws s3api get-bucket-policy --bucket DOC-EXAMPLE-BUCKET1 --expected-bucket-owner 111122223333
+aws s3api get-bucket-policy --bucket ${BUCKET} --expected-bucket-owner 111122223333
 ```
+
+### Read compressed json file from s3
+
+`cat compressed.ndjson| zcat`
 
 ## dynamodb
 
@@ -390,8 +399,14 @@ aws inspector list-assessment-runs --max-items=10
 ## ec2
 
 ```bash
+# regex or wildcard
 aws ec2 describe-vpc-endpoint-services
+
+# regex or wildcard
 aws --profile saml ec2 describe-instances --region ${AWS_REGION}
+
+# regex or wildcard
+aws ec2 describe-images --filters 'Name=name,Values="*"'
 ```
 
 #### Query with Python Boto3
@@ -989,6 +1004,19 @@ terraform output public_ip
 #### Set CLI not to verify the server's Certificate Chain
 
 `aws sts get-caller-identity --no-verify-ssl`
+
+## Secrets Manager
+
+```bash
+#get list of Secret Names ( not the actual secret string )
+aws secretsmanager list-secrets \                     
+    --filters Key=name,Values=secret/in/aws
+
+#get Secret value
+aws secretsmanager get-secret-value --secret-id ${NAME_OF_SECRET}
+
+
+```
 
 ## SSM Parameter Store
 
