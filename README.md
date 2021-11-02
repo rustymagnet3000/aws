@@ -551,6 +551,12 @@ Default output format [None]: json
 brew install awscli
 brew install saml2aws
 saml2aws --version
+
+saml2aws configure
+Select provider ( like Google )
+URL: enter URL of Identity Provider
+Username: email known to Identity Provider
+Password: Password associated to email
 ```
 
 #### Day-2-Day use
@@ -577,6 +583,19 @@ saml2aws configure --session-duration 7200
 aws organizations list-accounts 
 aws iam get-account-summary
 aws iam list-roles
+```
+
+#### Roles and Policies
+
+```bash
+# Just look for Role Names in Accounts
+aws iam list-roles | grep RoleName
+
+# Policies attached to roles
+aws iam list-attached-role-policies --role-name ${ROLE_NAME}
+
+# List permissions underneath a Role
+aws iam get-policy  --policy-arn ${POLICY_ARN}
 ```
 
 #### Best practices
