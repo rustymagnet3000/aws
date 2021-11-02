@@ -594,8 +594,14 @@ aws iam list-roles | grep RoleName
 # Policies attached to roles
 aws iam list-attached-role-policies --role-name ${ROLE_NAME}
 
-# List permissions underneath a Role
+# List overview of Policy
 aws iam get-policy  --policy-arn ${POLICY_ARN}
+
+# List versions of Policy
+aws iam list-policy-versions --policy-arn ${POLICY_ARN}
+
+# List Permissions of a specific Policy version
+aws iam get-policy-version  --policy-arn ${POLICY_ARN} --version-id=v4
 ```
 
 #### Best practices
