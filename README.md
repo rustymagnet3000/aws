@@ -568,8 +568,14 @@ saml2aws login
 # check if logged in
 eval $(saml2aws script)     
 
-# Kick off previous session
+# Debugging info
 saml2aws login --verbose
+
+# Kick off previous session
+saml2aws login --force
+
+# skip prompts for username and password
+saml2aws login --skip-prompt
 
 # Reset configuration with 2 hour expiry
 saml2aws configure --session-duration 7200
