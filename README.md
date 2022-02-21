@@ -16,10 +16,11 @@
 - [saml2aws](#saml2aws)
 - [IAM](#iam)
 - [Create lambda](#create-lambda)
+- [Invoke Lambda](#invoke-lambda)
 - [Keys](#keys)
 - [Container Registry](#container-registry)
-- [Deploy AWS Infrastructure as Code IaC](#deploy-aws-infrastructure-as-code-iac)
 - [Proxy AWS CLI traffic](#proxy-aws-cli-traffic)
+- [Secrets Manager](#secrets-manager)
 - [SSM Parameter Store](#ssm-parameter-store)
 
 <!-- /TOC -->
@@ -41,46 +42,54 @@ aws iam get-user
 
 ```bash
 # list
-aws s3 ls s3://mybucket
+export BUCKET=s3://mybucket
+aws s3 ls ${BUCKET}
 
 # list with subfolders
-aws s3 ls s3://mybucket --recursive
-aws s3 ls s3://mybucket --recursive --human-readable --summarize
+aws s3 ls ${BUCKET}--recursive
+aws s3 ls ${BUCKET} --recursive --human-readable --summarize
 
 # Enter MFA code for arn:aws:iam::________
 aws s3 ls --profile mfa
 
 # copy everything in bucket
-aws s3 cp s3://foos-bucket ./ --recursive
+aws s3 cp ${BUCKET} ./ --recursive
 
 # check if bucket is public
-aws s3api get-bucket-policy-status --bucket foos-bucket 
+aws s3api get-bucket-policy-status --bucket ${BUCKET}
 
 # bucket location
-aws s3api get-bucket-location --bucket mybucket
+aws s3api get-bucket-location --bucket ${BUCKET}
 
 # check if I can pull a file from sub-folder
-aws s3 cp s3://foos-bucket /images/boo.jpg
+aws s3 cp ${BUCKET} /images/boo.jpg
 
 # Copy to bucket
-aws s3 cp test.txt s3://mybucket/test2.txt
+aws s3 cp test.txt ${BUCKET}
 
 # Copy to local
-AWS s3 cp s3://mybucket/test2.txt poc
+AWS s3 cp ${BUCKET} poc
+
+# Copy and print to stdout
+aws s3 cp ${BUCKET}/file.txt /dev/stdout
 
 # Delete from bucket
-aws s3 rm s3://mybucket/test2.txt
+aws s3 rm ${BUCKET}/test2.txt
 
 # Delete bucket
-aws s3 rb s3://mybucket/test2.txt
+aws s3 rb ${BUCKET}
 
 # Find owner of Object
-aws s3api get-object-acl --bucket mybucket --key poc
-aws s3api get-bucket-acl --bucket mybucket
+aws s3api get-object-acl --bucket ${BUCKET} --key poc
+aws s3api get-bucket-acl --bucket ${BUCKET}
 
 # Get Bucket Policy
-aws s3api get-bucket-policy --bucket DOC-EXAMPLE-BUCKET1 --expected-bucket-owner 111122223333
+aws s3api get-bucket-policy --bucket ${BUCKET} --expected-bucket-owner 111122223333
 ```
+
+### Read compressed json file from s3
+
+`cat compressed.ndjson| zcat`
 
 ## dynamodb
 
@@ -292,7 +301,6 @@ Inside of the `expression_attributes.json` file:
 }
 ```
 
-
 ## Cloudtrail
 
 ```bash
@@ -390,8 +398,14 @@ aws inspector list-assessment-runs --max-items=10
 ## ec2
 
 ```bash
+# regex or wildcard
 aws ec2 describe-vpc-endpoint-services
+
+# regex or wildcard
 aws --profile saml ec2 describe-instances --region ${AWS_REGION}
+
+# regex or wildcard
+aws ec2 describe-images --filters 'Name=name,Values="*"'
 ```
 
 #### Query with Python Boto3
@@ -536,6 +550,12 @@ Default output format [None]: json
 brew install awscli
 brew install saml2aws
 saml2aws --version
+
+saml2aws configure
+Select provider ( like Google )
+URL: enter URL of Identity Provider
+Username: email known to Identity Provider
+Password: Password associated to email
 ```
 
 #### Day-2-Day use
@@ -547,8 +567,14 @@ saml2aws login
 # check if logged in
 eval $(saml2aws script)     
 
-# Kick off previous session
+# Debugging info
 saml2aws login --verbose
+
+# Kick off previous session
+saml2aws login --force
+
+# skip prompts for username and password
+saml2aws login --skip-prompt
 
 # Reset configuration with 2 hour expiry
 saml2aws configure --session-duration 7200
@@ -562,6 +588,25 @@ saml2aws configure --session-duration 7200
 aws organizations list-accounts 
 aws iam get-account-summary
 aws iam list-roles
+```
+
+#### Roles and Policies
+
+```bash
+# Just look for Role Names in Accounts
+aws iam list-roles | grep RoleName
+
+# Policies attached to roles
+aws iam list-attached-role-policies --role-name ${ROLE_NAME}
+
+# List overview of Policy
+aws iam get-policy  --policy-arn ${POLICY_ARN}
+
+# List versions of Policy
+aws iam list-policy-versions --policy-arn ${POLICY_ARN}
+
+# List Permissions of a specific Policy version
+aws iam get-policy-version  --policy-arn ${POLICY_ARN} --version-id=v4
 ```
 
 #### Best practices
@@ -790,9 +835,39 @@ aws lambda update-function-code \
     --environment Variables={LD_LIBRARY_PATH=/usr/bin/test/lib64}
 ```
 
-### Invoke
+## Invoke Lambda
 
 ```bash
+# simplest
+aws lambda invoke \
+    --function-name foobar \
+    --payload $(echo "{\"foo\":\"bar\"}" | base64) \
+    out.txt
+
+# synchronous without Base64 encoding
+# Change the default timeout ( 3 seconds ) to avoid hard to debug errors
+aws lambda invoke \
+    --function-name foobar \
+    --cli-binary-format raw-in-base64-out \
+    --payload '{"foo":"bar"}' \            
+    out.json
+
+# Debug
+aws --debug lambda invoke \
+    --function-name foobar \
+    --cli-binary-format raw-in-base64-out \
+    --payload '{"foo":"bar"}' \
+    out.json
+
+# To invoke a function asynchronously, set InvocationType to Event
+
+aws lambda invoke out.txt \
+    --function-name foobar \
+    --invocation-type Event \
+    --payload $(echo "{\"foo\":\"bar\"}" | base64)
+
+
+# more complicated
 aws lambda invoke out.txt \
     --function-name MyPyLambdaFunction \
     --log-type Tail \
@@ -809,24 +884,6 @@ aws lambda invoke out.txt \
     --query 'LogResult' \
     --output text |  base64 -d
 ```
-
-### Invoke with inline json ( BROKEN )
-
-```bash
-aws lambda invoke out.txt \
-    --function-name MyPyLambdaFunction \
-    --invocation-type Event \
-    --cli-binary-format raw-in-base64-out \
-    --payload $(echo "{\"foo\":\"bar\"}" | base64)
-```
-
-#### Payload from file ( BROKEN )
-
-aws lambda invoke out.txt \
-    --function-name MyPyLambdaFunction \
-    --invocation-type Event \
-    --cli-binary-format raw-in-base64-out \
-    --payload file://input.json
 
 ## Keys
 
@@ -969,26 +1026,22 @@ aws ecr get-login-password \
 
 `$(aws ecr get-login --registry-ids ${REG_ID} --no-include-email)`
 
-## Deploy AWS Infrastructure as Code (IaC)
-
-Great intro to writing [AWS Terraform files](https://blog.gruntwork.io/an-introduction-to-terraform-f17df9c6d180):
-
-```terraform
-brew upgrade hashicorp/tap/terraform
-terraform --version
-terraform -install-autocomplete
-terraform init
-terraform plan
-terraform apply
-terraform output
-terraform output public_ip
-```
-
 ## Proxy AWS CLI traffic
 
 #### Set CLI not to verify the server's Certificate Chain
 
 `aws sts get-caller-identity --no-verify-ssl`
+
+## Secrets Manager
+
+```bash
+#get list of Secret Names ( not the actual secret string )
+aws secretsmanager list-secrets \                     
+    --filters Key=name,Values=secret/in/aws
+
+#get Secret value
+aws secretsmanager get-secret-value --secret-id ${NAME_OF_SECRET}
+```
 
 ## SSM Parameter Store
 
