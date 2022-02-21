@@ -16,9 +16,9 @@
 - [saml2aws](#saml2aws)
 - [IAM](#iam)
 - [Create lambda](#create-lambda)
+- [Invoke Lambda](#invoke-lambda)
 - [Keys](#keys)
 - [Container Registry](#container-registry)
-- [Deploy AWS Infrastructure as Code IaC](#deploy-aws-infrastructure-as-code-iac)
 - [Proxy AWS CLI traffic](#proxy-aws-cli-traffic)
 - [Secrets Manager](#secrets-manager)
 - [SSM Parameter Store](#ssm-parameter-store)
@@ -300,7 +300,6 @@ Inside of the `expression_attributes.json` file:
    ":email": {"S": "alice.bob@example.com"}
 }
 ```
-
 
 ## Cloudtrail
 
@@ -836,9 +835,39 @@ aws lambda update-function-code \
     --environment Variables={LD_LIBRARY_PATH=/usr/bin/test/lib64}
 ```
 
-### Invoke
+## Invoke Lambda
 
 ```bash
+# simplest
+aws lambda invoke \
+    --function-name foobar \
+    --payload $(echo "{\"foo\":\"bar\"}" | base64) \
+    out.txt
+
+# synchronous without Base64 encoding
+# Change the default timeout ( 3 seconds ) to avoid hard to debug errors
+aws lambda invoke \
+    --function-name foobar \
+    --cli-binary-format raw-in-base64-out \
+    --payload '{"foo":"bar"}' \            
+    out.json
+
+# Debug
+aws --debug lambda invoke \
+    --function-name foobar \
+    --cli-binary-format raw-in-base64-out \
+    --payload '{"foo":"bar"}' \
+    out.json
+
+# To invoke a function asynchronously, set InvocationType to Event
+
+aws lambda invoke out.txt \
+    --function-name foobar \
+    --invocation-type Event \
+    --payload $(echo "{\"foo\":\"bar\"}" | base64)
+
+
+# more complicated
 aws lambda invoke out.txt \
     --function-name MyPyLambdaFunction \
     --log-type Tail \
@@ -855,24 +884,6 @@ aws lambda invoke out.txt \
     --query 'LogResult' \
     --output text |  base64 -d
 ```
-
-### Invoke with inline json ( BROKEN )
-
-```bash
-aws lambda invoke out.txt \
-    --function-name MyPyLambdaFunction \
-    --invocation-type Event \
-    --cli-binary-format raw-in-base64-out \
-    --payload $(echo "{\"foo\":\"bar\"}" | base64)
-```
-
-#### Payload from file ( BROKEN )
-
-aws lambda invoke out.txt \
-    --function-name MyPyLambdaFunction \
-    --invocation-type Event \
-    --cli-binary-format raw-in-base64-out \
-    --payload file://input.json
 
 ## Keys
 
@@ -1015,21 +1026,6 @@ aws ecr get-login-password \
 
 `$(aws ecr get-login --registry-ids ${REG_ID} --no-include-email)`
 
-## Deploy AWS Infrastructure as Code (IaC)
-
-Great intro to writing [AWS Terraform files](https://blog.gruntwork.io/an-introduction-to-terraform-f17df9c6d180):
-
-```terraform
-brew upgrade hashicorp/tap/terraform
-terraform --version
-terraform -install-autocomplete
-terraform init
-terraform plan
-terraform apply
-terraform output
-terraform output public_ip
-```
-
 ## Proxy AWS CLI traffic
 
 #### Set CLI not to verify the server's Certificate Chain
@@ -1045,8 +1041,6 @@ aws secretsmanager list-secrets \
 
 #get Secret value
 aws secretsmanager get-secret-value --secret-id ${NAME_OF_SECRET}
-
-
 ```
 
 ## SSM Parameter Store
