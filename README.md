@@ -366,9 +366,17 @@ aws ecr describe-repositories
 # set Group Name
 export GROUP_NAME=/aws/lambda/foo
 
-# AWS Get Log Events
-aws logs get-log-events --log-group-name ${GROUP_NAME} --log-stream-name 20210802
+# Get log-stream names that start with 2022
+aws logs describe-log-streams --log-group-name ${GROUP_NAME} --log-stream-name-prefix 2022
 
+# Get all Log Streams most recent first
+aws logs describe-log-streams --log-group-name ${GROUP_NAME} --log-stream-name-prefix 2022 --descending
+
+# Get latest Log Stream
+aws logs describe-log-streams --log-group-name ${GROUP_NAME} --log-stream-name-prefix 2022 --descending --max-items 1
+
+# Get Logs
+aws logs get-log-events --log-group-name ${GROUP_NAME} --log-stream-name "2022/03/17/xxxxx"
 
 # real-time watch logs
 aws logs tail /aws/lambda/foolambda --follow
@@ -616,7 +624,6 @@ saml2aws configure --session-duration 7200
 Great [AWS article](https://aws-blog.de/2021/08/iam-what-happens-when-you-assume-a-role.html)
 
 > authentication (principals) and authorization (policies)
-
 
 #### IAM account summary
 
