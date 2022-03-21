@@ -6,6 +6,7 @@
 - [s3](#s3)
 - [dynamodb](#dynamodb)
 - [Cloudtrail](#cloudtrail)
+- [Container Registry  ECR](#container-registry--ecr)
 - [Cloudwatch](#cloudwatch)
 - [Databases](#databases)
 - [Inspector](#inspector)
@@ -349,11 +350,39 @@ aws cloudtrail put-event-selectors --trail-name TrailName --region ${AWS_REGION}
 
 ```
 
+## Container Registry ( ECR )
+
+```bash
+# Describe Registry
+aws ecr describe-registry
+
+# Describe repositories
+aws ecr describe-repositories
+```
+
 ## Cloudwatch
 
 ```bash
+# set Group Name
+export GROUP_NAME=/aws/lambda/foo
+
 # AWS Get Log Events
-aws logs get-log-events --log-group-name my-logs --log-stream-name 20210802
+aws logs get-log-events --log-group-name ${GROUP_NAME} --log-stream-name 20210802
+
+
+# real-time watch logs
+aws logs tail /aws/lambda/foolambda --follow
+
+# Tail.  More readable, filtered and only last three hours
+aws logs \
+    tail ${GROUP_NAME} \
+    --follow \
+    --format short \
+    --filter-pattern "Security" \
+    --since 3h
+
+# AWS web interface go to: CloudWatch/Log groups
+/aws/lambda/foobar
 ```
 
 ## Databases
@@ -581,6 +610,13 @@ saml2aws configure --session-duration 7200
 ```
 
 ## IAM
+
+### Assume Roles
+
+Great [AWS article](https://aws-blog.de/2021/08/iam-what-happens-when-you-assume-a-role.html)
+
+> authentication (principals) and authorization (policies)
+
 
 #### IAM account summary
 
