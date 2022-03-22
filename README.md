@@ -7,6 +7,8 @@
 - [dynamodb](#dynamodb)
 - [Cloudtrail](#cloudtrail)
 - [Container Registry  ECR](#container-registry--ecr)
+- [Simple Notification Service  SNS](#simple-notification-service--sns)
+- [Elasticache  Redis](#elasticache--redis)
 - [Cloudwatch](#cloudwatch)
 - [Databases](#databases)
 - [Inspector](#inspector)
@@ -358,6 +360,28 @@ aws ecr describe-registry
 
 # Describe repositories
 aws ecr describe-repositories
+```
+
+## Simple Notification Service ( SNS )
+
+```bash
+# list topics
+aws sns list-topics
+
+```
+
+## Elasticache ( Redis )
+
+```bash
+# get Redis versions
+aws elasticache describe-cache-engine-versions \
+    --engine "Redis"
+
+# get 5 clusters
+aws elasticache describe-cache-clusters --max-items 5
+
+# list topics
+aws elasticache describe-cache-clusters --cache-cluster-id ${CLUSTER_ID} 
 ```
 
 ## Cloudwatch
