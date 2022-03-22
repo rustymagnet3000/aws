@@ -157,25 +157,19 @@ aws dynamodb list-tables --endpoint-url http://localhost:8000
 #### List table and fields
 
 ```bash
-export AWS_DEFAULT_REGION=us-east-x
+# list Tables
 aws dynamodb list-tables
-```
 
-#### Describe endpoints using DynamoDB
+# Describe endpoints using DynamoDB
+aws ec2 describe-vpc-endpoint-services | grep -i dynamo
 
-`aws ec2 describe-vpc-endpoint-services | grep -i dynamo`
+# Describe table
+aws dynamodb describe-table   --table-name footable
 
-#### Describe table
+# Read table
+aws dynamodb scan --table-name footable
 
-`aws dynamodb describe-table   --table-name footable`
-
-#### Read table
-
-`aws dynamodb scan --table-name footable`
-
-#### Create table
-
-```bash
+# Create table
 aws dynamodb create-table \
     --table-name DELETEme \
     --attribute-definitions \
@@ -187,6 +181,9 @@ aws dynamodb create-table \
     --provisioned-throughput \
         ReadCapacityUnits=1,WriteCapacityUnits=1 \
     --endpoint-url http://localhost:8000
+
+# delete table
+aws dynamodb delete-table --table-name DELETEme
 ```
 
 #### Replicate a DynamoDB table locally
@@ -303,6 +300,38 @@ Inside of the `expression_attributes.json` file:
    ":email": {"S": "alice.bob@example.com"}
 }
 ```
+
+#### Query with Python Boto3
+
+##### Boto3 get a single Item
+
+```python
+        response = table.query(
+            KeyConditionExpression=Key('partition').eq('xxxxxxxx')
+        )
+```
+
+##### Boto3 get all columns where email matches
+
+```python
+from boto3.dynamodb.conditions import Key, And, Attr
+    response = table.scan(
+        FilterExpression=Attr("email").eq(entered_email)
+    )
+```
+
+##### Boto3 get email, name, age column where email matches
+
+```python
+response = table.scan(
+    FilterExpression=Attr("email").eq(email),
+    ProjectionExpression="email, name, age"
+)
+```
+
+#### DynamoDB reserved words
+
+[reserved words](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ReservedWords.html).
 
 ## Cloudtrail
 
@@ -468,44 +497,6 @@ aws --profile saml ec2 describe-instances --region ${AWS_REGION}
 # regex or wildcard
 aws ec2 describe-images --filters 'Name=name,Values="*"'
 ```
-
-#### Query with Python Boto3
-
-##### Boto3 get a single Item
-
-```python
-        response = table.query(
-            KeyConditionExpression=Key('partition').eq('xxxxxxxx')
-        )
-```
-
-##### Boto3 get all columns where email matches
-
-```python
-
-from boto3.dynamodb.conditions import Key, And, Attr
-
-        response = table.scan(
-            FilterExpression=Attr("email").eq(entered_email)
-        )
-```
-
-##### Boto3 get email, name, age column where email matches
-
-```python
-        response = table.scan(
-            FilterExpression=Attr("email").eq(email),
-            ProjectionExpression="email, name, age"
-        )
-```
-
-#### Delete table
-
-`aws dynamodb delete-table --table-name DELETEme`
-
-#### Reserved Words
-
-[reserved words](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ReservedWords.html).
 
 ## Athena
 
