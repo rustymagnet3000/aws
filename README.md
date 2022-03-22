@@ -6,6 +6,9 @@
 - [s3](#s3)
 - [dynamodb](#dynamodb)
 - [Cloudtrail](#cloudtrail)
+- [Container Registry  ECR](#container-registry--ecr)
+- [Simple Notification Service  SNS](#simple-notification-service--sns)
+- [Elasticache  Redis](#elasticache--redis)
 - [Cloudwatch](#cloudwatch)
 - [Databases](#databases)
 - [Inspector](#inspector)
@@ -349,11 +352,69 @@ aws cloudtrail put-event-selectors --trail-name TrailName --region ${AWS_REGION}
 
 ```
 
+## Container Registry ( ECR )
+
+```bash
+# Describe Registry
+aws ecr describe-registry
+
+# Describe repositories
+aws ecr describe-repositories
+```
+
+## Simple Notification Service ( SNS )
+
+```bash
+# list topics
+aws sns list-topics
+
+```
+
+## Elasticache ( Redis )
+
+```bash
+# get Redis versions
+aws elasticache describe-cache-engine-versions \
+    --engine "Redis"
+
+# get 5 clusters
+aws elasticache describe-cache-clusters --max-items 5
+
+# list topics
+aws elasticache describe-cache-clusters --cache-cluster-id ${CLUSTER_ID} 
+```
+
 ## Cloudwatch
 
 ```bash
-# AWS Get Log Events
-aws logs get-log-events --log-group-name my-logs --log-stream-name 20210802
+# set Group Name
+export GROUP_NAME=/aws/lambda/foo
+
+# Get log-stream names that start with 2022
+aws logs describe-log-streams --log-group-name ${GROUP_NAME} --log-stream-name-prefix 2022
+
+# Get all Log Streams most recent first
+aws logs describe-log-streams --log-group-name ${GROUP_NAME} --log-stream-name-prefix 2022 --descending
+
+# Get latest Log Stream
+aws logs describe-log-streams --log-group-name ${GROUP_NAME} --log-stream-name-prefix 2022 --descending --max-items 1
+
+# Get Logs
+aws logs get-log-events --log-group-name ${GROUP_NAME} --log-stream-name "2022/03/17/xxxxx"
+
+# real-time watch logs
+aws logs tail /aws/lambda/foolambda --follow
+
+# Tail.  More readable, filtered and only last three hours
+aws logs \
+    tail ${GROUP_NAME} \
+    --follow \
+    --format short \
+    --filter-pattern "Security" \
+    --since 3h
+
+# AWS web interface go to: CloudWatch/Log groups
+/aws/lambda/foobar
 ```
 
 ## Databases
@@ -581,6 +642,12 @@ saml2aws configure --session-duration 7200
 ```
 
 ## IAM
+
+### Assume Roles
+
+Great [AWS article](https://aws-blog.de/2021/08/iam-what-happens-when-you-assume-a-role.html)
+
+> authentication (principals) and authorization (policies)
 
 #### IAM account summary
 
