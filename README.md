@@ -44,13 +44,19 @@ aws iam get-user
 ## s3
 
 ```bash
+export BUCKET_NAME=mybucket  
+export BUCKET_URI=export BUCKET=s3://mybucket
+export BUCKET_HTTP=https://mybucket.eu-west-2.amazonaws.com
+
 # list
-export BUCKET=s3://mybucket
-aws s3 ls ${BUCKET}
+aws s3 ls ${BUCKET_NAME}
+
+# list without credentials / owning that bucket
+aws s3 --endpoint-url ${BUCKET_HTTP} ls
 
 # list with subfolders
-aws s3 ls ${BUCKET}--recursive
-aws s3 ls ${BUCKET} --recursive --human-readable --summarize
+aws s3 ls ${BUCKET_URI}--recursive
+aws s3 ls ${BUCKET_URI} --recursive --human-readable --summarize
 
 # Enter MFA code for arn:aws:iam::________
 aws s3 ls --profile mfa
@@ -71,7 +77,8 @@ aws s3 cp ${BUCKET} /images/boo.jpg
 aws s3 cp test.txt ${BUCKET}
 
 # Copy to local
-AWS s3 cp ${BUCKET} poc
+AWS s3 cp ${BUCKET_URI} poc
+aws s3 cp ${BUCKET_URI}/404.html/index.html .
 
 # Copy and print to stdout
 aws s3 cp ${BUCKET}/file.txt /dev/stdout
@@ -83,11 +90,20 @@ aws s3 rm ${BUCKET}/test2.txt
 aws s3 rb ${BUCKET}
 
 # Find owner of Object
-aws s3api get-object-acl --bucket ${BUCKET} --key poc
-aws s3api get-bucket-acl --bucket ${BUCKET}
+aws s3api get-object-acl --bucket ${BUCKET_NAME} --key service-worker.js
+aws s3api get-bucket-acl --bucket ${BUCKET_NAME}
+
+# Add directory remotely
+aws s3api put-object --bucket ${BUCKET_NAME} --key foo/ --region "eu-west-1"
+# add directory and file remotely
+aws s3api put-object --bucket ${BUCKET_NAME} --key foo/foo.js --body foo.js
 
 # Get Bucket Policy
 aws s3api get-bucket-policy --bucket ${BUCKET} --expected-bucket-owner 111122223333
+
+# Get Bucket Ownership controls
+aws s3api get-bucket-ownership-controls --bucket ${BUCKET_NAME}
+
 ```
 
 ### Read compressed json file from s3
@@ -1093,9 +1109,18 @@ aws ecr get-login-password \
 ## Secrets Manager
 
 ```bash
-#get list of Secret Names ( not the actual secret string )
-aws secretsmanager list-secrets \                     
-    --filters Key=name,Values=secret/in/aws
+# list of Secret Names ( not the actual secret string )
+aws secretsmanager list-secrets
+aws secretsmanager list-secrets --filters Key=name,Values=secret/in/aws
+
+# list Version IDs of Secret
+aws secretsmanager list-secret-version-ids --secret-id ${SECRET_ID}
+
+# describe secret
+aws secretsmanager describe-secret --secret-id ${SECRET_ID}
+
+# Delete secret permanently ( not possible via UI )
+aws secretsmanager delete-secret --secret-id ${SECRET_ID} --force-delete-without-recovery
 
 #get Secret value
 aws secretsmanager get-secret-value --secret-id ${NAME_OF_SECRET}
