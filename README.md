@@ -18,12 +18,14 @@
 - [CLI](#cli)
 - [saml2aws](#saml2aws)
 - [IAM](#iam)
-- [Create lambda](#create-lambda)
+- [lambda](#lambda)
 - [Invoke Lambda](#invoke-lambda)
 - [Keys](#keys)
 - [Container Registry](#container-registry)
 - [Proxy AWS CLI traffic](#proxy-aws-cli-traffic)
 - [Secrets Manager](#secrets-manager)
+- [Elastic Container Service  ECS](#elastic-container-service--ecs)
+- [SSM Sessions](#ssm-sessions)
 - [SSM Parameter Store](#ssm-parameter-store)
 
 <!-- /TOC -->
@@ -667,11 +669,27 @@ aws iam list-roles
 #### Roles and Policies
 
 ```bash
-# Just look for Role Names in Accounts
-aws iam list-roles | grep RoleName
+# List Roles with certain Prefix
+# only useful if roles created with Paths
+aws iam list-roles --path-prefix /aws-service-role/
 
-# Policies attached to roles
+# Role policies attached to a single role
 aws iam list-attached-role-policies --role-name ${ROLE_NAME}
+
+# Group policies attached to roles
+aws iam list-attached-group-policies --group-name Admins
+
+# Test which policy allows an action
+aws iam simulate-principal-policy --action-names "sqs:Receivemessage" --policy-source-arn ${ROLE_ARN}
+
+# Test multiple actions
+aws iam simulate-principal-policy \
+    --action-names \
+        "sqs:Receivemessage" \
+        "ssm:GetSecretValue" \
+        "iam:CreateUser" \
+        "lambda:InvokeFunction" \
+    --policy-source-arn ${ROLE_ARN}
 
 # List overview of Policy
 aws iam get-policy  --policy-arn ${POLICY_ARN}
@@ -681,6 +699,14 @@ aws iam list-policy-versions --policy-arn ${POLICY_ARN}
 
 # List Permissions of a specific Policy version
 aws iam get-policy-version  --policy-arn ${POLICY_ARN} --version-id=v4
+
+# List Policies that might impact organization
+# might require the Root org
+aws organizations list-policies --filter SERVICE_CONTROL_POLICY
+
+# list IAM Groups
+aws iam list-groups
+
 ```
 
 #### Best practices
@@ -833,14 +859,20 @@ done
 
 [IAM Security Best Practices](https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html)
 
-## Create lambda
+## lambda
 
 ### Info
 
 ```bash
+# list 10 lambdas available in region and account, if any 
 aws lambda list-functions --max-items 10
-aws lambda get-function --function-name MyPyLambdaFunction
-aws lambda get-function-configuration --function-name MyPyLambdaFunction
+
+# get all env variables and settings ( memory, timeouts, ARNs )
+aws lambda get-function-configuration --function-name ${FUNCTION_NAME}
+
+# same as configuration + info on where the code is located and Tags
+aws lambda get-function --function-name ${FUNCTION_NAME}
+
 ```
 
 ### Create role
@@ -1124,6 +1156,39 @@ aws secretsmanager delete-secret --secret-id ${SECRET_ID} --force-delete-without
 
 #get Secret value
 aws secretsmanager get-secret-value --secret-id ${NAME_OF_SECRET}
+```
+
+## Elastic Container Service ( ECS )
+
+```bash
+
+# list clusters
+aws ecs list-clusters
+
+# list services
+aws ecs list-services --cluster ${CLUSTER_NAME}
+
+# list container ARNs
+aws ecs list-container-instances --cluster ${CLUSTER_NAME}
+
+# list open ports, arns
+aws ecs describe-container-instances \
+    --cluster ${CLUSTER_NAME} \
+    --container-instances ${CONTAINER_INSTANCE_ID}
+```
+
+## SSM Sessions
+
+```bash
+export encodedCommands=$(echo "bash" | base64)
+export ecsInstanceId="i-xxxx"
+# the 64-char Container Runtime ID
+export containerId="xxxx"
+
+aws ssm start-session \
+    --target $ecsInstanceId \
+    --document-name someDoc \
+    --parameters command="$encodedCommands",container="$containerId"
 ```
 
 ## SSM Parameter Store
