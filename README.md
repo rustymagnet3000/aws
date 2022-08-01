@@ -269,10 +269,10 @@ aws dynamodb query \
         --table-name DELETEme \
         --key file://key.json \
         --return-consumed-capacity TOTAL
+# key.json
 ```
 
 ```json
-// key.json
 {
     "Name": {"S": "Alice"},
     "Age": {"N": "99"}
@@ -283,16 +283,16 @@ aws dynamodb query \
 
 Only attributes of the desired item:
 
-```json
+```bash
 aws dynamodb get-item \
     --table-name DELETEme \
     --key '{"Name": {"S": "Bob"},"Age": {"N": "77"}}' \
     --projection-expression "#A, #N" \
     --expression-attribute-names file://names.json
+# names.json
 ```
 
 ```json
-// names.json
 {
     "#N": "Name",
     "#A": "Age"
