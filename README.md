@@ -36,6 +36,9 @@
 # Get ARN, UserId and Account
 aws sts get-caller-identity
 
+# Get account info
+aws organizations describe-account --account-id < ACCOUNT ID >
+
 # Get ARN, UserId, Account + Account Aliases
 { aws sts get-caller-identity & aws iam list-account-aliases; } | jq -s ".|add"
 
@@ -269,10 +272,10 @@ aws dynamodb query \
         --table-name DELETEme \
         --key file://key.json \
         --return-consumed-capacity TOTAL
+# key.json
 ```
 
 ```json
-// key.json
 {
     "Name": {"S": "Alice"},
     "Age": {"N": "99"}
@@ -283,16 +286,16 @@ aws dynamodb query \
 
 Only attributes of the desired item:
 
-```json
+```bash
 aws dynamodb get-item \
     --table-name DELETEme \
     --key '{"Name": {"S": "Bob"},"Age": {"N": "77"}}' \
     --projection-expression "#A, #N" \
     --expression-attribute-names file://names.json
+# names.json
 ```
 
 ```json
-// names.json
 {
     "#N": "Name",
     "#A": "Age"
@@ -690,6 +693,13 @@ aws iam simulate-principal-policy \
         "iam:CreateUser" \
         "lambda:InvokeFunction" \
     --policy-source-arn ${ROLE_ARN}
+
+aws iam simulate-principal-policy \
+    --action-names \
+        "aws-portal:ViewBilling" \
+    --policy-source-arn ${ROLE_ARN}
+
+
 
 # List overview of Policy
 aws iam get-policy  --policy-arn ${POLICY_ARN}
