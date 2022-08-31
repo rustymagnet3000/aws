@@ -36,6 +36,9 @@
 # Get ARN, UserId and Account
 aws sts get-caller-identity
 
+# Get account info
+aws organizations describe-account --account-id < ACCOUNT ID >
+
 # Get ARN, UserId, Account + Account Aliases
 { aws sts get-caller-identity & aws iam list-account-aliases; } | jq -s ".|add"
 
@@ -690,6 +693,13 @@ aws iam simulate-principal-policy \
         "iam:CreateUser" \
         "lambda:InvokeFunction" \
     --policy-source-arn ${ROLE_ARN}
+
+aws iam simulate-principal-policy \
+    --action-names \
+        "aws-portal:ViewBilling" \
+    --policy-source-arn ${ROLE_ARN}
+
+
 
 # List overview of Policy
 aws iam get-policy  --policy-arn ${POLICY_ARN}
