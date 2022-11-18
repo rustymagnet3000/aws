@@ -3,6 +3,7 @@
 <!-- TOC depthfrom:2 depthto:2 withlinks:true updateonsave:true orderedlist:false -->
 
 - [whoami](#whoami)
+- [Simple Noticificaiton Service SNS](#simple-noticificaiton-service-sns)
 - [s3](#s3)
 - [dynamodb](#dynamodb)
 - [Cloudtrail](#cloudtrail)
@@ -44,6 +45,22 @@ aws organizations describe-account --account-id < ACCOUNT ID >
 
 # Get username
 aws iam get-user
+```
+
+## Simple Noticificaiton Service SNS
+
+```shell
+# list Topics
+aws sns list-topics
+
+# list details of a Topic
+aws sns get-topic-attributes \
+    --topic-arn ${TOPIC_ARN}
+    
+# publish
+aws sns publish \                   
+    --topic-arn ${TOPIC_ARN} \
+    --message file://message.txt
 ```
 
 ## s3
@@ -1178,13 +1195,23 @@ aws ecs list-clusters
 # list services
 aws ecs list-services --cluster ${CLUSTER_NAME}
 
-# list container ARNs
+# list Task Definitions
+aws ecs list-task-definitions
+
+# list container arn
 aws ecs list-container-instances --cluster ${CLUSTER_NAME}
 
-# list open ports, arns
+# Run a task
+aws ecs run-task --cluster ${CLUSTER_NAME} --task-definition myapp-shell:25
+
+# Run a task arn
+aws ecs run-task --cluster ${CLUSTER_NAME} --task-definition ${TASK_DEFINITION}
+
+# list open ports, arn
 aws ecs describe-container-instances \
     --cluster ${CLUSTER_NAME} \
     --container-instances ${CONTAINER_INSTANCE_ID}
+
 ```
 
 ## SSM Sessions
