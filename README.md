@@ -3,10 +3,10 @@
 <!-- TOC depthfrom:2 depthto:2 withlinks:true updateonsave:true orderedlist:false -->
 
 - [whoami](#whoami)
+- [Simple Noticificaiton Service SNS](#simple-noticificaiton-service-sns)
 - [s3](#s3)
 - [dynamodb](#dynamodb)
 - [Cloudtrail](#cloudtrail)
-- [Container Registry  ECR](#container-registry--ecr)
 - [Simple Notification Service  SNS](#simple-notification-service--sns)
 - [Elasticache  Redis](#elasticache--redis)
 - [Cloudwatch](#cloudwatch)
@@ -21,7 +21,7 @@
 - [lambda](#lambda)
 - [Invoke Lambda](#invoke-lambda)
 - [Keys](#keys)
-- [Container Registry](#container-registry)
+- [ECR](#ecr)
 - [Proxy AWS CLI traffic](#proxy-aws-cli-traffic)
 - [Secrets Manager](#secrets-manager)
 - [Elastic Container Service  ECS](#elastic-container-service--ecs)
@@ -44,6 +44,22 @@ aws organizations describe-account --account-id < ACCOUNT ID >
 
 # Get username
 aws iam get-user
+```
+
+## Simple Noticificaiton Service SNS
+
+```shell
+# list Topics
+aws sns list-topics
+
+# list details of a Topic
+aws sns get-topic-attributes \
+    --topic-arn ${TOPIC_ARN}
+    
+# publish
+aws sns publish \                   
+    --topic-arn ${TOPIC_ARN} \
+    --message file://message.txt
 ```
 
 ## s3
@@ -400,16 +416,6 @@ aws cloudtrail put-event-selectors --trail-name TrailName --region ${AWS_REGION}
         }
 ]'
 
-```
-
-## Container Registry ( ECR )
-
-```bash
-# Describe Registry
-aws ecr describe-registry
-
-# Describe repositories
-aws ecr describe-repositories
 ```
 
 ## Simple Notification Service ( SNS )
@@ -1103,11 +1109,31 @@ aws kms describe-key \
 
 <https://aws.amazon.com/premiumsupport/knowledge-center/import-keys-kms/>
 
-## Container Registry
+## ECR
 
-#### Create repo
+```shell
+# Describe Registry
+aws ecr describe-registry
 
-```bash
+# Describe repositories
+aws ecr describe-repositories
+
+# list images in a repo
+aws ecr list-images --repository-name $REPO
+
+# details of each image
+aws ecr describe-images --repository-name $REPO
+
+# count images in a repo
+aws ecr list-images --repository-name $REPO | jq '.imageIds | unique_by(.imageDigest) | length'
+
+# list impact of Dry-Run on a Repository
+aws ecr get-lifecycle-policy-preview --repository-name ${REPO}
+
+# list policy
+aws ecr get-repository-policy --repository-name ${REPO} 
+
+# Create repo
 aws ecr create-repository --repository-name ${REPO_NAME}
 
 export REG_ID=< repo ID >
@@ -1118,29 +1144,21 @@ aws ecr put-lifecycle-policy \
     --registry-id ${REG_ID} \
     --repository-name ${REPO_NAME} \        
     --lifecycle-policy-text '{"rules":[{"rulePriority":10,"description":"Expire old images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":800},"action":{"type":"expire"}}]}'
-{
-```
 
-#### Create repo with auto vulnerability scan
-
-```bash
+# Create repo with auto vulnerability scan
 aws ecr create-repository \
  --repository-name ${REPO_NAME} \
  --image-tag-mutability IMMUTABLE \
  --image-scanning-configuration scanOnPush=true
-```
 
-#### Login in to managed Docker service that ECR provides
-
-```bash
+# Login in to managed Docker service that ECR provides
 aws ecr get-login-password \
  --region ${REGION} | docker login --username AWS \
  --password-stdin <account id>.dkr.ecr.<region>.amazonaws.com
+
+# Authenticate local Docker daemon against the ECR registry
+$(aws ecr get-login --registry-ids ${REG_ID} --no-include-email)
 ```
-
-#### Authenticate local Docker daemon against the ECR registry
-
-`$(aws ecr get-login --registry-ids ${REG_ID} --no-include-email)`
 
 ## Proxy AWS CLI traffic
 
@@ -1178,13 +1196,23 @@ aws ecs list-clusters
 # list services
 aws ecs list-services --cluster ${CLUSTER_NAME}
 
-# list container ARNs
+# list Task Definitions
+aws ecs list-task-definitions
+
+# list container arn
 aws ecs list-container-instances --cluster ${CLUSTER_NAME}
 
-# list open ports, arns
+# Run a task
+aws ecs run-task --cluster ${CLUSTER_NAME} --task-definition myapp-shell:25
+
+# Run a task arn
+aws ecs run-task --cluster ${CLUSTER_NAME} --task-definition ${TASK_DEFINITION}
+
+# list open ports, arn
 aws ecs describe-container-instances \
     --cluster ${CLUSTER_NAME} \
     --container-instances ${CONTAINER_INSTANCE_ID}
+
 ```
 
 ## SSM Sessions
