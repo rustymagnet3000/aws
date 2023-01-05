@@ -3,7 +3,7 @@
 <!-- TOC depthfrom:2 depthto:2 withlinks:true updateonsave:true orderedlist:false -->
 
 - [whoami](#whoami)
-- [Simple Noticificaiton Service SNS](#simple-noticificaiton-service-sns)
+- [SNS](#sns)
 - [s3](#s3)
 - [dynamodb](#dynamodb)
 - [Cloudtrail](#cloudtrail)
@@ -46,7 +46,7 @@ aws organizations describe-account --account-id < ACCOUNT ID >
 aws iam get-user
 ```
 
-## Simple Noticificaiton Service SNS
+## SNS
 
 ```shell
 # list Topics
@@ -515,10 +515,19 @@ aws inspector list-assessment-runs --max-items=10
 ## ec2
 
 ```bash
-# regex or wildcard
+# Allocate Public IP address
+aws ec2 allocate-address
+
+# List Static, Public IP addresses
+aws ec2 describe-addresses 
+
+# Release Public IP address
+aws ec2 release-address --allocation-id eipallocXXXXXXXXX
+
+# Describe VPC
 aws ec2 describe-vpc-endpoint-services
 
-# regex or wildcard
+# Describe instances
 aws --profile saml ec2 describe-instances --region ${AWS_REGION}
 
 # regex or wildcard
