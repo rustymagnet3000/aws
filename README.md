@@ -691,8 +691,14 @@ aws iam list-roles
 # only useful if roles created with Paths
 aws iam list-roles --path-prefix /aws-service-role/
 
-# Role policies attached to a single role
-aws iam list-attached-role-policies --role-name ${ROLE_NAME}
+# Role policies attached to a single role ( not inline policies )
+aws iam list-attached-role-policies --role-name $ROLE_NAME
+
+# List customer line policies
+aws iam list-role-policies --role-name $ROLE_NAME
+
+# Get inline policy permission list
+aws iam get-role-policy --role-name $ROLE_NAME --policy-name $POLICY_NAME
 
 # Group policies attached to roles
 aws iam list-attached-group-policies --group-name Admins
