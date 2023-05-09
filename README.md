@@ -98,8 +98,13 @@ aws s3 cp ${BUCKET} /images/boo.jpg
 aws s3 cp test.txt ${BUCKET}
 
 # Copy to local
-AWS s3 cp ${BUCKET_URI} poc
+aws s3 cp ${BUCKET_URI} poc
+
+# Copy to local with server side encryption (SSE) it is handled by the aws 
+# ensure any Role has enough permissions to obtain the Server Side encryption key
+
 aws s3 cp ${BUCKET_URI}/404.html/index.html .
+
 
 # Copy and print to stdout
 aws s3 cp ${BUCKET}/file.txt /dev/stdout
@@ -1066,18 +1071,12 @@ echo $KEY | awk '{print $1}' > PublicKey.b64
 echo $KEY | awk '{print $2}' > ImportToken.b64
 openssl enc -d -base64 -A -in PublicKey.b64 -out PublicKey.bin
 openssl enc -d -base64 -A -in ImportToken.b64 -out ImportToken.bin
-```
 
-### Generate Key Material
-
-```bash
+# Generate Key Material
 openssl rand -out PlaintextKeyMaterial.bin 32
 xxd PlaintextKeyMaterial.bin                    # print key to stdio
-```
 
-### Encrypt Key Material
-
-```bash
+# Encrypt Key Material
 openssl rsautl -encrypt \                                                             
                  -in PlaintextKeyMaterial.bin \
                  -oaep \
@@ -1085,10 +1084,8 @@ openssl rsautl -encrypt \
                  -keyform PEM \   
                  -pubin \
                  -out EncryptedKeyMaterial.bin
-```
 
-### Encrypt Key Material with the public key
-
+# Encrypt Key Material with the public key
 openssl pkeyutl \
     -in PlaintextKeyMaterial.bin \
     -out EncryptedKeyMaterial.bin \
@@ -1098,6 +1095,7 @@ openssl pkeyutl \
     -encrypt \
     -pkeyopt rsa_padding_mode:oaep \
     -pkeyopt rsa_oaep_md:sha256 \
+```
 
 ### Import Key Material
 
