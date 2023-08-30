@@ -79,6 +79,19 @@ aws s3 --endpoint-url ${BUCKET_HTTP} ls
 aws s3 ls ${BUCKET_URI}--recursive
 aws s3 ls ${BUCKET_URI} --recursive --human-readable --summarize
 
+# list storage state of file in bucket
+aws s3api get-object-attributes \
+    --bucket ${BUCKET_NAME} \
+    --key foobar.txt \
+    --object-attributes "StorageClass" "ETag" "ObjectSize"
+
+{
+    "LastModified": "2022-01-07T10:39:23+00:00",
+    "ETag": "xxxxxxx",
+    "StorageClass": "GLACIER",
+    "ObjectSize": 199
+}
+
 # Enter MFA code for arn:aws:iam::________
 aws s3 ls --profile mfa
 
