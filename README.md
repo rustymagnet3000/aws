@@ -16,6 +16,7 @@
 - [Athena](#athena)
 - [Tips](#tips)
 - [CLI](#cli)
+- [aws-sso](#aws-sso)
 - [saml2aws](#saml2aws)
 - [IAM](#iam)
 - [lambda](#lambda)
@@ -632,6 +633,60 @@ AWS Secret Access Key [None]: ...zO0
 Default region name [None]: eu-west-2
 Default output format [None]: json
 ```
+
+## aws-sso 
+
+#### Set up
+
+```sh
+# install
+brew install aws-sso-cli
+
+# start up
+aws-sso completions -I
+
+# set the cli to point toward aws set up
+https://<appID>.awsapps.com/
+
+# download credentials profiles from aws
+aws-sso config-profiles
+
+# verify Profiles installed locally
+cat ~/.aws/config
+
+# tell aws cli tool which Profile to use
+export AWS_PROFILE=1234567890:ReadOnly \
+ && export AWS_REGION=us-east-1
+
+# verify it all worked
+aws sts get-caller-identity
+```
+
+#### Day-2-day usage
+```sh
+# kick start the download of credentials after SSO completes
+aws-sso config-profiles
+
+# check it worked
+export AWS_PROFILE="1234567890:ReadOnly" \
+  && AWS_REGION="eu-north-1" \
+  && aws sts get-caller-identity
+
+# if it failed, check other profiles are not taking over
+unset AWS_ENDPOINT_URL_S3 \
+  && unset AWS_ACCESS_KEY_ID \
+  && $AWS_SECRET_ACCESS_KEY
+```
+
+## saml2aws
+
+#### Set up
+
+```bash
+brew install awscli
+brew install saml2aws
+saml2aws --version
+
 
 ## saml2aws
 
