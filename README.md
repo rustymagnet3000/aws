@@ -658,7 +658,7 @@ Default region name [None]: eu-west-2
 Default output format [None]: json
 ```
 
-## aws-sso 
+## aws-sso
 
 #### Set up
 
@@ -687,6 +687,7 @@ aws sts get-caller-identity
 ```
 
 #### Day-2-day usage
+
 ```sh
 # kick start the download of credentials after SSO completes
 aws-sso config-profiles
