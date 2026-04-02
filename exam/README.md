@@ -81,3 +81,18 @@ Three types for controlling how instances are physically placed:
 - Can't merge groups or move running instances in — must stop → modify → start
 - Cluster groups must be in a single AZ; Spread/Partition can span AZs
 - Cluster performs best with uniform instance types
+
+### ENIs in ECS
+
+An **Elastic Network Interface (ENI)** is a virtual network card attachable to an EC2 instance. In ECS, ENIs become important with **awsvpc network mode**, where each task gets its own ENI and therefore its own private IP.
+
+[AWS blog with architecture diagram](https://aws.amazon.com/blogs/aws/new-elastic-network-interfaces-in-the-virtual-private-cloud/)
+
+**Why this is useful:**
+
+- **Task-level security groups** — a dedicated ENI per task lets you attach security groups directly to the task, not the host. Fine-grained control without affecting other tasks on the same instance.
+- **Predictable IPs** — each task has its own IP, making service discovery and whitelisting straightforward.
+- **Failover / ENI reassignment** — detach an ENI from one instance and reattach it to another. Traffic and the IP follow the ENI, so clients don't need to update DNS or IPs.
+- **Required for Fargate** — Fargate always uses awsvpc mode, so every Fargate task is fully network-isolated via its own ENI.
+
+**Tradeoff:** each EC2 instance has a limit on ENIs (and IPs per ENI), which caps how many awsvpc tasks can run on a single host. Larger instance types support more ENIs.
