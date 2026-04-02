@@ -11,6 +11,7 @@
     - [2. IPv6 vs IPv4](#2-ipv6-vs-ipv4)
     - [3. Permission denied (publickey)](#3-permission-denied-publickey)
     - [4. Accessing instance without the correct key](#4-accessing-instance-without-the-correct-key)
+    - [Placement Groups](#placement-groups)
 
 <!-- /TOC -->
 
@@ -60,4 +61,24 @@
  - Use EC2 Instance Connect: EC2 Console → Instance → Connect → EC2 Instance Connect
  - Once in, add your public key to `~/.ssh/authorized_keys`
  - To get public key `ssh-keygen -y -f newKeyPair.pem` and paste the output into ~/.ssh/authorized_keys on the instance.
-  ```
+
+### Placement Groups
+
+Three types for controlling how instances are physically placed:
+
+| Type | Strategy | Max Instances | Use Case |
+| --------- | ----------------------------------- | ----------------------------- | ----------------------------------------- |
+| Cluster | Packed together in one AZ | Unlimited | HPC, ML training, low-latency workloads |
+| Spread | Each on distinct hardware (racks) | 7 per AZ | Small HA pairs, critical isolated instances |
+| Partition | Groups of instances per rack/partition | 7 partitions/AZ, 100s of instances | Kafka, Cassandra, Hadoop (rack-aware apps) |
+
+**Cluster** — lowest latency, up to 10 Gbps between instances, but correlated failure risk.
+
+**Spread** — maximizes isolation; hard limit of 7 instances per AZ per group.
+
+**Partition** — instances can see their partition ID, enabling rack-aware data placement.
+
+**Key rules:**
+- Can't merge groups or move running instances in — must stop → modify → start
+- Cluster groups must be in a single AZ; Spread/Partition can span AZs
+- Cluster performs best with uniform instance types
