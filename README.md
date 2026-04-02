@@ -65,7 +65,18 @@ aws sns publish \
 
 ## s3
 
-```bash
+```shell
+# check if bucket exists
+aws s3api head-bucket --bucket your-bucket-name
+| Result  | Meaning                                         |
+| ------- | ----------------------------------------------- |
+| **200** | Bucket exists **and you have access**           |
+| **301** | Bucket exists but **in a different region**     |
+| **403** | Bucket exists but **you don’t have permission** |
+| **404** | Bucket **does not exist**                       |
+
+
+
 export BUCKET_NAME=mybucket  
 export BUCKET_URI=export BUCKET=s3://mybucket
 export BUCKET_HTTP=https://mybucket.eu-west-2.amazonaws.com
