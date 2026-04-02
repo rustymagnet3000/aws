@@ -33,7 +33,6 @@
 | Cost when unattached / instance stopped | $0.005/hr (you still pay)         | Free (released automatically)   |
 | Free tier                               | Counts toward 750hr/month         | Counts toward 750hr/month       |
 
-
 - If you stop your instance, a standard public IP is released (and you get a different one on restart) — no charge while stopped
 - If you stop your instance with an Elastic IP, you keep paying for the Elastic IP because it's reserved in your account
 - Elastic IP is only worth it if you need a stable, permanent IP (e.g. DNS records, whitelisting)
@@ -52,15 +51,15 @@
 - Use `curl -4 ifconfig.me` to get IPv4 address instead
 - Add a separate IPv4 rule if needed
 
-  ### 3. Permission denied (publickey)
- - Wrong key pair — check EC2 Console → Instance → "Key pair name"
- - Fix `.pem` permissions: `chmod 400 newKeyPair.pem`
- - Wrong username — Amazon Linux uses `ec2-user`, Ubuntu uses `ubuntu`, etc.
+### 3. Permission denied (publickey)
+- Wrong key pair — check EC2 Console → Instance → "Key pair name"
+- Fix `.pem` permissions: `chmod 400 newKeyPair.pem`
+- Wrong username — Amazon Linux uses `ec2-user`, Ubuntu uses `ubuntu`, etc.
 
- ### 4. Accessing instance without the correct key
- - Use EC2 Instance Connect: EC2 Console → Instance → Connect → EC2 Instance Connect
- - Once in, add your public key to `~/.ssh/authorized_keys`
- - To get public key `ssh-keygen -y -f newKeyPair.pem` and paste the output into ~/.ssh/authorized_keys on the instance.
+### 4. Accessing instance without the correct key
+- Use EC2 Instance Connect: EC2 Console → Instance → Connect → EC2 Instance Connect
+- Once in, add your public key to `~/.ssh/authorized_keys`
+- To get public key `ssh-keygen -y -f newKeyPair.pem` and paste the output into ~/.ssh/authorized_keys on the instance.
 
 ### Placement Groups
 
