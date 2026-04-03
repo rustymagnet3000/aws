@@ -96,3 +96,17 @@ An **Elastic Network Interface (ENI)** is a virtual network card attachable to a
 - **Required for Fargate** — Fargate always uses awsvpc mode, so every Fargate task is fully network-isolated via its own ENI.
 
 **Tradeoff:** each EC2 instance has a limit on ENIs (and IPs per ENI), which caps how many awsvpc tasks can run on a single host. Larger instance types support more ENIs.
+
+### Hibernate
+
+When you hibernate an instance, RAM contents are saved to the root EBS volume, then the instance stops. On restart, RAM is restored and the OS resumes exactly where it left off — no reboot, no re-initialisation.
+
+**Why it's useful:**
+- **Fast resume** — applications pick up instantly rather than cold-starting
+- **Preserve in-memory state** — long-running processes, caches, and session data survive
+- **Save money** — no compute charge while hibernated (only EBS storage)
+- **Better than stop/start** — avoids OS boot + app startup overhead
+
+**Typical use case:** A dev environment or data processing job you want to pause overnight and resume in the morning exactly as you left it.
+
+**Requirements:** Root volume must be EBS (not instance store), encrypted, and large enough to hold the RAM contents.
