@@ -166,3 +166,33 @@ When you hibernate an instance, RAM contents are saved to the root EBS volume, t
 **Typical use case:** A dev environment or data processing job you want to pause overnight and resume in the morning exactly as you left it.
 
 **Requirements:** Root volume must be EBS (not instance store), encrypted, and large enough to hold the RAM contents.
+
+### Snapshots
+
+Snapshots are point-in-time backups of an EBS volume, stored in S3 (managed by AWS — you don't see the bucket).
+
+**Why they're useful:**
+
+- **Backup** — capture the state of a volume at a point in time; restore if data is lost or corrupted
+- **Incremental** — only changed blocks are saved after the first snapshot, so they're fast and cost-efficient
+- **Volume migration** — create a new EBS volume from a snapshot, even at a different size
+- **AMI creation** — snapshots are the basis for custom AMIs (Amazon Machine Images)
+
+**Why copying snapshots is useful:**
+
+- **Cross-region disaster recovery** — copy a snapshot to another region to restore if a region goes down
+- **Cross-region deployment** — launch identical instances in a new region from a copied snapshot
+- **Cross-account sharing** — share a snapshot with another AWS account (e.g. hand off an environment to a client)
+- **Encryption migration** — copy an unencrypted snapshot and enable encryption during the copy; this is the only way to encrypt an existing unencrypted volume
+
+**Creating a Volume from a Snapshot:** EC2 Console → Snapshots → select snapshot → Actions → Create Volume. You choose the AZ at this point — this is how you effectively "move" an EBS volume to a different AZ (snapshot it, create a new volume in the target AZ). You can also change the volume type or size during creation.
+
+**Recycle Bin:** a safety net for accidentally deleted snapshots (and AMIs). You define retention rules — deleted snapshots are held in the Recycle Bin for the retention period (1 day to 1 year) before being permanently deleted. Resources in the bin can't be used until restored, but can be recovered instantly if you catch the mistake in time.
+
+**Key exam points:**
+
+- Snapshots are AZ-agnostic — you can create a volume from a snapshot in any AZ within the region
+- Deleting a snapshot doesn't delete data shared with other snapshots (incremental chain is preserved)
+- Copy + re-encrypt is the standard pattern for encrypting a volume that wasn't encrypted at creation
+- Recycle Bin must be configured proactively — it doesn't protect snapshots by default
+
