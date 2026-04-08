@@ -12,6 +12,7 @@
     - [3. Permission denied (publickey)](#3-permission-denied-publickey)
     - [4. Accessing instance without the correct key](#4-accessing-instance-without-the-correct-key)
     - [Placement Groups](#placement-groups)
+    - [AMI](#ami)
 
 <!-- /TOC -->
 
@@ -195,4 +196,51 @@ Snapshots are point-in-time backups of an EBS volume, stored in S3 (managed by A
 - Deleting a snapshot doesn't delete data shared with other snapshots (incremental chain is preserved)
 - Copy + re-encrypt is the standard pattern for encrypting a volume that wasn't encrypted at creation
 - Recycle Bin must be configured proactively — it doesn't protect snapshots by default
+
+### AMI
+
+An **AMI (Amazon Machine Image)** is a pre-packaged template used to launch EC2 instances. It includes the OS, application server, application code, and configuration — everything needed to boot a new instance.
+
+Think of an AMI like a **gold image** or VM template: create one instance configured exactly how you want it, snapshot it, and spin up identical instances from that AMI anywhere.
+
+**What an AMI contains:**
+
+- One or more EBS snapshots (or, for instance-store AMIs, a template for the root volume)
+- Launch permissions — which AWS accounts can use it
+- Block device mapping — which volumes to attach at launch and their sizes
+
+**AMI types (by root device):**
+
+| Type | Storage | Boot time | Persistence |
+| ---- | ------- | --------- | ----------- |
+| EBS-backed | Root volume is EBS | Fast (~seconds) | Survives stop/start |
+| Instance store-backed | Root volume is S3-hosted template | Slower (~minutes) | Ephemeral — lost on stop |
+
+EBS-backed AMIs are the default and almost always preferred. Instance store AMIs are legacy.
+
+**AMI scope:**
+
+- **Region-specific** — an AMI exists in one region; to use it in another, copy it
+- **Public** — AWS-provided AMIs (Amazon Linux, Ubuntu, Windows) available to everyone
+- **Private** — your own AMIs, visible only to your account by default
+- **Shared** — you can grant specific AWS accounts permission to use your AMI
+
+**Custom AMI workflow:**
+
+1. Launch an EC2 instance and configure it (install software, set config, harden OS)
+2. Stop the instance (recommended for consistency — avoids partially-written files)
+3. EC2 Console → Actions → Image and templates → Create image
+4. AWS creates EBS snapshots of all attached volumes and registers the AMI
+5. Launch new instances from that AMI in the same region (or copy it first to another region)
+
+**Key exam points:**
+
+An EBS snapshot is a point-in-time backup of an EBS volume, stored incrementally in S3.
+
+- AMIs are built from EBS snapshots — deleting an AMI does **not** automatically delete the underlying snapshots
+- Copying an AMI to another region copies the underlying snapshots too (cross-region DR pattern)
+- You can copy an AMI and change its encryption settings during the copy (same pattern as snapshots)
+- AMIs are locked to a region — always copy before launching in a different region
+- Recycle Bin can also protect AMIs from accidental deletion (same rules as snapshots)
+- Pre-baking software into an AMI = faster launch times vs. using user data scripts to install at boot
 
