@@ -122,7 +122,19 @@ An **Elastic Network Interface (ENI)** is a virtual network card attachable to a
 
 ### EBS Volumes
 
-Think of an EBS (Elastic Block Store) volume like a **USB stick** — it's a persistent storage device you plug into an instance, and you can unplug it and move it to a different one. Unlike the instance itself, the data on it survives stops, reboots, and even termination (if configured).
+EBS is a hard drive that lives in the cloud and plugs into your EC2 instance over a network cable.
+
+**Why it exists:** an EC2 instance on its own has no persistent storage — if it stops or crashes, everything is gone. EBS solves that. It's the disk your instance reads and writes to, and the data stays there even when the instance is off.
+
+**The USB stick analogy:** you buy a USB stick (EBS volume), plug it into your laptop (EC2 instance), copy files onto it, then unplug it and move it to a different laptop — files are still there. The laptop can be destroyed; the USB stick survives.
+
+**The three things you need to know:**
+
+1. **AZ-locked** — a volume is created in one AZ (`eu-west-1a`) and can only attach to instances in that same AZ
+2. **Snapshots are how you move data** — to get data to another AZ or region, snapshot it (backup stored in S3), then create a new volume from it wherever you need
+3. **You pay even when not attached** — unlike RAM or CPU, an idle EBS volume still costs money
+
+**What's on your instance:** when you launch EC2, AWS automatically creates a root EBS volume — that's where the OS lives. You can add more volumes on top, like adding a second hard drive.
 
 **Key properties:**
 
