@@ -146,12 +146,37 @@ EBS is a hard drive that lives in the cloud and plugs into your EC2 instance ove
 
 **Volume types:**
 
-| Type | Use case |
-| ---- | -------- |
-| gp3 / gp2 | General purpose SSD — most workloads |
-| io2 / io1 | Provisioned IOPS SSD — high-performance DBs |
-| st1 | Throughput HDD — big data, log processing |
-| sc1 | Cold HDD — infrequent access, lowest cost |
+Volume types sit on a speed-vs-cost spectrum. Two dimensions matter: **SSD vs HDD** and **how much performance you need**.
+
+- **SSD** — fast random access; good for databases, OS, apps that read/write small chunks all over the disk
+- **HDD** — slow random access but cheap with high throughput; good for streaming large files sequentially
+
+The key metric for SSDs is **IOPS** (Input/Output Operations Per Second) — how many read/write operations the disk handles per second.
+
+| Type | Plain English | Use case |
+| ---- | ------------- | -------- |
+| gp3 / gp2 | General purpose SSD | Default choice — boot volumes, most workloads |
+| io2 / io1 | High performance SSD | DBs needing guaranteed IOPS (Oracle, SQL Server) |
+| st1 | Throughput HDD | Large sequential reads — log processing, data warehouses |
+| sc1 | Cold HDD | Barely touched data — cheapest, infrequent access |
+
+- `gp3` lets you dial up IOPS independently of volume size
+- `io2` gives a *guaranteed* IOPS ceiling — you pay for it whether you use it or not
+- HDD types win on throughput (MB/s) for large sequential workloads, not IOPS
+
+**Decision tree:**
+
+```
+Need fast random access?
+├── Yes → SSD
+│   ├── Normal workload (web app, boot volume) → gp3
+│   └── High-performance DB with guaranteed IOPS → io2
+└── No → HDD (large sequential reads/writes)
+    ├── Active big data / logs → st1
+    └── Rarely accessed archive → sc1
+```
+
+**Gotcha:** only `gp2`, `gp3`, and `io1/io2` can be used as boot volumes — you can't boot from `st1` or `sc1`.
 
 **vs Instance Store:** instance store is physically attached (faster, lower latency) but **ephemeral** — data is lost when the instance stops. EBS persists. Use instance store for temp files/caches; EBS for anything you care about.
 
