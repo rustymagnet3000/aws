@@ -143,6 +143,10 @@ Think of an EBS (Elastic Block Store) volume like a **USB stick** — it's a per
 
 **vs Instance Store:** instance store is physically attached (faster, lower latency) but **ephemeral** — data is lost when the instance stops. EBS persists. Use instance store for temp files/caches; EBS for anything you care about.
 
+**Instance store example — Redis read replica:**
+
+Run Redis on an instance-store-backed instance as a read replica (or cache layer) fronting your primary database. The instance store gives Redis lower-latency disk access for its persistence files (RDB snapshots, AOF log), and the high throughput suits a cache under heavy read load. If the instance dies, you simply launch a replacement and re-warm it from the primary — the data is reproducible, so the ephemeral nature of instance store is an acceptable trade-off for the speed gain.
+
 **Delete on Termination:** controls whether a volume is deleted when its instance is terminated.
 
 | Volume | Default |
