@@ -314,7 +314,7 @@ EFS (Elastic File System) is a shared network drive that multiple EC2 instances 
 | Standard | Frequently accessed files |
 | Infrequent Access (IA) | Files not touched in 30+ days — much cheaper |
 
-You can set a lifecycle policy to automatically move files to IA after N days — same idea as S3 lifecycle rules.
+**Lifecycle management** automatically transitions files between storage tiers based on how recently they were accessed. You define a rule (e.g. "move to Infrequent Access after 30 days of no access") and EFS handles the rest. If a file in IA is accessed again, it's automatically moved back to Standard. This keeps costs down without any manual intervention — same idea as S3 lifecycle rules.
 
 **EBS vs EFS — when to pick which:**
 
