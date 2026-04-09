@@ -14,6 +14,7 @@
     - [Placement Groups](#placement-groups)
     - [AMI](#ami)
   - [EFS](#efs)
+  - [Scaling and ELB](#scaling-and-elb)
 
 <!-- /TOC -->
 
@@ -349,3 +350,44 @@ Real-world examples:
 | Capacity | Fixed, pre-provisioned | Elastic, auto-scales | Fixed (comes with instance type) |
 | Cost | Mid | Higher (~3× gp2) | Included in instance price |
 | Use when | Single instance needs fast persistent disk | Multiple instances need shared access | Throwaway scratch space, maximum speed |
+
+## Scaling and ELB
+
+**Scalability — the two types:**
+
+- **Vertical scaling** — make the instance bigger (e.g. `t3.micro` → `t3.large`). Simple but has a ceiling, and requires downtime.
+- **Horizontal scaling** — add more instances. No ceiling, no downtime. This is what AWS is built for.
+
+### Elastic Load Balancer (ELB)
+
+Sits in front of your instances and distributes incoming traffic across them. Also hides the fact you have multiple instances behind a single DNS endpoint.
+
+Three types you need to know:
+
+| Type | Layer | Protocol | Use case |
+| ---- | ----- | -------- | -------- |
+| ALB (Application) | 7 | HTTP/HTTPS | Web apps, microservices, path-based routing (`/api` → one group, `/images` → another) |
+| NLB (Network) | 4 | TCP/UDP | Ultra-high performance, static IP, gaming, IoT |
+| GWLB (Gateway) | 3 | IP | Route traffic through firewalls/intrusion detection before it hits your app |
+
+ALB is the default choice for most web workloads.
+
+### Auto Scaling Group (ASG)
+
+Automatically adds or removes EC2 instances based on demand. Works hand-in-hand with an ELB — new instances register with the load balancer automatically.
+
+Three capacity numbers:
+
+- **Minimum** — never go below this (e.g. 2)
+- **Desired** — what you want right now (e.g. 4)
+- **Maximum** — never exceed this (e.g. 10)
+
+Scaling policies:
+
+| Policy | How it works | Use case |
+| ------ | ------------ | -------- |
+| Target tracking | "Keep CPU at 60%" | Simplest, recommended default |
+| Step scaling | Add 2 instances if CPU > 70%, add 4 if CPU > 90% | Fine-grained control |
+| Scheduled | Scale up every weekday at 8am, down at 8pm | Predictable traffic patterns |
+
+If an instance fails a health check, ASG terminates it and launches a replacement automatically.
