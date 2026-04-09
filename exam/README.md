@@ -142,7 +142,7 @@ EBS is a hard drive that lives in the cloud and plugs into your EC2 instance ove
 - **Attached over the network** — not physically inside the instance, but behaves like a local disk
 - **Locked to an AZ** — an EBS volume in `eu-west-1a` can't be attached to an instance in `eu-west-1b`
 - **Survives instance stop/start** — data persists; the root volume can optionally survive termination too
-- **One instance at a time** — by default a volume attaches to one instance (EBS Multi-Attach is the exception, for specific use cases)
+- **One instance at a time** — by default a volume attaches to one instance. **EBS Multi-Attach** is the exception: a single `io1`/`io2` volume can attach to up to 16 instances in the same AZ simultaneously. The instances must manage concurrent writes themselves (typically via a cluster-aware filesystem like GFS2). Use case: high-availability databases (e.g. Oracle RAC) where multiple nodes need shared block storage with no single point of failure.
 - **Snapshots** — point-in-time backups stored in S3; snapshots can be copied across regions to migrate data
 
 **Volume types:**
