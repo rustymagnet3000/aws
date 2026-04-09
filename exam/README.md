@@ -12,6 +12,8 @@
     - [3. Permission denied (publickey)](#3-permission-denied-publickey)
     - [4. Accessing instance without the correct key](#4-accessing-instance-without-the-correct-key)
     - [Placement Groups](#placement-groups)
+    - [AMI](#ami)
+  - [EFS](#efs)
 
 <!-- /TOC -->
 
@@ -121,7 +123,19 @@ An **Elastic Network Interface (ENI)** is a virtual network card attachable to a
 
 ### EBS Volumes
 
-Think of an EBS (Elastic Block Store) volume like a **USB stick** — it's a persistent storage device you plug into an instance, and you can unplug it and move it to a different one. Unlike the instance itself, the data on it survives stops, reboots, and even termination (if configured).
+EBS is a hard drive that lives in the cloud and plugs into your EC2 instance over a network cable.
+
+**Why it exists:** an EC2 instance on its own has no persistent storage — if it stops or crashes, everything is gone. EBS solves that. It's the disk your instance reads and writes to, and the data stays there even when the instance is off.
+
+**The USB stick analogy:** you buy a USB stick (EBS volume), plug it into your laptop (EC2 instance), copy files onto it, then unplug it and move it to a different laptop — files are still there. The laptop can be destroyed; the USB stick survives.
+
+**The three things you need to know:**
+
+1. **AZ-locked** — a volume is created in one AZ (`eu-west-1a`) and can only attach to instances in that same AZ
+2. **Snapshots are how you move data** — to get data to another AZ or region, snapshot it (backup stored in S3), then create a new volume from it wherever you need
+3. **You pay even when not attached** — unlike RAM or CPU, an idle EBS volume still costs money
+
+**What's on your instance:** when you launch EC2, AWS automatically creates a root EBS volume — that's where the OS lives. You can add more volumes on top, like adding a second hard drive.
 
 **Key properties:**
 
@@ -133,14 +147,43 @@ Think of an EBS (Elastic Block Store) volume like a **USB stick** — it's a per
 
 **Volume types:**
 
-| Type | Use case |
-| ---- | -------- |
-| gp3 / gp2 | General purpose SSD — most workloads |
-| io2 / io1 | Provisioned IOPS SSD — high-performance DBs |
-| st1 | Throughput HDD — big data, log processing |
-| sc1 | Cold HDD — infrequent access, lowest cost |
+Volume types sit on a speed-vs-cost spectrum. Two dimensions matter: **SSD vs HDD** and **how much performance you need**.
+
+- **SSD** — fast random access; good for databases, OS, apps that read/write small chunks all over the disk
+- **HDD** — slow random access but cheap with high throughput; good for streaming large files sequentially
+
+The key metric for SSDs is **IOPS** (Input/Output Operations Per Second) — how many read/write operations the disk handles per second.
+
+| Type | Plain English | Use case |
+| ---- | ------------- | -------- |
+| gp3 / gp2 | General purpose SSD | Default choice — boot volumes, most workloads |
+| io2 / io1 | High performance SSD | DBs needing guaranteed IOPS (Oracle, SQL Server) |
+| st1 | Throughput HDD | Large sequential reads — log processing, data warehouses |
+| sc1 | Cold HDD | Barely touched data — cheapest, infrequent access |
+
+- `gp3` lets you dial up IOPS independently of volume size
+- `io2` gives a *guaranteed* IOPS ceiling — you pay for it whether you use it or not
+- HDD types win on throughput (MB/s) for large sequential workloads, not IOPS
+
+**Decision tree:**
+
+```
+Need fast random access?
+├── Yes → SSD
+│   ├── Normal workload (web app, boot volume) → gp3
+│   └── High-performance DB with guaranteed IOPS → io2
+└── No → HDD (large sequential reads/writes)
+    ├── Active big data / logs → st1
+    └── Rarely accessed archive → sc1
+```
+
+**Gotcha:** only `gp2`, `gp3`, and `io1/io2` can be used as boot volumes — you can't boot from `st1` or `sc1`.
 
 **vs Instance Store:** instance store is physically attached (faster, lower latency) but **ephemeral** — data is lost when the instance stops. EBS persists. Use instance store for temp files/caches; EBS for anything you care about.
+
+**Instance store example — Redis read replica:**
+
+Run Redis on an instance-store-backed instance as a read replica (or cache layer) fronting your primary database. The instance store gives Redis lower-latency disk access for its persistence files (RDB snapshots, AOF log), and the high throughput suits a cache under heavy read load. If the instance dies, you simply launch a replacement and re-warm it from the primary — the data is reproducible, so the ephemeral nature of instance store is an acceptable trade-off for the speed gain.
 
 **Delete on Termination:** controls whether a volume is deleted when its instance is terminated.
 
@@ -166,3 +209,142 @@ When you hibernate an instance, RAM contents are saved to the root EBS volume, t
 **Typical use case:** A dev environment or data processing job you want to pause overnight and resume in the morning exactly as you left it.
 
 **Requirements:** Root volume must be EBS (not instance store), encrypted, and large enough to hold the RAM contents.
+
+### Snapshots
+
+Snapshots are point-in-time backups of an EBS volume, stored in S3 (managed by AWS — you don't see the bucket).
+
+**Why they're useful:**
+
+- **Backup** — capture the state of a volume at a point in time; restore if data is lost or corrupted
+- **Incremental** — only changed blocks are saved after the first snapshot, so they're fast and cost-efficient
+- **Volume migration** — create a new EBS volume from a snapshot, even at a different size
+- **AMI creation** — snapshots are the basis for custom AMIs (Amazon Machine Images)
+
+**Why copying snapshots is useful:**
+
+- **Cross-region disaster recovery** — copy a snapshot to another region to restore if a region goes down
+- **Cross-region deployment** — launch identical instances in a new region from a copied snapshot
+- **Cross-account sharing** — share a snapshot with another AWS account (e.g. hand off an environment to a client)
+- **Encryption migration** — copy an unencrypted snapshot and enable encryption during the copy; this is the only way to encrypt an existing unencrypted volume
+
+**Creating a Volume from a Snapshot:** EC2 Console → Snapshots → select snapshot → Actions → Create Volume. You choose the AZ at this point — this is how you effectively "move" an EBS volume to a different AZ (snapshot it, create a new volume in the target AZ). You can also change the volume type or size during creation.
+
+**Recycle Bin:** a safety net for accidentally deleted snapshots (and AMIs). You define retention rules — deleted snapshots are held in the Recycle Bin for the retention period (1 day to 1 year) before being permanently deleted. Resources in the bin can't be used until restored, but can be recovered instantly if you catch the mistake in time.
+
+**Key exam points:**
+
+- Snapshots are AZ-agnostic — you can create a volume from a snapshot in any AZ within the region
+- Deleting a snapshot doesn't delete data shared with other snapshots (incremental chain is preserved)
+- Copy + re-encrypt is the standard pattern for encrypting a volume that wasn't encrypted at creation
+- Recycle Bin must be configured proactively — it doesn't protect snapshots by default
+
+### AMI
+
+An **AMI (Amazon Machine Image)** is a pre-packaged template used to launch EC2 instances. It includes the OS, application server, application code, and configuration — everything needed to boot a new instance.
+
+Think of an AMI like a **gold image** or VM template: create one instance configured exactly how you want it, snapshot it, and spin up identical instances from that AMI anywhere.
+
+**What an AMI contains:**
+
+- One or more EBS snapshots (or, for instance-store AMIs, a template for the root volume)
+- Launch permissions — which AWS accounts can use it
+- Block device mapping — which volumes to attach at launch and their sizes
+
+**AMI types (by root device):**
+
+| Type | Storage | Boot time | Persistence |
+| ---- | ------- | --------- | ----------- |
+| EBS-backed | Root volume is EBS | Fast (~seconds) | Survives stop/start |
+| Instance store-backed | Root volume is S3-hosted template | Slower (~minutes) | Ephemeral — lost on stop |
+
+EBS-backed AMIs are the default and almost always preferred. Instance store AMIs are legacy.
+
+**AMI scope:**
+
+- **Region-specific** — an AMI exists in one region; to use it in another, copy it
+- **Public** — AWS-provided AMIs (Amazon Linux, Ubuntu, Windows) available to everyone
+- **Private** — your own AMIs, visible only to your account by default
+- **Shared** — you can grant specific AWS accounts permission to use your AMI
+
+**Custom AMI workflow:**
+
+1. Launch an EC2 instance and configure it (install software, set config, harden OS)
+2. Stop the instance (recommended for consistency — avoids partially-written files)
+3. EC2 Console → Actions → Image and templates → Create image
+4. AWS creates EBS snapshots of all attached volumes and registers the AMI
+5. Launch new instances from that AMI in the same region (or copy it first to another region)
+
+**Key exam points:**
+
+An EBS snapshot is a point-in-time backup of an EBS volume, stored incrementally in S3.
+
+- AMIs are built from EBS snapshots — deleting an AMI does **not** automatically delete the underlying snapshots
+- Copying an AMI to another region copies the underlying snapshots too (cross-region DR pattern)
+- You can copy an AMI and change its encryption settings during the copy (same pattern as snapshots)
+- AMIs are locked to a region — always copy before launching in a different region
+- Recycle Bin can also protect AMIs from accidental deletion (same rules as snapshots)
+- Pre-baking software into an AMI = faster launch times vs. using user data scripts to install at boot
+
+## EFS
+
+EFS (Elastic File System) is a shared network drive that multiple EC2 instances can all read and write at the same time.
+
+**EBS vs EFS in one sentence:** EBS is a USB stick plugged into *one* laptop. EFS is a NAS (network-attached storage) drive that every laptop in the office can access simultaneously.
+
+**Key properties:**
+
+- **Multi-instance** — hundreds of EC2 instances across multiple AZs can mount the same EFS volume concurrently
+- **Fully managed NFS** — uses the NFS protocol; Linux only (no Windows support)
+- **Elastic** — grows and shrinks automatically; no need to pre-provision a size like EBS
+- **Pay for what you use** — billed per GB stored, not pre-allocated capacity
+- **More expensive than EBS** — roughly 3× the cost of gp2, but you only pay for actual usage
+
+**Real-world examples:**
+
+- **Web farm with shared content** — 10 EC2 instances behind a load balancer all serve the same WordPress site. Media uploads (images, PDFs) land on EFS so every instance sees the same files instantly. Without EFS, uploads would only exist on one server's EBS volume.
+- **CI/CD build cache** — a Jenkins farm where multiple build agents share a common dependency cache (Maven, npm). Each agent mounts EFS, pulling cached packages instead of downloading from the internet on every build.
+- **Developer home directories** — each developer's home directory lives on EFS. When they SSH into any EC2 instance in the cluster, their files follow them — same experience regardless of which box they land on.
+- **ML training data** — a large dataset stored once on EFS, accessed by multiple training instances running in parallel. No need to copy the dataset to each instance's EBS volume.
+
+**Storage tiers:**
+
+| Tier | Use case |
+| ---- | -------- |
+| Standard | Frequently accessed files |
+| Infrequent Access (IA) | Files not touched in 30+ days — much cheaper |
+
+**Lifecycle management** automatically transitions files between storage tiers based on how recently they were accessed. You define a rule (e.g. "move to Infrequent Access after 30 days of no access") and EFS handles the rest. If a file in IA is accessed again, it's automatically moved back to Standard. This keeps costs down without any manual intervention — same idea as S3 lifecycle rules.
+
+**Performance settings** (configured at creation time):
+
+*Throughput mode:*
+
+| Mode | How it works | Use case |
+| ---- | ------------ | -------- |
+| Bursting | Scales with storage size; earns burst credits over time | Spiky, unpredictable workloads |
+| Provisioned | You specify MB/s regardless of storage size | Consistently high throughput needs |
+| Elastic | Automatically scales up/down with demand | Unpredictable workloads, easiest option |
+
+*Performance mode:*
+
+| Mode | Trade-off | Use case |
+| ---- | --------- | -------- |
+| General Purpose | Lower latency, default | Web serving, CMS, dev environments |
+| Max I/O | Higher latency, higher throughput | Thousands of instances accessing simultaneously |
+
+Real-world examples:
+
+- **WordPress farm (General Purpose + Bursting)** — traffic is spiky (quiet overnight, busy during the day), storage is modest. Bursting handles peaks; General Purpose gives low latency for page loads.
+- **Genomics pipeline (Max I/O + Provisioned)** — 500 instances all reading a large dataset simultaneously. Max I/O handles the parallelism; Provisioned throughput guarantees the MB/s regardless of how much data is stored.
+- **CI/CD cache (General Purpose + Elastic)** — build frequency varies by team activity. Elastic mode handles the unpredictability without over-provisioning.
+
+**EBS vs EFS — when to pick which:**
+
+| | EBS | EFS |
+| - | --- | --- |
+| Attached to | One instance | Many instances simultaneously |
+| OS support | Linux + Windows | Linux only |
+| Capacity | Fixed, pre-provisioned | Elastic, auto-scales |
+| Cost | Lower | Higher (~3× gp2) |
+| Use when | Single instance needs fast persistent disk | Multiple instances need shared access |
