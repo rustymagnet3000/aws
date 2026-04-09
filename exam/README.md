@@ -362,6 +362,8 @@ Real-world examples:
 
 ### Elastic Load Balancer (ELB)
 
+ELB is the umbrella service name — ALB, NLB, and GWLB are the three concrete types you actually choose between. When someone says "use an ELB" they mean "pick one of these".
+
 Sits in front of your instances and distributes incoming traffic across them. Also hides the fact you have multiple instances behind a single DNS endpoint.
 
 Three types you need to know:
