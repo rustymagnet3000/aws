@@ -13,6 +13,7 @@
     - [4. Accessing instance without the correct key](#4-accessing-instance-without-the-correct-key)
     - [Placement Groups](#placement-groups)
     - [AMI](#ami)
+  - [EFS](#efs)
 
 <!-- /TOC -->
 
@@ -284,4 +285,44 @@ An EBS snapshot is a point-in-time backup of an EBS volume, stored incrementally
 - AMIs are locked to a region — always copy before launching in a different region
 - Recycle Bin can also protect AMIs from accidental deletion (same rules as snapshots)
 - Pre-baking software into an AMI = faster launch times vs. using user data scripts to install at boot
+
+## EFS
+
+EFS (Elastic File System) is a shared network drive that multiple EC2 instances can all read and write at the same time.
+
+**EBS vs EFS in one sentence:** EBS is a USB stick plugged into *one* laptop. EFS is a NAS (network-attached storage) drive that every laptop in the office can access simultaneously.
+
+**Key properties:**
+
+- **Multi-instance** — hundreds of EC2 instances across multiple AZs can mount the same EFS volume concurrently
+- **Fully managed NFS** — uses the NFS protocol; Linux only (no Windows support)
+- **Elastic** — grows and shrinks automatically; no need to pre-provision a size like EBS
+- **Pay for what you use** — billed per GB stored, not pre-allocated capacity
+- **More expensive than EBS** — roughly 3× the cost of gp2, but you only pay for actual usage
+
+**Real-world examples:**
+
+- **Web farm with shared content** — 10 EC2 instances behind a load balancer all serve the same WordPress site. Media uploads (images, PDFs) land on EFS so every instance sees the same files instantly. Without EFS, uploads would only exist on one server's EBS volume.
+- **CI/CD build cache** — a Jenkins farm where multiple build agents share a common dependency cache (Maven, npm). Each agent mounts EFS, pulling cached packages instead of downloading from the internet on every build.
+- **Developer home directories** — each developer's home directory lives on EFS. When they SSH into any EC2 instance in the cluster, their files follow them — same experience regardless of which box they land on.
+- **ML training data** — a large dataset stored once on EFS, accessed by multiple training instances running in parallel. No need to copy the dataset to each instance's EBS volume.
+
+**Storage tiers:**
+
+| Tier | Use case |
+| ---- | -------- |
+| Standard | Frequently accessed files |
+| Infrequent Access (IA) | Files not touched in 30+ days — much cheaper |
+
+You can set a lifecycle policy to automatically move files to IA after N days — same idea as S3 lifecycle rules.
+
+**EBS vs EFS — when to pick which:**
+
+| | EBS | EFS |
+| - | --- | --- |
+| Attached to | One instance | Many instances simultaneously |
+| OS support | Linux + Windows | Linux only |
+| Capacity | Fixed, pre-provisioned | Elastic, auto-scales |
+| Cost | Lower | Higher (~3× gp2) |
+| Use when | Single instance needs fast persistent disk | Multiple instances need shared access |
 
