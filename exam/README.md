@@ -358,6 +358,8 @@ Real-world examples:
 - **Vertical scaling** — make the instance bigger (e.g. `t3.micro` → `t3.large`). Simple but has a ceiling, and requires downtime.
 - **Horizontal scaling** — add more instances. No ceiling, no downtime. This is what AWS is built for.
 
+**High Availability is a consequence of Horizontal Scaling.** When you spread multiple instances across AZs, losing one AZ doesn't take down your app — the others keep serving traffic. Vertical scaling can't give you this; a single bigger instance is still a single point of failure.
+
 ### Elastic Load Balancer (ELB)
 
 Sits in front of your instances and distributes incoming traffic across them. Also hides the fact you have multiple instances behind a single DNS endpoint.
