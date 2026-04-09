@@ -339,12 +339,13 @@ Real-world examples:
 - **Genomics pipeline (Max I/O + Provisioned)** — 500 instances all reading a large dataset simultaneously. Max I/O handles the parallelism; Provisioned throughput guarantees the MB/s regardless of how much data is stored.
 - **CI/CD cache (General Purpose + Elastic)** — build frequency varies by team activity. Elastic mode handles the unpredictability without over-provisioning.
 
-**EBS vs EFS — when to pick which:**
+**EBS vs EFS vs Instance Store — when to pick which:**
 
-| | EBS | EFS |
-| - | --- | --- |
-| Attached to | One instance | Many instances simultaneously |
-| OS support | Linux + Windows | Linux only |
-| Capacity | Fixed, pre-provisioned | Elastic, auto-scales |
-| Cost | Lower | Higher (~3× gp2) |
-| Use when | Single instance needs fast persistent disk | Multiple instances need shared access |
+| | EBS | EFS | Instance Store |
+| - | --- | --- | -------------- |
+| Attached to | One instance | Many instances simultaneously | One instance (physically) |
+| Persistence | Survives stop/start | Survives stop/start | Lost on stop or termination |
+| OS support | Linux + Windows | Linux only | Linux + Windows |
+| Capacity | Fixed, pre-provisioned | Elastic, auto-scales | Fixed (comes with instance type) |
+| Cost | Mid | Higher (~3× gp2) | Included in instance price |
+| Use when | Single instance needs fast persistent disk | Multiple instances need shared access | Throwaway scratch space, maximum speed |
