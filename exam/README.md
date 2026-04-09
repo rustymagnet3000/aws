@@ -348,4 +348,3 @@ Real-world examples:
 | Capacity | Fixed, pre-provisioned | Elastic, auto-scales |
 | Cost | Lower | Higher (~3× gp2) |
 | Use when | Single instance needs fast persistent disk | Multiple instances need shared access |
-
