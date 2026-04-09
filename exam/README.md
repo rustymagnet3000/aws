@@ -316,6 +316,29 @@ EFS (Elastic File System) is a shared network drive that multiple EC2 instances 
 
 **Lifecycle management** automatically transitions files between storage tiers based on how recently they were accessed. You define a rule (e.g. "move to Infrequent Access after 30 days of no access") and EFS handles the rest. If a file in IA is accessed again, it's automatically moved back to Standard. This keeps costs down without any manual intervention — same idea as S3 lifecycle rules.
 
+**Performance settings** (configured at creation time):
+
+*Throughput mode:*
+
+| Mode | How it works | Use case |
+| ---- | ------------ | -------- |
+| Bursting | Scales with storage size; earns burst credits over time | Spiky, unpredictable workloads |
+| Provisioned | You specify MB/s regardless of storage size | Consistently high throughput needs |
+| Elastic | Automatically scales up/down with demand | Unpredictable workloads, easiest option |
+
+*Performance mode:*
+
+| Mode | Trade-off | Use case |
+| ---- | --------- | -------- |
+| General Purpose | Lower latency, default | Web serving, CMS, dev environments |
+| Max I/O | Higher latency, higher throughput | Thousands of instances accessing simultaneously |
+
+Real-world examples:
+
+- **WordPress farm (General Purpose + Bursting)** — traffic is spiky (quiet overnight, busy during the day), storage is modest. Bursting handles peaks; General Purpose gives low latency for page loads.
+- **Genomics pipeline (Max I/O + Provisioned)** — 500 instances all reading a large dataset simultaneously. Max I/O handles the parallelism; Provisioned throughput guarantees the MB/s regardless of how much data is stored.
+- **CI/CD cache (General Purpose + Elastic)** — build frequency varies by team activity. Elastic mode handles the unpredictability without over-provisioning.
+
 **EBS vs EFS — when to pick which:**
 
 | | EBS | EFS |
