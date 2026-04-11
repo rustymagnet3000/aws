@@ -395,3 +395,24 @@ Scaling policies:
 | Scheduled | Scale up every weekday at 8am, down at 8pm | Predictable traffic patterns |
 
 If an instance fails a health check, ASG terminates it and launches a replacement automatically.
+
+### ALB and EC2 Security Groups
+
+The recommended pattern is to restrict EC2 instances so they only accept traffic from the ALB — not directly from the internet.
+
+- **ALB security group** — allows inbound 80/443 from `0.0.0.0/0` (the internet)
+- **EC2 security group** — allows inbound on your app port **only from the ALB security group ID** (e.g. `sg-abc123`)
+
+This means:
+
+- Traffic from the internet hits the ALB ✅
+- ALB forwards to the EC2 instance ✅
+- Someone trying to hit the EC2 public IP directly gets blocked ❌
+
+The EC2 inbound rule references the ALB's security group ID as the source rather than an IP range. AWS evaluates this dynamically — any traffic originating from a resource in that security group is allowed through.
+
+**Why it matters:**
+
+- Hides instances from direct internet exposure
+- All traffic flows through the ALB, so you get logging, SSL termination, and routing rules applied consistently
+- If an instance's public IP changes, nothing breaks — the security group reference stays valid
