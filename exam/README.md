@@ -416,3 +416,20 @@ The EC2 inbound rule references the ALB's security group ID as the source rather
 - Hides instances from direct internet exposure
 - All traffic flows through the ALB, so you get logging, SSL termination, and routing rules applied consistently
 - If an instance's public IP changes, nothing breaks — the security group reference stays valid
+
+### EC2 without a Public IP
+
+When using an ALB, the EC2 instance doesn't need a public IP. The ALB sits in a public subnet and handles all internet-facing traffic; the instance sits in a private subnet, unreachable from the internet directly.
+
+```
+Internet → ALB (public subnet, public IP) → EC2 (private subnet, no public IP)
+```
+
+**Cost consideration:** the ALB itself costs ~$16/month minimum regardless of traffic. For simple or personal projects that's often overkill.
+
+| Option | Cost | When to use |
+| ------ | ---- | ----------- |
+| ALB + private EC2 | ~$16+/month | Production, multiple instances, SSL termination at scale |
+| EC2 with public IP, SG locked to your IP on port 22, open on 80/443 | ~$0.005/hr | Dev or personal projects |
+
+For a cost-conscious personal project, a single EC2 instance with a public IP and a tight security group is perfectly reasonable — no ALB needed.
