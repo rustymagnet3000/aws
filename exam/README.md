@@ -376,6 +376,14 @@ Three types you need to know:
 
 ALB is the default choice for most web workloads.
 
+**ALB vs NLB — how to pick:**
+
+- **ALB** — Layer 7, understands HTTP; use when you need path/host-based routing, WebSocket, or to inspect request content.
+- **NLB** — Layer 4, just TCP/UDP bytes; use when you need a **static IP** (ALB only gives you a DNS name), ultra-low latency, or non-HTTP protocols.
+- **Static IP** is the most common exam trigger for NLB — if a question mentions a client whitelisting an IP, or a firewall that needs a fixed IP, that's NLB.
+
+**Target Group** — the collection of targets (EC2 instances, IPs, Lambda functions) that a load balancer routes traffic to. The ALB forwards a request to a Target Group based on listener rules; the Target Group then picks a healthy target and sends the request there. Health checks are configured per Target Group. The path-based routing example above (`/api` → one group, `/images` → another) means each path maps to a different Target Group.
+
 ### Auto Scaling Group (ASG)
 
 Automatically adds or removes EC2 instances based on demand. Works hand-in-hand with an ELB — new instances register with the load balancer automatically.
