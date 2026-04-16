@@ -492,6 +492,21 @@ Scaling policies:
 
 If an instance fails a health check, ASG terminates it and launches a replacement automatically.
 
+### CloudWatch Alarms and Scaling
+
+CloudWatch Alarms are the underlying mechanism for scaling — when you create a step scaling policy you're creating an alarm under the hood (e.g. "CPU > 70% for 2 consecutive minutes"). When the alarm fires, ASG executes the scaling action.
+
+- **Scale out** — alarm breaches upper threshold → add instances
+- **Scale in** — alarm breaches lower threshold → remove instances
+- You can alarm on any CloudWatch metric: CPU, network in/out, or custom app metrics (e.g. requests per instance)
+
+**Cooldown period** — after a scaling action, ASG waits (default 300s) before acting on another alarm, to let the new instances stabilise and prevent thrashing.
+
+**Exam triggers:**
+- *"scale based on the number of messages in an SQS queue"* → custom CloudWatch metric on queue depth → ASG alarm
+- *"scale before CPU gets too high"* → target tracking (simpler) or a CloudWatch Alarm with step scaling
+- *"instances keep scaling in and out rapidly"* → cooldown period too short
+
 ### Health Checks
 
 **ALB health checks** — the ALB periodically sends an HTTP/HTTPS request to each target on a configured path (e.g. `/health`). If the target returns a non-2xx/3xx response, or doesn't respond within the timeout, it's marked unhealthy and taken out of rotation until it passes again.
