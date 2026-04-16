@@ -609,6 +609,25 @@ ECS/Fargate is simpler for most new workloads, but plain EC2 makes more sense wh
 
 **The honest rule:** if you're building something new and it can be containerised, Fargate wins. EC2 makes sense for existing workloads, OS-level requirements, or licensing constraints.
 
+### Bottlerocket
+
+A minimal Linux OS built by AWS specifically for running containers. Used as the AMI on ECS on EC2 or EKS nodes instead of Amazon Linux.
+
+- **Read-only root filesystem** — the OS partition is immutable, can't be modified at runtime
+- **No SSH by default** — access via SSM Session Manager instead
+- **Atomic updates** — OS updates are applied as an image swap and roll back automatically on failure
+- **Smaller attack surface** — no package manager, no unnecessary services, only what's needed to run containers
+
+**Relationship to ECS:** Bottlerocket is the OS your ECS on EC2 instances boot into. When launching an ECS cluster with EC2, you choose an AMI — normally Amazon Linux 2, but Bottlerocket is the hardened alternative:
+
+```
+Bottlerocket (OS) → EC2 instance → ECS agent → containers
+```
+
+AWS publishes official Bottlerocket AMIs for ECS and EKS. Your containers behave identically — the difference is purely OS security posture and update management. Not relevant for Fargate (AWS manages the OS for you). Not a general-purpose OS — you can't install arbitrary software on it.
+
+**Exam relevance:** low for SAA-C03, but appears in security hardening or container infrastructure questions. Worth knowing the concept: *"minimal, immutable OS for containers"*.
+
 ### Exam triggers
 
 - *"run containers without managing servers"* → ECS on Fargate
@@ -616,3 +635,4 @@ ECS/Fargate is simpler for most new workloads, but plain EC2 makes more sense wh
 - *"need GPU instances or a custom AMI for containers"* → ECS on EC2
 - *"keep a container running and replace it if it crashes"* → ECS Service
 - *"scale containers based on load"* → ECS Service + ALB + target tracking policy
+- *"harden the OS on container instances"* → Bottlerocket
