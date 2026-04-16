@@ -522,6 +522,12 @@ After ASG executes a scaling action, it enters a cooldown period (default **300 
 - *"scale-out is too slow to handle traffic spikes"* → cooldown too long, or switch to a pre-baked AMI
 - *"reduce costs by terminating unused instances faster"* → reduce scale-in cooldown
 
+**Lab tip:** use the `stress` package to simulate CPU load and trigger scaling policies in practice:
+```bash
+sudo yum install stress -y
+stress --cpu 4 --timeout 300
+```
+
 ### Health Checks
 
 **ALB health checks** — the ALB periodically sends an HTTP/HTTPS request to each target on a configured path (e.g. `/health`). If the target returns a non-2xx/3xx response, or doesn't respond within the timeout, it's marked unhealthy and taken out of rotation until it passes again.
