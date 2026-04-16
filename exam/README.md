@@ -579,6 +579,21 @@ Runs Docker containers on AWS. The key choice is the **launch type** — whether
 - **Service** — keeps a desired number of tasks running, restarts failed tasks, integrates with ALB
 - **Cluster** — logical grouping of tasks/services (and EC2 instances if using EC2 launch type)
 
+### When to choose EC2 over ECS
+
+ECS/Fargate is simpler for most new workloads, but plain EC2 makes more sense when:
+
+| Reason | Real-world example |
+| ------ | ------------------ |
+| App isn't containerised | A legacy Java monolith deployed as a JAR directly on the OS — containerising it requires real effort and testing |
+| Full OS control needed | An ML training job that needs specific NVIDIA drivers, or a security tool that requires custom kernel modules |
+| Long-running stateful process | A self-hosted PostgreSQL or Redis instance writing to local disk — containers are ephemeral by design |
+| Per-machine software licensing | Oracle DB licensed per physical host — running it in a container doesn't change the licensing model |
+| Cost at low scale | A single t3.small running 24/7 on a 1-year Reserved Instance is cheaper than equivalent always-on Fargate tasks |
+| Team familiarity | A small team that knows EC2 well and has no container experience — Fargate adds orchestration complexity they may not need yet |
+
+**The honest rule:** if you're building something new and it can be containerised, Fargate wins. EC2 makes sense for existing workloads, OS-level requirements, or licensing constraints.
+
 ### Exam triggers
 
 - *"run containers without managing servers"* → ECS on Fargate
