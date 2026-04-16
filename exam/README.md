@@ -489,6 +489,9 @@ Scaling policies:
 | Target tracking | "Keep CPU at 60%" | Simplest, recommended default |
 | Step scaling | Add 2 instances if CPU > 70%, add 4 if CPU > 90% | Fine-grained control |
 | Scheduled | Scale up every weekday at 8am, down at 8pm | Predictable traffic patterns |
+| Predictive | ML analyses historical data and provisions capacity before load arrives | Recurring patterns (e.g. Monday morning spike) |
+
+Predictive scaling can be combined with target tracking — predictive handles the ramp-up, target tracking handles unexpected spikes.
 
 If an instance fails a health check, ASG terminates it and launches a replacement automatically.
 
@@ -500,12 +503,24 @@ CloudWatch Alarms are the underlying mechanism for scaling — when you create a
 - **Scale in** — alarm breaches lower threshold → remove instances
 - You can alarm on any CloudWatch metric: CPU, network in/out, or custom app metrics (e.g. requests per instance)
 
-**Cooldown period** — after a scaling action, ASG waits (default 300s) before acting on another alarm, to let the new instances stabilise and prevent thrashing.
-
 **Exam triggers:**
 - *"scale based on the number of messages in an SQS queue"* → custom CloudWatch metric on queue depth → ASG alarm
 - *"scale before CPU gets too high"* → target tracking (simpler) or a CloudWatch Alarm with step scaling
-- *"instances keep scaling in and out rapidly"* → cooldown period too short
+
+### Scaling Cooldowns
+
+After ASG executes a scaling action, it enters a cooldown period (default **300 seconds**) during which it ignores further scaling triggers. This gives new instances time to stabilise before ASG reacts again.
+
+**Scale-out vs scale-in:**
+- Be aggressive with scale-out (short cooldown) — add capacity fast when load spikes
+- Be conservative with scale-in (longer cooldown) — avoid terminating instances that were just starting to be useful
+
+**Pre-baked AMIs** — if your instances take a long time to become healthy (bootstrapping, installing packages), new capacity arrives slowly and cooldowns need to be longer. A pre-baked AMI with your app already installed means instances are ready faster, so you can reduce the cooldown and scale more responsively.
+
+**Exam triggers:**
+- *"instances are being launched and terminated repeatedly"* → cooldown too short
+- *"scale-out is too slow to handle traffic spikes"* → cooldown too long, or switch to a pre-baked AMI
+- *"reduce costs by terminating unused instances faster"* → reduce scale-in cooldown
 
 ### Health Checks
 
