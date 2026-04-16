@@ -492,6 +492,26 @@ Scaling policies:
 
 If an instance fails a health check, ASG terminates it and launches a replacement automatically.
 
+### Health Checks
+
+**ALB health checks** — the ALB periodically sends an HTTP/HTTPS request to each target on a configured path (e.g. `/health`). If the target returns a non-2xx/3xx response, or doesn't respond within the timeout, it's marked unhealthy and taken out of rotation until it passes again.
+
+Settings you can tune:
+
+| Setting | Description | Default |
+| ------- | ----------- | ------- |
+| Path | Endpoint to hit | `/` |
+| Interval | How often to check | 30s |
+| Threshold | Consecutive successes/failures to change state | 2 healthy / 3 unhealthy |
+| Timeout | How long to wait for a response | 5s |
+
+**ASG health checks** — by default ASG uses EC2 status checks (is the instance running?). You can also enable **ELB health checks** — if the ALB marks an instance unhealthy, ASG terminates and replaces it. This is the more useful setting in production.
+
+**Exam triggers:**
+- *"unhealthy instances are still receiving traffic"* → health check misconfigured or threshold too high
+- *"instances are being terminated too aggressively"* → health check interval/threshold too sensitive
+- *"ASG is not replacing unhealthy instances that fail ALB health checks"* → ASG is only using EC2 checks, needs ELB health checks enabled
+
 ### ALB and EC2 Security Groups
 
 The recommended pattern is to restrict EC2 instances so they only accept traffic from the ALB — not directly from the internet.
@@ -529,3 +549,40 @@ Internet → ALB (public subnet, public IP) → EC2 (private subnet, no public I
 | EC2 with public IP, SG locked to your IP on port 22, open on 80/443 | ~$0.005/hr | Dev or personal projects |
 
 For a cost-conscious personal project, a single EC2 instance with a public IP and a tight security group is perfectly reasonable — no ALB needed.
+
+## ECS (Elastic Container Service)
+
+Runs Docker containers on AWS. The key choice is the **launch type** — whether you manage the underlying infrastructure or not.
+
+| Launch type | What you manage | What AWS manages |
+| ----------- | --------------- | ---------------- |
+| **ECS on EC2** | EC2 instances (OS, patching, ASG) | Container scheduling on top of your fleet |
+| **ECS on Fargate** | Nothing | Everything — instances, OS, scaling |
+
+**ECS on EC2** is a middle ground: you get containers, but still control the underlying fleet. Useful when you need specific instance types (e.g. GPU), custom AMIs, or cost optimisation via Reserved Instances.
+
+**ECS on Fargate** is fully serverless — you define a task (Docker image, CPU, memory) and AWS runs it. No instances to patch or scale. You pay per vCPU/memory per second.
+
+### ECS vs ASG + EC2
+
+| | ASG + EC2 | ECS + Fargate |
+| - | --------- | ------------- |
+| Unit of work | Instance | Container (task) |
+| OS management | You | AWS |
+| Scaling | Scale instances | Scale tasks |
+| Best for | Full control, existing AMIs | Containerised apps, minimal ops overhead |
+
+### Key concepts
+
+- **Task definition** — blueprint for your container: image, CPU, memory, ports, env vars
+- **Task** — a running instance of a task definition (like a Pod in Kubernetes)
+- **Service** — keeps a desired number of tasks running, restarts failed tasks, integrates with ALB
+- **Cluster** — logical grouping of tasks/services (and EC2 instances if using EC2 launch type)
+
+### Exam triggers
+
+- *"run containers without managing servers"* → ECS on Fargate
+- *"migrate a containerised app with minimal infrastructure overhead"* → Fargate
+- *"need GPU instances or a custom AMI for containers"* → ECS on EC2
+- *"keep a container running and replace it if it crashes"* → ECS Service
+- *"scale containers based on load"* → ECS Service + ALB + target tracking policy
