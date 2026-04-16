@@ -396,6 +396,49 @@ The appliance runs inside your VPC; GWLB handles the traffic steering transparen
 
 **Target Group** — the collection of targets (EC2 instances, IPs, Lambda functions) that a load balancer routes traffic to. The ALB forwards a request to a Target Group based on listener rules; the Target Group then picks a healthy target and sends the request there. Health checks are configured per Target Group. The path-based routing example above (`/api` → one group, `/images` → another) means each path maps to a different Target Group.
 
+### SSL/TLS and Load Balancers
+
+The ALB decrypts HTTPS traffic at the load balancer, then forwards plain HTTP to your instances — offloading the CPU cost of encryption from EC2:
+
+```
+Client → HTTPS → ALB (terminates TLS) → HTTP → EC2
+```
+
+- Certificates are managed via **ACM (AWS Certificate Manager)** — ACM handles renewal automatically, no manual cert management
+- NLB can also terminate TLS, but uniquely supports **TLS passthrough** — forwards encrypted traffic all the way to the instance when end-to-end encryption is required
+
+**SNI (Server Name Indication)** — allows one ALB to serve **multiple certificates** for multiple domains on a single listener. The client includes the hostname in the TLS handshake; the ALB picks the right cert. Without SNI you'd need one ALB per domain.
+
+**Exam triggers:**
+
+ACM:
+- *"automatically renew SSL certificates"* → ACM
+- *"a certificate is expiring and causing downtime"* → ACM (would have renewed it automatically)
+- *"provision a free public certificate for an ALB"* → ACM (free for use with AWS services)
+
+SNI:
+- *"company hosts api.example.com and app.example.com behind one ALB"* → SNI, one cert per domain on the same listener
+- *"reduce costs by consolidating multiple load balancers into one"* (where each served a different domain) → SNI enables this
+
+TLS passthrough:
+- *"compliance requires encryption in transit all the way to the application"* → NLB passthrough
+- *"the application handles its own certificate"* → NLB passthrough
+- *"mutual TLS (mTLS) between client and server"* → NLB passthrough (ALB terminates TLS so it can't pass client certs through)
+
+TLS termination at ALB:
+- *"reduce CPU load on EC2 instances"* → terminate TLS at the ALB
+- *"centralise certificate management across many instances"* → ALB + ACM
+
+### Connection Draining
+
+When an instance is deregistered from a Target Group (e.g. during scale-in or a deployment), the load balancer stops sending **new** requests to it but allows **in-flight requests** to complete before fully removing it. This is called **Connection Draining** on CLB and **Deregistration Delay** on ALB/NLB.
+
+- Default timeout: **300 seconds** (range: 1–3600, or 0 to disable)
+- Short-lived requests (APIs, web pages) → lower it (e.g. 30s) to speed up deployments
+- Long-running requests (video processing, large uploads) → keep it high so requests aren't cut off
+
+**Exam trigger:** *"instances are being terminated before requests finish"* → increase Deregistration Delay. *"deployments are slow to complete"* → decrease it.
+
 ### Cross-Zone Load Balancing
 
 Without cross-zone load balancing, each load balancer node only distributes traffic to instances **in its own AZ**. This can cause uneven load if AZs have different instance counts.
