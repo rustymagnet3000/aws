@@ -14,6 +14,7 @@
     - [Placement Groups](#placement-groups)
     - [AMI](#ami)
   - [EFS](#efs)
+  - [Scaling and ELB](#scaling-and-elb)
 
 <!-- /TOC -->
 
@@ -142,7 +143,7 @@ EBS is a hard drive that lives in the cloud and plugs into your EC2 instance ove
 - **Attached over the network** — not physically inside the instance, but behaves like a local disk
 - **Locked to an AZ** — an EBS volume in `eu-west-1a` can't be attached to an instance in `eu-west-1b`
 - **Survives instance stop/start** — data persists; the root volume can optionally survive termination too
-- **One instance at a time** — by default a volume attaches to one instance (EBS Multi-Attach is the exception, for specific use cases)
+- **One instance at a time** — by default a volume attaches to one instance. **EBS Multi-Attach** is the exception: a single `io1`/`io2` volume can attach to up to 16 instances in the same AZ simultaneously. The instances must manage concurrent writes themselves (typically via a cluster-aware filesystem like GFS2). Use case: high-availability databases (e.g. Oracle RAC) where multiple nodes need shared block storage with no single point of failure.
 - **Snapshots** — point-in-time backups stored in S3; snapshots can be copied across regions to migrate data
 
 **Volume types:**
@@ -339,12 +340,321 @@ Real-world examples:
 - **Genomics pipeline (Max I/O + Provisioned)** — 500 instances all reading a large dataset simultaneously. Max I/O handles the parallelism; Provisioned throughput guarantees the MB/s regardless of how much data is stored.
 - **CI/CD cache (General Purpose + Elastic)** — build frequency varies by team activity. Elastic mode handles the unpredictability without over-provisioning.
 
-**EBS vs EFS — when to pick which:**
+**EBS vs EFS vs Instance Store — when to pick which:**
 
-| | EBS | EFS |
-| - | --- | --- |
-| Attached to | One instance | Many instances simultaneously |
-| OS support | Linux + Windows | Linux only |
-| Capacity | Fixed, pre-provisioned | Elastic, auto-scales |
-| Cost | Lower | Higher (~3× gp2) |
-| Use when | Single instance needs fast persistent disk | Multiple instances need shared access |
+| | EBS | EFS | Instance Store |
+| - | --- | --- | -------------- |
+| Attached to | One instance | Many instances simultaneously | One instance (physically) |
+| Persistence | Survives stop/start | Survives stop/start | Lost on stop or termination |
+| OS support | Linux + Windows | Linux only | Linux + Windows |
+| Capacity | Fixed, pre-provisioned | Elastic, auto-scales | Fixed (comes with instance type) |
+| Cost | Mid | Higher (~3× gp2) | Included in instance price |
+| Use when | Single instance needs fast persistent disk | Multiple instances need shared access | Throwaway scratch space, maximum speed |
+
+## Scaling and ELB
+
+**Scalability — the two types:**
+
+- **Vertical scaling** — make the instance bigger (e.g. `t3.micro` → `t3.large`). Simple but has a ceiling, and requires downtime.
+- **Horizontal scaling** — add more instances. No ceiling, no downtime. This is what AWS is built for.
+
+**High Availability is a consequence of Horizontal Scaling.** When you spread multiple instances across AZs, losing one AZ doesn't take down your app — the others keep serving traffic. Vertical scaling can't give you this; a single bigger instance is still a single point of failure.
+
+### Elastic Load Balancer (ELB)
+
+ELB is the umbrella service name — ALB, NLB, and GWLB are the three concrete types you actually choose between. When someone says "use an ELB" they mean "pick one of these".
+
+Sits in front of your instances and distributes incoming traffic across them. Also hides the fact you have multiple instances behind a single DNS endpoint.
+
+Three types you need to know:
+
+| Type | Layer | Protocol | Use case |
+| ---- | ----- | -------- | -------- |
+| ALB (Application) | 7 | HTTP/HTTPS | Web apps, microservices, path-based routing (`/api` → one group, `/images` → another) |
+| NLB (Network) | 4 | TCP/UDP | Ultra-high performance, static IP, gaming, IoT |
+| GWLB (Gateway) | 3 | IP | Route traffic through firewalls/intrusion detection before it hits your app |
+
+ALB is the default choice for most web workloads.
+
+**GWLB — what it's actually for:**
+
+GWLB is not a CDN or DDoS service. It's for routing traffic through **third-party network appliances** (firewalls, IDS/IPS, deep packet inspection tools from vendors like Palo Alto, Fortinet, or Check Point) before it reaches your app:
+
+```
+Internet → GWLB → Firewall appliance → Your app
+```
+
+The appliance runs inside your VPC; GWLB handles the traffic steering transparently at Layer 3. Mostly used by enterprises and regulated industries (finance, healthcare, gov) with compliance requirements mandating a specific security appliance.
+
+**Exam trigger:** *"inspect or filter all traffic with a third-party appliance"* → GWLB.
+
+**ALB vs NLB — how to pick:**
+
+- **ALB** — Layer 7, understands HTTP; use when you need path/host-based routing, WebSocket, or to inspect request content.
+- **NLB** — Layer 4, just TCP/UDP bytes; use when you need a **static IP** (ALB only gives you a DNS name), ultra-low latency, or non-HTTP protocols.
+- **Static IP** is the most common exam trigger for NLB — if a question mentions a client whitelisting an IP, or a firewall that needs a fixed IP, that's NLB.
+
+**Target Group** — the collection of targets (EC2 instances, IPs, Lambda functions) that a load balancer routes traffic to. The ALB forwards a request to a Target Group based on listener rules; the Target Group then picks a healthy target and sends the request there. Health checks are configured per Target Group. The path-based routing example above (`/api` → one group, `/images` → another) means each path maps to a different Target Group.
+
+### SSL/TLS and Load Balancers
+
+The ALB decrypts HTTPS traffic at the load balancer, then forwards plain HTTP to your instances — offloading the CPU cost of encryption from EC2:
+
+```
+Client → HTTPS → ALB (terminates TLS) → HTTP → EC2
+```
+
+- Certificates are managed via **ACM (AWS Certificate Manager)** — ACM handles renewal automatically, no manual cert management
+- NLB can also terminate TLS, but uniquely supports **TLS passthrough** — forwards encrypted traffic all the way to the instance when end-to-end encryption is required
+
+**SNI (Server Name Indication)** — allows one ALB to serve **multiple certificates** for multiple domains on a single listener. The client includes the hostname in the TLS handshake; the ALB picks the right cert. Without SNI you'd need one ALB per domain.
+
+**Exam triggers:**
+
+ACM:
+- *"automatically renew SSL certificates"* → ACM
+- *"a certificate is expiring and causing downtime"* → ACM (would have renewed it automatically)
+- *"provision a free public certificate for an ALB"* → ACM (free for use with AWS services)
+
+SNI:
+- *"company hosts api.example.com and app.example.com behind one ALB"* → SNI, one cert per domain on the same listener
+- *"reduce costs by consolidating multiple load balancers into one"* (where each served a different domain) → SNI enables this
+
+TLS passthrough:
+- *"compliance requires encryption in transit all the way to the application"* → NLB passthrough
+- *"the application handles its own certificate"* → NLB passthrough
+- *"mutual TLS (mTLS) between client and server"* → NLB passthrough (ALB terminates TLS so it can't pass client certs through)
+
+TLS termination at ALB:
+- *"reduce CPU load on EC2 instances"* → terminate TLS at the ALB
+- *"centralise certificate management across many instances"* → ALB + ACM
+
+### Connection Draining
+
+When an instance is deregistered from a Target Group (e.g. during scale-in or a deployment), the load balancer stops sending **new** requests to it but allows **in-flight requests** to complete before fully removing it. This is called **Connection Draining** on CLB and **Deregistration Delay** on ALB/NLB.
+
+- Default timeout: **300 seconds** (range: 1–3600, or 0 to disable)
+- Short-lived requests (APIs, web pages) → lower it (e.g. 30s) to speed up deployments
+- Long-running requests (video processing, large uploads) → keep it high so requests aren't cut off
+
+**Exam trigger:** *"instances are being terminated before requests finish"* → increase Deregistration Delay. *"deployments are slow to complete"* → decrease it.
+
+### Cross-Zone Load Balancing
+
+Without cross-zone load balancing, each load balancer node only distributes traffic to instances **in its own AZ**. This can cause uneven load if AZs have different instance counts.
+
+With cross-zone load balancing enabled, each node distributes traffic evenly **across all instances in all AZs**.
+
+| Type | Cross-zone default | Cost |
+| ---- | ------------------ | ---- |
+| ALB | **Always on**, cannot disable | No charge for inter-AZ data |
+| NLB | Off by default | Charged for inter-AZ data if enabled |
+| GWLB | Off by default | Charged for inter-AZ data if enabled |
+
+**Exam trigger:** *"traffic is unevenly distributed across AZs"* → cross-zone load balancing is disabled (or you have unequal instance counts per AZ).
+
+### Sticky Sessions
+
+By default, a load balancer routes each request independently — a user could hit a different instance on every request. Sticky sessions (a.k.a. session affinity) bind a user to a specific target for the duration of their session using a **cookie**.
+
+Supported on ALB (not NLB — NLB is Layer 4 and has no concept of a session).
+
+Two cookie types on ALB:
+
+| Cookie type | Generated by | Notes |
+| ----------- | ------------ | ----- |
+| Duration-based | The ALB (`AWSALB` cookie) | Simplest; you set the TTL |
+| Application-based | Your app (custom name) | App controls expiry logic |
+
+**The problem with sticky sessions:** if the target instance fails, the session is lost. The user gets routed to a new instance that has no knowledge of their session.
+
+**The better solution:** make your app stateless — store session data in **ElastiCache** or **DynamoDB** so any instance can serve any request. Sticky sessions are a workaround, not a fix.
+
+**Exam trigger:** *"users are being logged out when the load balancer routes them to a different instance"* → sticky sessions (short-term fix) or move session state to ElastiCache (proper fix).
+
+### Auto Scaling Group (ASG)
+
+Automatically adds or removes EC2 instances based on demand. Works hand-in-hand with an ELB — new instances register with the load balancer automatically.
+
+Three capacity numbers:
+
+- **Minimum** — never go below this (e.g. 2)
+- **Desired** — what you want right now (e.g. 4)
+- **Maximum** — never exceed this (e.g. 10)
+
+Scaling policies:
+
+| Policy | How it works | Use case |
+| ------ | ------------ | -------- |
+| Target tracking | "Keep CPU at 60%" | Simplest, recommended default |
+| Step scaling | Add 2 instances if CPU > 70%, add 4 if CPU > 90% | Fine-grained control |
+| Scheduled | Scale up every weekday at 8am, down at 8pm | Predictable traffic patterns |
+| Predictive | ML analyses historical data and provisions capacity before load arrives | Recurring patterns (e.g. Monday morning spike) |
+
+Predictive scaling can be combined with target tracking — predictive handles the ramp-up, target tracking handles unexpected spikes.
+
+If an instance fails a health check, ASG terminates it and launches a replacement automatically.
+
+### CloudWatch Alarms and Scaling
+
+CloudWatch Alarms are the underlying mechanism for scaling — when you create a step scaling policy you're creating an alarm under the hood (e.g. "CPU > 70% for 2 consecutive minutes"). When the alarm fires, ASG executes the scaling action.
+
+- **Scale out** — alarm breaches upper threshold → add instances
+- **Scale in** — alarm breaches lower threshold → remove instances
+- You can alarm on any CloudWatch metric: CPU, network in/out, or custom app metrics (e.g. requests per instance)
+
+**Exam triggers:**
+- *"scale based on the number of messages in an SQS queue"* → custom CloudWatch metric on queue depth → ASG alarm
+- *"scale before CPU gets too high"* → target tracking (simpler) or a CloudWatch Alarm with step scaling
+
+### Scaling Cooldowns
+
+After ASG executes a scaling action, it enters a cooldown period (default **300 seconds**) during which it ignores further scaling triggers. This gives new instances time to stabilise before ASG reacts again.
+
+**Scale-out vs scale-in:**
+- Be aggressive with scale-out (short cooldown) — add capacity fast when load spikes
+- Be conservative with scale-in (longer cooldown) — avoid terminating instances that were just starting to be useful
+
+**Pre-baked AMIs** — if your instances take a long time to become healthy (bootstrapping, installing packages), new capacity arrives slowly and cooldowns need to be longer. A pre-baked AMI with your app already installed means instances are ready faster, so you can reduce the cooldown and scale more responsively.
+
+**Exam triggers:**
+- *"instances are being launched and terminated repeatedly"* → cooldown too short
+- *"scale-out is too slow to handle traffic spikes"* → cooldown too long, or switch to a pre-baked AMI
+- *"reduce costs by terminating unused instances faster"* → reduce scale-in cooldown
+
+**Lab tip:** use the `stress` package to simulate CPU load and trigger scaling policies in practice:
+
+```bash
+sudo yum install stress -y
+stress --cpu 4 --timeout 300
+```
+
+### Health Checks
+
+**ALB health checks** — the ALB periodically sends an HTTP/HTTPS request to each target on a configured path (e.g. `/health`). If the target returns a non-2xx/3xx response, or doesn't respond within the timeout, it's marked unhealthy and taken out of rotation until it passes again.
+
+Settings you can tune:
+
+| Setting | Description | Default |
+| ------- | ----------- | ------- |
+| Path | Endpoint to hit | `/` |
+| Interval | How often to check | 30s |
+| Threshold | Consecutive successes/failures to change state | 2 healthy / 3 unhealthy |
+| Timeout | How long to wait for a response | 5s |
+
+**ASG health checks** — by default ASG uses EC2 status checks (is the instance running?). You can also enable **ELB health checks** — if the ALB marks an instance unhealthy, ASG terminates and replaces it. This is the more useful setting in production.
+
+**Exam triggers:**
+- *"unhealthy instances are still receiving traffic"* → health check misconfigured or threshold too high
+- *"instances are being terminated too aggressively"* → health check interval/threshold too sensitive
+- *"ASG is not replacing unhealthy instances that fail ALB health checks"* → ASG is only using EC2 checks, needs ELB health checks enabled
+
+### ALB and EC2 Security Groups
+
+The recommended pattern is to restrict EC2 instances so they only accept traffic from the ALB — not directly from the internet.
+
+- **ALB security group** — allows inbound 80/443 from `0.0.0.0/0` (the internet)
+- **EC2 security group** — allows inbound on your app port **only from the ALB security group ID** (e.g. `sg-abc123`)
+
+This means:
+
+- Traffic from the internet hits the ALB ✅
+- ALB forwards to the EC2 instance ✅
+- Someone trying to hit the EC2 public IP directly gets blocked ❌
+
+The EC2 inbound rule references the ALB's security group ID as the source rather than an IP range. AWS evaluates this dynamically — any traffic originating from a resource in that security group is allowed through.
+
+**Why it matters:**
+
+- Hides instances from direct internet exposure
+- All traffic flows through the ALB, so you get logging, SSL termination, and routing rules applied consistently
+- If an instance's public IP changes, nothing breaks — the security group reference stays valid
+
+### EC2 without a Public IP
+
+When using an ALB, the EC2 instance doesn't need a public IP. The ALB sits in a public subnet and handles all internet-facing traffic; the instance sits in a private subnet, unreachable from the internet directly.
+
+```
+Internet → ALB (public subnet, public IP) → EC2 (private subnet, no public IP)
+```
+
+**Cost consideration:** the ALB itself costs ~$16/month minimum regardless of traffic. For simple or personal projects that's often overkill.
+
+| Option | Cost | When to use |
+| ------ | ---- | ----------- |
+| ALB + private EC2 | ~$16+/month | Production, multiple instances, SSL termination at scale |
+| EC2 with public IP, SG locked to your IP on port 22, open on 80/443 | ~$0.005/hr | Dev or personal projects |
+
+For a cost-conscious personal project, a single EC2 instance with a public IP and a tight security group is perfectly reasonable — no ALB needed.
+
+## ECS (Elastic Container Service)
+
+Runs Docker containers on AWS. The key choice is the **launch type** — whether you manage the underlying infrastructure or not.
+
+| Launch type | What you manage | What AWS manages |
+| ----------- | --------------- | ---------------- |
+| **ECS on EC2** | EC2 instances (OS, patching, ASG) | Container scheduling on top of your fleet |
+| **ECS on Fargate** | Nothing | Everything — instances, OS, scaling |
+
+**ECS on EC2** is a middle ground: you get containers, but still control the underlying fleet. Useful when you need specific instance types (e.g. GPU), custom AMIs, or cost optimisation via Reserved Instances.
+
+**ECS on Fargate** is fully serverless — you define a task (Docker image, CPU, memory) and AWS runs it. No instances to patch or scale. You pay per vCPU/memory per second.
+
+### ECS vs ASG + EC2
+
+| | ASG + EC2 | ECS + Fargate |
+| - | --------- | ------------- |
+| Unit of work | Instance | Container (task) |
+| OS management | You | AWS |
+| Scaling | Scale instances | Scale tasks |
+| Best for | Full control, existing AMIs | Containerised apps, minimal ops overhead |
+
+### Key concepts
+
+- **Task definition** — blueprint for your container: image, CPU, memory, ports, env vars
+- **Task** — a running instance of a task definition (like a Pod in Kubernetes)
+- **Service** — keeps a desired number of tasks running, restarts failed tasks, integrates with ALB
+- **Cluster** — logical grouping of tasks/services (and EC2 instances if using EC2 launch type)
+
+### When to choose EC2 over ECS
+
+ECS/Fargate is simpler for most new workloads, but plain EC2 makes more sense when:
+
+| Reason | Real-world example |
+| ------ | ------------------ |
+| App isn't containerised | A legacy Java monolith deployed as a JAR directly on the OS — containerising it requires real effort and testing |
+| Full OS control needed | An ML training job that needs specific NVIDIA drivers, or a security tool that requires custom kernel modules |
+| Long-running stateful process | A self-hosted PostgreSQL or Redis instance writing to local disk — containers are ephemeral by design |
+| Per-machine software licensing | Oracle DB licensed per physical host — running it in a container doesn't change the licensing model |
+| Cost at low scale | A single t3.small running 24/7 on a 1-year Reserved Instance is cheaper than equivalent always-on Fargate tasks |
+| Team familiarity | A small team that knows EC2 well and has no container experience — Fargate adds orchestration complexity they may not need yet |
+
+**The honest rule:** if you're building something new and it can be containerised, Fargate wins. EC2 makes sense for existing workloads, OS-level requirements, or licensing constraints.
+
+### Bottlerocket
+
+A minimal Linux OS built by AWS specifically for running containers. Used as the AMI on ECS on EC2 or EKS nodes instead of Amazon Linux.
+
+- **Read-only root filesystem** — the OS partition is immutable, can't be modified at runtime
+- **No SSH by default** — access via SSM Session Manager instead
+- **Atomic updates** — OS updates are applied as an image swap and roll back automatically on failure
+- **Smaller attack surface** — no package manager, no unnecessary services, only what's needed to run containers
+
+**Relationship to ECS:** Bottlerocket is the OS your ECS on EC2 instances boot into. When launching an ECS cluster with EC2, you choose an AMI — normally Amazon Linux 2, but Bottlerocket is the hardened alternative:
+
+```
+Bottlerocket (OS) → EC2 instance → ECS agent → containers
+```
+
+AWS publishes official Bottlerocket AMIs for ECS and EKS. Your containers behave identically — the difference is purely OS security posture and update management. Not relevant for Fargate (AWS manages the OS for you). Not a general-purpose OS — you can't install arbitrary software on it.
+
+**Exam relevance:** low for SAA-C03, but appears in security hardening or container infrastructure questions. Worth knowing the concept: *"minimal, immutable OS for containers"*.
+
+### Exam triggers
+
+- *"run containers without managing servers"* → ECS on Fargate
+- *"migrate a containerised app with minimal infrastructure overhead"* → Fargate
+- *"need GPU instances or a custom AMI for containers"* → ECS on EC2
+- *"keep a container running and replace it if it crashes"* → ECS Service
+- *"scale containers based on load"* → ECS Service + ALB + target tracking policy
+- *"harden the OS on container instances"* → Bottlerocket
