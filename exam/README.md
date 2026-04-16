@@ -523,6 +523,7 @@ After ASG executes a scaling action, it enters a cooldown period (default **300 
 - *"reduce costs by terminating unused instances faster"* → reduce scale-in cooldown
 
 **Lab tip:** use the `stress` package to simulate CPU load and trigger scaling policies in practice:
+
 ```bash
 sudo yum install stress -y
 stress --cpu 4 --timeout 300
