@@ -516,6 +516,7 @@ CloudWatch Alarms are the underlying mechanism for scaling — when you create a
 **Exam triggers:**
 - *"scale based on the number of messages in an SQS queue"* → custom CloudWatch metric on queue depth → ASG alarm
 - *"scale before CPU gets too high"* → target tracking (simpler) or a CloudWatch Alarm with step scaling
+- *"ensure the average number of connections per instance is around X"* → target tracking on `ALBRequestCountPerTarget` metric; the word "around" is the giveaway for target tracking over step scaling
 
 ### Scaling Cooldowns
 
@@ -668,3 +669,88 @@ AWS publishes official Bottlerocket AMIs for ECS and EKS. Your containers behave
 - *"keep a container running and replace it if it crashes"* → ECS Service
 - *"scale containers based on load"* → ECS Service + ALB + target tracking policy
 - *"harden the OS on container instances"* → Bottlerocket
+
+## RDS (Relational Database Service)
+
+Managed SQL database service. AWS handles provisioning, OS patching, backups, monitoring, and hardware. You manage the database itself — schema, queries, users.
+
+**Supported engines:** PostgreSQL, MySQL, MariaDB, Oracle, Microsoft SQL Server, Amazon Aurora.
+
+**RDS vs DB on EC2:**
+
+| | RDS | DB on EC2 |
+| - | --- | --------- |
+| OS patching | AWS | You |
+| Backups | Automated | You |
+| High availability | Multi-AZ with one click | Complex to set up |
+| Read scaling | Read replicas built-in | You |
+| Cost | Higher | Lower (but more ops work) |
+
+**What you can't do with RDS:** SSH into the instance, install custom software, or access the OS layer. If you need OS-level access to the database host, run the DB on EC2 — but you give up all managed features.
+
+**Exam trigger:** *"managed relational database"* or *"reduce database administration overhead"* → RDS. *"need OS access to the database host"* → DB on EC2.
+
+### Read Replicas
+
+A single RDS instance handles both reads and writes. Under heavy read load (reporting, analytics, dashboards) the primary gets overwhelmed even when writes are infrequent. Read replicas offload that traffic to separate instances.
+
+**How they work:**
+
+- The primary handles all writes
+- Changes are replicated to replicas **asynchronously**
+- Your app directs reads to the replica endpoint, writes to the primary endpoint
+
+**The staleness trade-off:**
+
+Because replication is async, replicas lag behind the primary — typically milliseconds, but more under heavy load:
+
+| Scenario | Use primary or replica? |
+| -------- | ----------------------- |
+| Reporting and analytics | Replica — slightly stale data is fine |
+| Read-heavy dashboard | Replica |
+| Financial transaction — read balance after transfer | Primary — must be accurate |
+| User reads their own just-written data | Primary |
+
+**Exam triggers:**
+- *"improve read performance"* or *"offload reporting queries"* → read replicas
+- *"data must always be up to date"* → query the primary, not a replica
+
+### Multi-AZ
+
+Multi-AZ is about **availability**, not performance. AWS maintains a standby instance in a different AZ kept in sync **synchronously**. If the primary fails, RDS automatically fails over to the standby — no manual intervention, no data loss.
+
+- The standby is **not readable** — it exists solely for failover
+- Failover typically takes 1–2 minutes (DNS flips to the standby)
+- Protects against AZ failure, instance failure, or maintenance events
+
+**Multi-AZ vs Read Replicas — the most common exam confusion:**
+
+| | Multi-AZ | Read Replica |
+| - | -------- | ------------ |
+| Purpose | High availability | Read scaling |
+| Replication | Synchronous | Asynchronous |
+| Standby readable? | No | Yes |
+| Automatic failover? | Yes | No |
+| Data loss on failover? | None | Possible (lag) |
+
+**Exam triggers:**
+- *"automatic failover"*, *"high availability"*, or *"survive an AZ failure"* → Multi-AZ
+- *"improve read performance"* → Read Replicas
+- Both needed → Multi-AZ for HA + Read Replicas for scaling (they can be used together)
+
+**Using them together:**
+
+Multi-AZ and Read Replicas are complementary — you can and often should use both:
+
+```
+Primary (Multi-AZ) → synchronous → Standby (failover, not readable)
+Primary (Multi-AZ) → asynchronous → Read Replica (readable, slight lag)
+```
+
+**Promoting a Read Replica:**
+
+A Read Replica can be promoted to become a standalone primary. This breaks replication and the replica becomes its own independent instance. Common use cases:
+
+- **Cross-region migration** — create a Read Replica in the target region, let it catch up, then promote it and cut over with minimal downtime
+- **Disaster recovery** — if the primary region fails entirely, promote a cross-region replica to take over
+- **Forking for testing** — promote a replica to create a copy of production for testing without affecting the live database
