@@ -394,7 +394,17 @@ The appliance runs inside your VPC; GWLB handles the traffic steering transparen
 - **NLB** — Layer 4, just TCP/UDP bytes; use when you need a **static IP** (ALB only gives you a DNS name), ultra-low latency, or non-HTTP protocols.
 - **Static IP** is the most common exam trigger for NLB — if a question mentions a client whitelisting an IP, or a firewall that needs a fixed IP, that's NLB.
 
-**Target Group** — the collection of targets (EC2 instances, IPs, Lambda functions) that a load balancer routes traffic to. The ALB forwards a request to a Target Group based on listener rules; the Target Group then picks a healthy target and sends the request there. Health checks are configured per Target Group. The path-based routing example above (`/api` → one group, `/images` → another) means each path maps to a different Target Group.
+**Target Group** — the collection of targets that a load balancer routes traffic to. The load balancer forwards a request to a Target Group based on listener rules; the Target Group then picks a healthy target and sends the request there. Health checks are configured per Target Group.
+
+All three load balancer types use Target Groups, but with different target types:
+
+| Load balancer | Valid targets | Routing basis |
+| ------------- | ------------- | ------------- |
+| ALB | EC2 instances, IPs, Lambda functions | Layer 7 — path, host, headers |
+| NLB | EC2 instances, IPs, ALBs | Layer 4 — TCP/UDP only |
+| GWLB | Appliance instances | Layer 3 — all IP traffic |
+
+The path-based routing example above (`/api` → one group, `/images` → another) is ALB-specific — each path maps to a different Target Group.
 
 ### SSL/TLS and Load Balancers
 
