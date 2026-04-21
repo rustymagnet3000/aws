@@ -690,6 +690,35 @@ Managed SQL database service. AWS handles provisioning, OS patching, backups, mo
 
 **Exam trigger:** *"managed relational database"* or *"reduce database administration overhead"* → RDS. *"need OS access to the database host"* → DB on EC2.
 
+### RDS and Aurora Security
+
+**Network isolation:**
+
+- RDS/Aurora instances are deployed in your VPC — typically in **private subnets** with no internet access
+- **Security groups** control which IPs/resources can connect to the database port
+- **Public accessibility** is off by default — keep it that way in production
+
+**Authentication — three options:**
+
+| Method | How it works | Use case |
+| ------ | ------------ | -------- |
+| Username/password | Traditional DB credentials | Default, simplest |
+| IAM database auth | App gets a short-lived token via AWS API instead of a password | Lambda, apps with IAM roles — no credentials to store |
+| Kerberos / Active Directory | Integrates with existing AD infrastructure | Enterprises with centralised identity (SQL Server, Oracle, PostgreSQL) |
+
+**Audit logging:**
+
+- Enable database engine logs (slow query, general, error) and send to **CloudWatch Logs**
+- Aurora also supports **Advanced Auditing** for fine-grained query-level logging
+
+**Key exam detail:** you **cannot SSH** into RDS or Aurora. There is no OS-level access. All security is managed through AWS controls (security groups, IAM, KMS, parameter groups). If the question mentions SSH → RDS Custom or DB on EC2.
+
+**Exam triggers:**
+- *"authenticate to RDS without storing credentials"* → IAM database authentication
+- *"database must not be accessible from the internet"* → private subnet + no public accessibility
+- *"integrate database authentication with Active Directory"* → Kerberos
+- *"audit all queries run against the database"* → CloudWatch Logs / Aurora Advanced Auditing
+
 ### RDS Backups
 
 **Automated backups:**
@@ -1019,6 +1048,21 @@ Primary region (us-east-1) ── writes here
 - *"cross-region disaster recovery with RPO under 1 second"* → Aurora Global Database
 - *"low-latency reads for users in multiple regions"* → Aurora Global Database
 - *"promote a database in another region if the primary region fails"* → Aurora Global Database
+
+**Aurora Cloning:**
+
+Aurora supports **copy-on-write cloning** — an Aurora-only feature not available on standard RDS. The clone shares the same underlying storage as the original; only when data is modified does it allocate new storage for the changed pages.
+
+| | Snapshot restore | Aurora Clone |
+| - | ---------------- | ------------ |
+| Speed | Minutes to hours (copies all data) | Seconds (copy-on-write) |
+| Storage cost | Full copy from the start | Only pays for changed data |
+| Available on | All RDS engines | Aurora only |
+| Use case | DR, cross-region, encryption changes | Quick dev/test copies of production |
+
+Real-world scenario: you need a copy of your 2 TB production database to test a migration. A snapshot restore takes an hour and costs 2 TB of storage immediately. An Aurora clone is ready in seconds and costs almost nothing until you start making changes.
+
+**Exam trigger:** *"create a copy of a production database quickly for testing"* → Aurora clone.
 
 **When to use standard RDS over Aurora:**
 
