@@ -812,6 +812,8 @@ With proxy:     100 Lambdas → RDS Proxy (connection pool) → ~10 DB connectio
 
 **Supported engines:** MySQL, PostgreSQL, MariaDB, SQL Server (and Aurora MySQL/PostgreSQL).
 
+**Never publicly accessible:** RDS Proxy can only be accessed from within the VPC — there is no public accessibility option. This is by design, unlike RDS itself which *can* be made public. Your app (Lambda, EC2, ECS) must be in the same VPC or connected via VPC peering/PrivateLink.
+
 **Exam triggers:**
 - *"Lambda functions timing out connecting to RDS"* → RDS Proxy
 - *"too many database connections"* → RDS Proxy
