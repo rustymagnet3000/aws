@@ -394,7 +394,17 @@ The appliance runs inside your VPC; GWLB handles the traffic steering transparen
 - **NLB** — Layer 4, just TCP/UDP bytes; use when you need a **static IP** (ALB only gives you a DNS name), ultra-low latency, or non-HTTP protocols.
 - **Static IP** is the most common exam trigger for NLB — if a question mentions a client whitelisting an IP, or a firewall that needs a fixed IP, that's NLB.
 
-**Target Group** — the collection of targets (EC2 instances, IPs, Lambda functions) that a load balancer routes traffic to. The ALB forwards a request to a Target Group based on listener rules; the Target Group then picks a healthy target and sends the request there. Health checks are configured per Target Group. The path-based routing example above (`/api` → one group, `/images` → another) means each path maps to a different Target Group.
+**Target Group** — the collection of targets that a load balancer routes traffic to. The load balancer forwards a request to a Target Group based on listener rules; the Target Group then picks a healthy target and sends the request there. Health checks are configured per Target Group.
+
+All three load balancer types use Target Groups, but with different target types:
+
+| Load balancer | Valid targets | Routing basis |
+| ------------- | ------------- | ------------- |
+| ALB | EC2 instances, IPs, Lambda functions | Layer 7 — path, host, headers |
+| NLB | EC2 instances, IPs, ALBs | Layer 4 — TCP/UDP only |
+| GWLB | Appliance instances | Layer 3 — all IP traffic |
+
+The path-based routing example above (`/api` → one group, `/images` → another) is ALB-specific — each path maps to a different Target Group.
 
 ### SSL/TLS and Load Balancers
 
@@ -506,6 +516,7 @@ CloudWatch Alarms are the underlying mechanism for scaling — when you create a
 **Exam triggers:**
 - *"scale based on the number of messages in an SQS queue"* → custom CloudWatch metric on queue depth → ASG alarm
 - *"scale before CPU gets too high"* → target tracking (simpler) or a CloudWatch Alarm with step scaling
+- *"ensure the average number of connections per instance is around X"* → target tracking on `ALBRequestCountPerTarget` metric; the word "around" is the giveaway for target tracking over step scaling
 
 ### Scaling Cooldowns
 
@@ -658,3 +669,414 @@ AWS publishes official Bottlerocket AMIs for ECS and EKS. Your containers behave
 - *"keep a container running and replace it if it crashes"* → ECS Service
 - *"scale containers based on load"* → ECS Service + ALB + target tracking policy
 - *"harden the OS on container instances"* → Bottlerocket
+
+## RDS (Relational Database Service)
+
+Managed SQL database service. AWS handles provisioning, OS patching, backups, monitoring, and hardware. You manage the database itself — schema, queries, users.
+
+**Supported engines:** PostgreSQL, MySQL, MariaDB, Oracle, Microsoft SQL Server, Amazon Aurora.
+
+**RDS vs DB on EC2:**
+
+| | RDS | DB on EC2 |
+| - | --- | --------- |
+| OS patching | AWS | You |
+| Backups | Automated | You |
+| High availability | Multi-AZ with one click | Complex to set up |
+| Read scaling | Read replicas built-in | You |
+| Cost | Higher | Lower (but more ops work) |
+
+**What you can't do with RDS:** SSH into the instance, install custom software, or access the OS layer. If you need OS-level access to the database host, run the DB on EC2 — but you give up all managed features.
+
+**Exam trigger:** *"managed relational database"* or *"reduce database administration overhead"* → RDS. *"need OS access to the database host"* → DB on EC2.
+
+### RDS and Aurora Security
+
+**Network isolation:**
+
+- RDS/Aurora instances are deployed in your VPC — typically in **private subnets** with no internet access
+- **Security groups** control which IPs/resources can connect to the database port
+- **Public accessibility** is off by default — keep it that way in production
+
+**Authentication — three options:**
+
+| Method | How it works | Use case |
+| ------ | ------------ | -------- |
+| Username/password | Traditional DB credentials | Default, simplest |
+| IAM database auth | App gets a short-lived token via AWS API instead of a password | Lambda, apps with IAM roles — no credentials to store |
+| Kerberos / Active Directory | Integrates with existing AD infrastructure | Enterprises with centralised identity (SQL Server, Oracle, PostgreSQL) |
+
+**Audit logging:**
+
+- Enable database engine logs (slow query, general, error) and send to **CloudWatch Logs**
+- Aurora also supports **Advanced Auditing** for fine-grained query-level logging
+
+**Key exam detail:** you **cannot SSH** into RDS or Aurora. There is no OS-level access. All security is managed through AWS controls (security groups, IAM, KMS, parameter groups). If the question mentions SSH → RDS Custom or DB on EC2.
+
+**Exam triggers:**
+- *"authenticate to RDS without storing credentials"* → IAM database authentication
+- *"database must not be accessible from the internet"* → private subnet + no public accessibility
+- *"integrate database authentication with Active Directory"* → Kerberos
+- *"audit all queries run against the database"* → CloudWatch Logs / Aurora Advanced Auditing
+
+### RDS Backups
+
+**Automated backups:**
+
+- Run daily during a configurable backup window
+- Retention: 0–35 days (0 disables automated backups)
+- Also captures transaction logs every 5 minutes — enables **point-in-time recovery** to any second within the retention window
+- Stored in S3 (managed by AWS — you don't see the bucket)
+
+**Manual snapshots:**
+
+- You trigger these yourself (or via automation)
+- Persist **indefinitely** until you delete them — not subject to retention period
+- Useful for keeping a known-good state before a risky migration or schema change
+
+**Snapshots vs Transaction Logs:**
+
+Snapshots and transaction logs work together to enable point-in-time recovery:
+
+- **Snapshot** — a full copy of the database at a point in time. Like taking a photo.
+- **Transaction logs** — a continuous record of every change since the last snapshot. Like a video recording between photos.
+
+Point-in-time recovery combines both: restore the most recent snapshot, then replay transaction logs up to the exact second you specify.
+
+```
+Snapshot (3am) ──── tx logs ──── tx logs ──── tx logs ──── now
+                                      ↑
+                          "restore to here" (e.g. 2:47pm)
+```
+
+| | Snapshot | Transaction Log |
+| - | -------- | --------------- |
+| What it captures | Full database state | Changes since last snapshot |
+| Granularity | Point-in-time (when taken) | Every 5 minutes |
+| Restore precision | Exact snapshot time only | Any second within retention |
+| Size | Large (full copy) | Small (just changes) |
+
+Without transaction logs, you could only restore to the exact time a snapshot was taken — not to any arbitrary second.
+
+**Key detail:** restoring a backup (automated or manual) always creates a **new** RDS instance with a new endpoint. It does not restore in-place to the existing instance. Your app must be updated to point to the new endpoint.
+
+**Exam triggers:**
+- *"recover the database to a specific point in time"* → automated backups with point-in-time recovery
+- *"restore to 5 minutes before the accidental DELETE"* → point-in-time recovery (snapshot + transaction log replay)
+- *"keep a backup before a major change"* → manual snapshot
+- *"backups are being deleted after 35 days"* → that's the automated retention limit; use manual snapshots for long-term
+
+### RDS Encryption
+
+**At-rest encryption:**
+
+- Uses AWS KMS (Key Management Service) — either AWS-managed key or your own CMK
+- Must be enabled **at creation time** — you cannot encrypt an existing unencrypted RDS instance directly
+- Encrypts the underlying storage, automated backups, snapshots, and read replicas
+
+**Encrypting an existing unencrypted instance** (the workaround):
+
+1. Take a snapshot of the unencrypted instance
+2. Copy the snapshot and enable encryption during the copy
+3. Restore the encrypted snapshot to a new RDS instance
+4. Switch your app to the new encrypted instance
+
+**In-transit encryption:**
+
+- SSL/TLS connections between your app and RDS — supported by all engines
+- Can be enforced with a parameter group setting (e.g. `rds.force_ssl = 1` for PostgreSQL)
+
+**Key rules:**
+- If the primary is encrypted, read replicas and snapshots are automatically encrypted with the same key
+- An unencrypted primary cannot have encrypted read replicas (and vice versa)
+- Snapshot copies can change the encryption key — useful for cross-account sharing with a different KMS key
+
+**Exam triggers:**
+- *"encrypt an existing unencrypted database"* → snapshot → copy with encryption → restore
+- *"ensure all database connections use SSL"* → enforce SSL via parameter group
+- *"share an encrypted snapshot with another account"* → copy snapshot with the target account's KMS key, then share
+
+### RDS Proxy
+
+RDS Proxy sits between your application and the database, pooling and reusing connections. The primary use case is **Lambda + RDS** — each Lambda invocation opens a new database connection, and under load hundreds of concurrent Lambdas can exhaust the database's connection limit.
+
+```
+Without proxy:  100 Lambdas → 100 DB connections → DB overwhelmed
+With proxy:     100 Lambdas → RDS Proxy (connection pool) → ~10 DB connections
+```
+
+**Other benefits:**
+
+- **Faster failover** — RDS Proxy detects Multi-AZ failover and routes to the new primary without your app reconnecting or handling errors
+- **IAM authentication** — enforce IAM-based DB auth instead of storing credentials in code or Secrets Manager lookups in every function
+
+**Supported engines:** MySQL, PostgreSQL, MariaDB, SQL Server (and Aurora MySQL/PostgreSQL).
+
+**Never publicly accessible:** RDS Proxy can only be accessed from within the VPC — there is no public accessibility option. This is by design, unlike RDS itself which *can* be made public. Your app (Lambda, EC2, ECS) must be in the same VPC or connected via VPC peering/PrivateLink.
+
+**Exam triggers:**
+- *"Lambda functions timing out connecting to RDS"* → RDS Proxy
+- *"too many database connections"* → RDS Proxy
+- *"reduce database failover time for the application"* → RDS Proxy
+- *"serverless application with a relational database"* → RDS Proxy
+
+### Read Replicas
+
+A single RDS instance handles both reads and writes. Under heavy read load (reporting, analytics, dashboards) the primary gets overwhelmed even when writes are infrequent. Read replicas offload that traffic to separate instances.
+
+**How they work:**
+
+- The primary handles all writes
+- Changes are replicated to replicas **asynchronously**
+- Your app directs reads to the replica endpoint, writes to the primary endpoint
+
+**The staleness trade-off:**
+
+Because replication is async, replicas lag behind the primary — typically milliseconds, but more under heavy load:
+
+| Scenario | Use primary or replica? |
+| -------- | ----------------------- |
+| Reporting and analytics | Replica — slightly stale data is fine |
+| Read-heavy dashboard | Replica |
+| Financial transaction — read balance after transfer | Primary — must be accurate |
+| User reads their own just-written data | Primary |
+
+**Exam triggers:**
+- *"improve read performance"* or *"offload reporting queries"* → read replicas
+- *"data must always be up to date"* → query the primary, not a replica
+
+### Multi-AZ
+
+Multi-AZ is about **availability**, not performance. AWS maintains a standby instance in a different AZ kept in sync **synchronously**. If the primary fails, RDS automatically fails over to the standby — no manual intervention, no data loss.
+
+- The standby is **not readable** — it exists solely for failover
+- Failover typically takes 1–2 minutes (DNS flips to the standby)
+- Protects against AZ failure, instance failure, or maintenance events
+
+**Multi-AZ vs Read Replicas — the most common exam confusion:**
+
+| | Multi-AZ | Read Replica |
+| - | -------- | ------------ |
+| Purpose | High availability | Read scaling |
+| Replication | Synchronous | Asynchronous |
+| Standby readable? | No | Yes |
+| Automatic failover? | Yes | No |
+| Data loss on failover? | None | Possible (lag) |
+
+**Exam triggers:**
+- *"automatic failover"*, *"high availability"*, or *"survive an AZ failure"* → Multi-AZ
+- *"improve read performance"* → Read Replicas
+- Both needed → Multi-AZ for HA + Read Replicas for scaling (they can be used together)
+
+**Using them together:**
+
+Multi-AZ and Read Replicas are complementary — you can and often should use both:
+
+```
+Primary (Multi-AZ) → synchronous → Standby (failover, not readable)
+Primary (Multi-AZ) → asynchronous → Read Replica (readable, slight lag)
+```
+
+**Promoting a Read Replica:**
+
+A Read Replica can be promoted to become a standalone primary. This breaks replication and the replica becomes its own independent instance. Common use cases:
+
+- **Cross-region migration** — create a Read Replica in the target region, let it catch up, then promote it and cut over with minimal downtime
+- **Disaster recovery** — if the primary region fails entirely, promote a cross-region replica to take over
+- **Forking for testing** — promote a replica to create a copy of production for testing without affecting the live database
+
+### RDS Custom
+
+RDS Custom gives you OS and database-engine-level access while still getting some managed benefits (automated backups, monitoring). Standard RDS is a black box — you can't SSH in or install anything on the host. RDS Custom opens that up.
+
+**Available for:** Oracle and SQL Server only.
+
+**RDS vs RDS Custom:**
+
+| | RDS | RDS Custom |
+| - | --- | ---------- |
+| OS access | No | Yes (SSH, RDP) |
+| Custom software on host | No | Yes |
+| DB engine customization | No | Yes |
+| Managed backups | Yes | Yes |
+| Multi-AZ | Yes | Yes |
+
+**When you need RDS Custom — real-world examples:**
+
+Oracle-specific:
+- Installing Oracle Application Express (APEX) or custom Oracle patches AWS doesn't ship
+- Configuring Oracle Data Guard in ways not supported by standard RDS
+- Running Oracle Enterprise Manager agents on the host
+
+SQL Server-specific:
+- Installing SSIS, SSRS, or SSAS — these require OS-level installation
+- Running CLR assemblies that depend on OS-level libraries
+- Custom backup solutions using third-party tools (Commvault, Veeam)
+
+General:
+- Legacy enterprise apps (SAP, PeopleSoft) that require specific OS kernel parameters or custom shared libraries
+- Compliance regimes (financial, healthcare) mandating OS hardening, antivirus agents, or audit daemons on the DB server
+- Custom authentication plugins needing OS-level installation (e.g. Kerberos configurations beyond what RDS exposes)
+- Vendor-supplied database software that bundles stored procedures with native OS dependencies
+
+**The common thread:** a third-party or legacy application dictates specific OS or DB-engine-level requirements that standard RDS can't accommodate.
+
+**Exam triggers:**
+- *"need to install custom software on the database host"* → RDS Custom
+- *"need SSH/RDP access to the database instance"* → RDS Custom
+- *"Oracle or SQL Server with OS-level customization"* → RDS Custom
+- *"need OS access but still want managed backups"* → RDS Custom (not DB on EC2)
+
+### Aurora
+
+Aurora is AWS's re-engineered version of MySQL and PostgreSQL. Same SQL, same drivers, same client libraries — your app doesn't know the difference. The key architectural change is a **shared distributed storage layer** that decouples compute from storage.
+
+**Shared storage — why Aurora is fundamentally different:**
+
+In standard RDS, each instance has its own EBS volume and replication copies data between volumes. Aurora flips this: all instances (writer + replicas) share a single storage layer.
+
+```
+Standard RDS:
+Primary (EBS vol) ──replicates──→ Replica (its own EBS vol)
+
+Aurora:
+Writer instance ──┐
+Read Replica 1 ───┤── Shared storage layer (6 copies, 3 AZs)
+Read Replica 2 ───┘
+```
+
+This shared storage is why Aurora's other features work:
+
+- **Near-zero replica lag** — replicas read from the same storage, no data copying between instances
+- **Fast failover** — a promoted replica already has access to all data, nothing to catch up on
+- **Adding replicas is cheap** — no data duplication, just a new compute instance pointing at the same storage
+- **Auto-scaling storage** — grows in 10 GB increments up to 128 TB, no pre-provisioning
+- **6 copies across 3 AZs** — the storage layer handles this transparently; tolerates loss of 2 copies for writes, 3 for reads
+
+**Why Aurora over standard RDS MySQL/PostgreSQL:**
+
+- **5x throughput over MySQL, 3x over PostgreSQL** (AWS's claim) — due to the custom storage engine
+- **Faster failover** — typically under 30 seconds vs 1–2 minutes for standard RDS Multi-AZ
+- **Up to 15 read replicas** (vs 5 for standard RDS) with sub-10ms replica lag
+
+**Aurora Serverless:**
+
+Aurora Serverless scales compute capacity up and down automatically — including scaling to zero when idle. You pay per ACU-second (Aurora Capacity Unit) instead of provisioning a fixed instance size.
+
+| | Aurora Provisioned | Aurora Serverless |
+| - | ------------------ | ----------------- |
+| Compute | Fixed instance size you choose | Auto-scales based on demand |
+| Scale to zero | No | Yes (v2 scales to minimum, v1 can fully pause) |
+| Cost model | Pay for instance 24/7 | Pay for what you use |
+| Use case | Steady, predictable workloads | Intermittent, unpredictable, or dev/test |
+
+**Writer topology:**
+
+By default Aurora has one writer instance (the primary) that handles all reads and writes. Read replicas handle read traffic only. If the primary fails, Aurora promotes a replica — typically under 30 seconds.
+
+Aurora also supports **Multi-Master** (Multi-Writer), where multiple instances can all accept writes:
+
+| | Single-Master (default) | Multi-Master |
+| - | ----------------------- | ------------ |
+| Writers | 1 | 2+ |
+| Failover | Promote a replica (~30s) | Instant — other writer already active |
+| Use case | Most workloads | Zero-downtime write requirement |
+| Complexity | Simple | App must handle write conflicts |
+
+Assume single-master for the exam unless the question specifically mentions continuous write availability during failover.
+
+**Cluster endpoints:**
+
+Aurora gives you dedicated DNS endpoints that abstract away which instance is which:
+
+```
+Your app
+├── writes → Writer Endpoint (always points to the primary)
+└── reads  → Reader Endpoint (load-balances across all read replicas)
+```
+
+| Endpoint | Points to | Load balanced? |
+| -------- | --------- | -------------- |
+| Writer Endpoint | The current primary instance | No — single target |
+| Reader Endpoint | All read replicas | Yes — connection-level load balancing |
+| Instance Endpoint | One specific instance by name | No — direct access |
+
+**Why this matters:**
+
+- Your app never hardcodes an instance address — if the primary fails and a replica is promoted, the **Writer Endpoint DNS flips automatically**. No app changes needed.
+- The **Reader Endpoint distributes read traffic** across replicas without you building load-balancing logic. Add a replica, it's automatically included.
+- **Instance Endpoints** exist for edge cases — e.g. directing a heavy analytics query to a specific larger replica.
+
+With standard RDS Read Replicas, you get separate endpoints per replica and have to manage load balancing yourself (or use Route 53). Aurora handles this natively.
+
+**Custom Endpoints:**
+
+The Reader Endpoint load-balances across *all* replicas equally. This is a problem when your replicas aren't all the same size or purpose — an expensive analytics query hitting a small production replica can hurt live service.
+
+Custom Endpoints let you group specific replicas and route traffic to just that subset:
+
+```
+App (production reads) → Custom Endpoint A → Replica 1 (r5.2xlarge)
+                                            → Replica 2 (r5.2xlarge)
+
+Analytics team         → Custom Endpoint B → Replica 3 (r5.8xlarge)
+```
+
+Real-world scenario: someone runs an expensive reporting query on the production database — it saturates CPU on the replica and degrades live customer traffic. With Custom Endpoints, the analytics team hits a dedicated replica and production reads are isolated.
+
+Once you create Custom Endpoints, avoid using the default Reader Endpoint — it still includes all replicas, which defeats the purpose of your segmentation.
+
+**Exam trigger:** *"isolate reporting/analytics queries from production read traffic"* → Aurora Custom Endpoints.
+
+**Global Aurora:**
+
+Aurora Global Database spans multiple AWS regions — one primary region handles writes, up to 5 secondary regions get read-only replicas.
+
+```
+Primary region (us-east-1) ── writes here
+├── Secondary region (eu-west-1) ── read-only, <1s replication lag
+├── Secondary region (ap-southeast-1) ── read-only, <1s replication lag
+└── ...up to 5 secondary regions
+```
+
+**Two use cases:**
+
+1. **Disaster recovery** — if the primary region goes down entirely, promote a secondary region to take over. Promotion typically completes in **under 1 minute** with an RPO of **under 1 second**.
+2. **Global low-latency reads** — users in Europe read from a European replica instead of crossing the Atlantic to us-east-1.
+
+**Key detail:** replication is under 1 second — much faster than cross-region RDS Read Replicas which can lag by minutes.
+
+**Exam triggers:**
+- *"cross-region disaster recovery with RPO under 1 second"* → Aurora Global Database
+- *"low-latency reads for users in multiple regions"* → Aurora Global Database
+- *"promote a database in another region if the primary region fails"* → Aurora Global Database
+
+**Aurora Cloning:**
+
+Aurora supports **copy-on-write cloning** — an Aurora-only feature not available on standard RDS. The clone shares the same underlying storage as the original; only when data is modified does it allocate new storage for the changed pages.
+
+| | Snapshot restore | Aurora Clone |
+| - | ---------------- | ------------ |
+| Speed | Minutes to hours (copies all data) | Seconds (copy-on-write) |
+| Storage cost | Full copy from the start | Only pays for changed data |
+| Available on | All RDS engines | Aurora only |
+| Use case | DR, cross-region, encryption changes | Quick dev/test copies of production |
+
+Real-world scenario: you need a copy of your 2 TB production database to test a migration. A snapshot restore takes an hour and costs 2 TB of storage immediately. An Aurora clone is ready in seconds and costs almost nothing until you start making changes.
+
+**Exam trigger:** *"create a copy of a production database quickly for testing"* → Aurora clone.
+
+**When to use standard RDS over Aurora:**
+
+- Cost-sensitive workloads — Aurora is ~20% more expensive than standard RDS
+- Portability — avoiding Aurora-specific lock-in if you might leave AWS
+- Small databases where the HA/performance benefits aren't justified
+- Engines Aurora doesn't support (Oracle, SQL Server, MariaDB)
+
+**Exam triggers:**
+- *"MySQL or PostgreSQL compatible with high availability"* → Aurora
+- *"database that scales storage automatically"* → Aurora
+- *"minimize database cost for infrequent or unpredictable workloads"* → Aurora Serverless
+- *"need more than 5 read replicas"* → Aurora (supports up to 15)
+- *"fastest failover for a relational database on AWS"* → Aurora
+- *"dev/test database that should pause when not in use"* → Aurora Serverless
