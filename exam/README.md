@@ -5,16 +5,11 @@
 - [AWS Exam](#aws-exam)
   - [Useful links](#useful-links)
   - [EC2](#ec2)
-    - [Elastic IP versus Standard Public IP](#elastic-ip-versus-standard-public-ip)
-    - [EC2 SSH Troubleshooting](#ec2-ssh-troubleshooting)
-    - [1. Security Group — open port 22](#1-security-group--open-port-22)
-    - [2. IPv6 vs IPv4](#2-ipv6-vs-ipv4)
-    - [3. Permission denied (publickey)](#3-permission-denied-publickey)
-    - [4. Accessing instance without the correct key](#4-accessing-instance-without-the-correct-key)
-    - [Placement Groups](#placement-groups)
-    - [AMI](#ami)
   - [EFS](#efs)
   - [Scaling and ELB](#scaling-and-elb)
+  - [ECS (Elastic Container Service)](#ecs-elastic-container-service)
+  - [RDS (Relational Database Service)](#rds-relational-database-service)
+  - [ElastiCache](#elasticache)
 
 <!-- /TOC -->
 
@@ -1080,3 +1075,83 @@ Real-world scenario: you need a copy of your 2 TB production database to test a 
 - *"need more than 5 read replicas"* → Aurora (supports up to 15)
 - *"fastest failover for a relational database on AWS"* → Aurora
 - *"dev/test database that should pause when not in use"* → Aurora Serverless
+
+### Read Replica Network Costs
+
+| Replication path | Data transfer cost |
+| ---------------- | ------------------ |
+| Same AZ | Free |
+| Cross-AZ (same region) | Charged |
+| Cross-region | Charged (higher — inter-region data transfer rates) |
+
+**Exam trigger:** *"reduce costs of read replicas"* → keep replicas in the same AZ as the primary (but this reduces availability). Cross-region replicas are the most expensive but needed for DR.
+
+### RDS Storage Auto Scaling
+
+RDS can automatically increase storage when it detects you're running low — no downtime, no manual intervention. You set a **Maximum Storage Threshold** and RDS scales within that limit.
+
+Triggers when:
+- Free storage falls below 10% of allocated storage
+- Low-storage condition lasts at least 5 minutes
+- At least 6 hours since the last storage modification
+
+**Exam trigger:** *"database running out of storage"* or *"automatically increase storage without downtime"* → RDS Storage Auto Scaling.
+
+## ElastiCache
+
+Managed in-memory cache service. Sits between your app and the database, caching frequently accessed data in memory to reduce load on RDS.
+
+```
+App → ElastiCache (cache hit? return immediately)
+    → RDS (cache miss? query DB, store result in cache)
+```
+
+**Two engines:**
+
+| | Redis | Memcached |
+| - | ----- | --------- |
+| Data structures | Strings, lists, sets, sorted sets, hashes | Simple key-value only |
+| Persistence | Yes — survives restarts | No — pure cache |
+| Replication | Yes — read replicas + Multi-AZ failover | No |
+| Backup/restore | Yes | No |
+| Multi-threaded | No (single-threaded) | Yes |
+| Use case | Sessions, leaderboards, pub/sub, anything needing durability | Simple caching at scale, disposable data |
+
+**Redis is the default choice** unless you specifically need multi-threaded performance for simple key-value caching.
+
+**Common architecture patterns:**
+
+**1. DB cache — reduce RDS load:**
+
+App queries ElastiCache first. On a cache miss, query RDS, then write the result to the cache. Subsequent reads are served from memory (microseconds vs milliseconds).
+
+**2. Session store — make your app stateless:**
+
+Instead of sticky sessions on an ALB, store session data in ElastiCache. Any instance behind the load balancer can serve any request — just look up the session by ID.
+
+```
+User → ALB → any EC2 instance → ElastiCache (session lookup)
+```
+
+This is the proper fix for the sticky sessions problem covered in the ELB section.
+
+**3. Leaderboards / sorted sets (Redis only):**
+
+Redis sorted sets give you ranked data natively — e.g. a gaming leaderboard. `ZADD` to insert scores, `ZRANGE` to get the top N. No need to query and sort in your database.
+
+**Cache invalidation strategies:**
+
+| Strategy | How it works | Trade-off |
+| -------- | ------------ | --------- |
+| Lazy loading | Load into cache only on cache miss | Stale data possible; cache miss penalty |
+| Write-through | Write to cache on every DB write | Always fresh; higher write latency |
+| TTL (time to live) | Data expires after N seconds | Simple; controls staleness window |
+
+In practice, combine lazy loading with TTL — data is cached on first read and expires after a set period.
+
+**Exam triggers:**
+- *"reduce read load on the database"* → ElastiCache
+- *"store session data for a stateless application"* → ElastiCache (Redis)
+- *"in-memory data store with replication and failover"* → ElastiCache Redis
+- *"simple caching layer, data is disposable"* → ElastiCache Memcached
+- *"users are logged out when routed to a different instance"* → store sessions in ElastiCache instead of using sticky sessions
