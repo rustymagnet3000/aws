@@ -898,6 +898,29 @@ Once you create Custom Endpoints, avoid using the default Reader Endpoint — it
 
 **Exam trigger:** *"isolate reporting/analytics queries from production read traffic"* → Aurora Custom Endpoints.
 
+**Global Aurora:**
+
+Aurora Global Database spans multiple AWS regions — one primary region handles writes, up to 5 secondary regions get read-only replicas.
+
+```
+Primary region (us-east-1) ── writes here
+├── Secondary region (eu-west-1) ── read-only, <1s replication lag
+├── Secondary region (ap-southeast-1) ── read-only, <1s replication lag
+└── ...up to 5 secondary regions
+```
+
+**Two use cases:**
+
+1. **Disaster recovery** — if the primary region goes down entirely, promote a secondary region to take over. Promotion typically completes in **under 1 minute** with an RPO of **under 1 second**.
+2. **Global low-latency reads** — users in Europe read from a European replica instead of crossing the Atlantic to us-east-1.
+
+**Key detail:** replication is under 1 second — much faster than cross-region RDS Read Replicas which can lag by minutes.
+
+**Exam triggers:**
+- *"cross-region disaster recovery with RPO under 1 second"* → Aurora Global Database
+- *"low-latency reads for users in multiple regions"* → Aurora Global Database
+- *"promote a database in another region if the primary region fails"* → Aurora Global Database
+
 **When to use standard RDS over Aurora:**
 
 - Cost-sensitive workloads — Aurora is ~20% more expensive than standard RDS
