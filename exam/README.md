@@ -1171,6 +1171,25 @@ When Memcached makes sense: caching simple objects (HTML fragments, API response
 
 **Exam shortcut:** any mention of persistence, replication, failover, data structures, backups, or Multi-AZ → **Redis**. "Simple caching, data loss acceptable, multi-threaded" → **Memcached**.
 
+**Redis data durability:**
+
+Redis has two persistence mechanisms — RDB snapshots and AOF:
+
+| | RDB Snapshots | AOF (Append Only File) |
+| - | ------------- | ---------------------- |
+| How | Point-in-time dump of entire dataset | Logs every write operation to disk |
+| Data loss on crash | Everything since last snapshot | Minimal (~1 second) |
+| Restart speed | Fast (load one file) | Slower (replay all operations) |
+| File size | Smaller (compressed) | Larger (full operation log) |
+
+In ElastiCache Redis, AWS exposes both:
+- **Backups** — automated daily snapshots (like RDB)
+- **AOF** — available in Multi-AZ replication groups for minimal data loss on failover
+
+For the exam: *"minimize data loss in a Redis cache"* → Multi-AZ with AOF. *"cache that survives restarts"* → Redis with backups enabled. Memcached has no persistence at all.
+
+**Valkey:** an open-source fork of Redis created by the Linux Foundation in 2024 after Redis changed to a restrictive license. API-compatible — same commands, same protocol. ElastiCache now offers Valkey as an engine alongside Redis and Memcached. For exam purposes, treat it as Redis.
+
 **Common architecture patterns:**
 
 **1. DB cache — reduce RDS load:**
