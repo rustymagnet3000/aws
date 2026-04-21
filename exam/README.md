@@ -690,6 +690,83 @@ Managed SQL database service. AWS handles provisioning, OS patching, backups, mo
 
 **Exam trigger:** *"managed relational database"* or *"reduce database administration overhead"* → RDS. *"need OS access to the database host"* → DB on EC2.
 
+### RDS Backups
+
+**Automated backups:**
+
+- Run daily during a configurable backup window
+- Retention: 0–35 days (0 disables automated backups)
+- Also captures transaction logs every 5 minutes — enables **point-in-time recovery** to any second within the retention window
+- Stored in S3 (managed by AWS — you don't see the bucket)
+
+**Manual snapshots:**
+
+- You trigger these yourself (or via automation)
+- Persist **indefinitely** until you delete them — not subject to retention period
+- Useful for keeping a known-good state before a risky migration or schema change
+
+**Snapshots vs Transaction Logs:**
+
+Snapshots and transaction logs work together to enable point-in-time recovery:
+
+- **Snapshot** — a full copy of the database at a point in time. Like taking a photo.
+- **Transaction logs** — a continuous record of every change since the last snapshot. Like a video recording between photos.
+
+Point-in-time recovery combines both: restore the most recent snapshot, then replay transaction logs up to the exact second you specify.
+
+```
+Snapshot (3am) ──── tx logs ──── tx logs ──── tx logs ──── now
+                                      ↑
+                          "restore to here" (e.g. 2:47pm)
+```
+
+| | Snapshot | Transaction Log |
+| - | -------- | --------------- |
+| What it captures | Full database state | Changes since last snapshot |
+| Granularity | Point-in-time (when taken) | Every 5 minutes |
+| Restore precision | Exact snapshot time only | Any second within retention |
+| Size | Large (full copy) | Small (just changes) |
+
+Without transaction logs, you could only restore to the exact time a snapshot was taken — not to any arbitrary second.
+
+**Key detail:** restoring a backup (automated or manual) always creates a **new** RDS instance with a new endpoint. It does not restore in-place to the existing instance. Your app must be updated to point to the new endpoint.
+
+**Exam triggers:**
+- *"recover the database to a specific point in time"* → automated backups with point-in-time recovery
+- *"restore to 5 minutes before the accidental DELETE"* → point-in-time recovery (snapshot + transaction log replay)
+- *"keep a backup before a major change"* → manual snapshot
+- *"backups are being deleted after 35 days"* → that's the automated retention limit; use manual snapshots for long-term
+
+### RDS Encryption
+
+**At-rest encryption:**
+
+- Uses AWS KMS (Key Management Service) — either AWS-managed key or your own CMK
+- Must be enabled **at creation time** — you cannot encrypt an existing unencrypted RDS instance directly
+- Encrypts the underlying storage, automated backups, snapshots, and read replicas
+
+**Encrypting an existing unencrypted instance** (the workaround):
+
+1. Take a snapshot of the unencrypted instance
+2. Copy the snapshot and enable encryption during the copy
+3. Restore the encrypted snapshot to a new RDS instance
+4. Switch your app to the new encrypted instance
+
+**In-transit encryption:**
+
+- SSL/TLS connections between your app and RDS — supported by all engines
+- Can be enforced with a parameter group setting (e.g. `rds.force_ssl = 1` for PostgreSQL)
+
+**Key rules:**
+- If the primary is encrypted, read replicas and snapshots are automatically encrypted with the same key
+- An unencrypted primary cannot have encrypted read replicas (and vice versa)
+- Snapshot copies can change the encryption key — useful for cross-account sharing with a different KMS key
+
+**Exam triggers:**
+- *"encrypt an existing unencrypted database"* → snapshot → copy with encryption → restore
+- *"ensure all database connections use SSL"* → enforce SSL via parameter group
+- *"share an encrypted snapshot with another account"* → copy snapshot with the target account's KMS key, then share
+
 ### Read Replicas
 
 A single RDS instance handles both reads and writes. Under heavy read load (reporting, analytics, dashboards) the primary gets overwhelmed even when writes are infrequent. Read replicas offload that traffic to separate instances.
