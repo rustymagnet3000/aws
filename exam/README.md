@@ -796,3 +796,80 @@ General:
 - *"need SSH/RDP access to the database instance"* → RDS Custom
 - *"Oracle or SQL Server with OS-level customization"* → RDS Custom
 - *"need OS access but still want managed backups"* → RDS Custom (not DB on EC2)
+
+### Aurora
+
+Aurora is AWS's re-engineered version of MySQL and PostgreSQL. Same SQL, same drivers, same client libraries — your app doesn't know the difference. The improvement is under the hood: a custom storage layer that decouples compute from storage.
+
+**Why Aurora over standard RDS MySQL/PostgreSQL:**
+
+- **5x throughput over MySQL, 3x over PostgreSQL** (AWS's claim) — due to the custom storage engine
+- **6 copies of data across 3 AZs** by default — tolerates loss of 2 copies for writes, 3 for reads
+- **Auto-scaling storage** — grows automatically in 10 GB increments up to 128 TB, no pre-provisioning
+- **Faster failover** — typically under 30 seconds vs 1–2 minutes for standard RDS Multi-AZ
+- **Up to 15 read replicas** (vs 5 for standard RDS) with sub-10ms replica lag
+
+**Aurora Serverless:**
+
+Aurora Serverless scales compute capacity up and down automatically — including scaling to zero when idle. You pay per ACU-second (Aurora Capacity Unit) instead of provisioning a fixed instance size.
+
+| | Aurora Provisioned | Aurora Serverless |
+| - | ------------------ | ----------------- |
+| Compute | Fixed instance size you choose | Auto-scales based on demand |
+| Scale to zero | No | Yes (v2 scales to minimum, v1 can fully pause) |
+| Cost model | Pay for instance 24/7 | Pay for what you use |
+| Use case | Steady, predictable workloads | Intermittent, unpredictable, or dev/test |
+
+**Writer topology:**
+
+By default Aurora has one writer instance (the primary) that handles all reads and writes. Read replicas handle read traffic only. If the primary fails, Aurora promotes a replica — typically under 30 seconds.
+
+Aurora also supports **Multi-Master** (Multi-Writer), where multiple instances can all accept writes:
+
+| | Single-Master (default) | Multi-Master |
+| - | ----------------------- | ------------ |
+| Writers | 1 | 2+ |
+| Failover | Promote a replica (~30s) | Instant — other writer already active |
+| Use case | Most workloads | Zero-downtime write requirement |
+| Complexity | Simple | App must handle write conflicts |
+
+Assume single-master for the exam unless the question specifically mentions continuous write availability during failover.
+
+**Cluster endpoints:**
+
+Aurora gives you dedicated DNS endpoints that abstract away which instance is which:
+
+```
+Your app
+├── writes → Writer Endpoint (always points to the primary)
+└── reads  → Reader Endpoint (load-balances across all read replicas)
+```
+
+| Endpoint | Points to | Load balanced? |
+| -------- | --------- | -------------- |
+| Writer Endpoint | The current primary instance | No — single target |
+| Reader Endpoint | All read replicas | Yes — connection-level load balancing |
+| Instance Endpoint | One specific instance by name | No — direct access |
+
+**Why this matters:**
+
+- Your app never hardcodes an instance address — if the primary fails and a replica is promoted, the **Writer Endpoint DNS flips automatically**. No app changes needed.
+- The **Reader Endpoint distributes read traffic** across replicas without you building load-balancing logic. Add a replica, it's automatically included.
+- **Instance Endpoints** exist for edge cases — e.g. directing a heavy analytics query to a specific larger replica.
+
+With standard RDS Read Replicas, you get separate endpoints per replica and have to manage load balancing yourself (or use Route 53). Aurora handles this natively.
+
+**When to use standard RDS over Aurora:**
+
+- Cost-sensitive workloads — Aurora is ~20% more expensive than standard RDS
+- Portability — avoiding Aurora-specific lock-in if you might leave AWS
+- Small databases where the HA/performance benefits aren't justified
+- Engines Aurora doesn't support (Oracle, SQL Server, MariaDB)
+
+**Exam triggers:**
+- *"MySQL or PostgreSQL compatible with high availability"* → Aurora
+- *"database that scales storage automatically"* → Aurora
+- *"minimize database cost for infrequent or unpredictable workloads"* → Aurora Serverless
+- *"need more than 5 read replicas"* → Aurora (supports up to 15)
+- *"fastest failover for a relational database on AWS"* → Aurora
+- *"dev/test database that should pause when not in use"* → Aurora Serverless
