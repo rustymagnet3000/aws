@@ -43,6 +43,8 @@
   - [Read Replica Network Costs](#read-replica-network-costs)
   - [RDS Storage Auto Scaling](#rds-storage-auto-scaling)
 - [ElastiCache](#elasticache)
+  - [ElastiCache Security](#elasticache-security)
+  - [ElastiCache Redis Replication](#elasticache-redis-replication)
 
 <!-- /TOC -->
 
