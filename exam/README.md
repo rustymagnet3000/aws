@@ -799,13 +799,33 @@ General:
 
 ### Aurora
 
-Aurora is AWS's re-engineered version of MySQL and PostgreSQL. Same SQL, same drivers, same client libraries — your app doesn't know the difference. The improvement is under the hood: a custom storage layer that decouples compute from storage.
+Aurora is AWS's re-engineered version of MySQL and PostgreSQL. Same SQL, same drivers, same client libraries — your app doesn't know the difference. The key architectural change is a **shared distributed storage layer** that decouples compute from storage.
+
+**Shared storage — why Aurora is fundamentally different:**
+
+In standard RDS, each instance has its own EBS volume and replication copies data between volumes. Aurora flips this: all instances (writer + replicas) share a single storage layer.
+
+```
+Standard RDS:
+Primary (EBS vol) ──replicates──→ Replica (its own EBS vol)
+
+Aurora:
+Writer instance ──┐
+Read Replica 1 ───┤── Shared storage layer (6 copies, 3 AZs)
+Read Replica 2 ───┘
+```
+
+This shared storage is why Aurora's other features work:
+
+- **Near-zero replica lag** — replicas read from the same storage, no data copying between instances
+- **Fast failover** — a promoted replica already has access to all data, nothing to catch up on
+- **Adding replicas is cheap** — no data duplication, just a new compute instance pointing at the same storage
+- **Auto-scaling storage** — grows in 10 GB increments up to 128 TB, no pre-provisioning
+- **6 copies across 3 AZs** — the storage layer handles this transparently; tolerates loss of 2 copies for writes, 3 for reads
 
 **Why Aurora over standard RDS MySQL/PostgreSQL:**
 
 - **5x throughput over MySQL, 3x over PostgreSQL** (AWS's claim) — due to the custom storage engine
-- **6 copies of data across 3 AZs** by default — tolerates loss of 2 copies for writes, 3 for reads
-- **Auto-scaling storage** — grows automatically in 10 GB increments up to 128 TB, no pre-provisioning
 - **Faster failover** — typically under 30 seconds vs 1–2 minutes for standard RDS Multi-AZ
 - **Up to 15 read replicas** (vs 5 for standard RDS) with sub-10ms replica lag
 
