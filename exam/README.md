@@ -767,6 +767,28 @@ Without transaction logs, you could only restore to the exact time a snapshot wa
 - *"ensure all database connections use SSL"* → enforce SSL via parameter group
 - *"share an encrypted snapshot with another account"* → copy snapshot with the target account's KMS key, then share
 
+### RDS Proxy
+
+RDS Proxy sits between your application and the database, pooling and reusing connections. The primary use case is **Lambda + RDS** — each Lambda invocation opens a new database connection, and under load hundreds of concurrent Lambdas can exhaust the database's connection limit.
+
+```
+Without proxy:  100 Lambdas → 100 DB connections → DB overwhelmed
+With proxy:     100 Lambdas → RDS Proxy (connection pool) → ~10 DB connections
+```
+
+**Other benefits:**
+
+- **Faster failover** — RDS Proxy detects Multi-AZ failover and routes to the new primary without your app reconnecting or handling errors
+- **IAM authentication** — enforce IAM-based DB auth instead of storing credentials in code or Secrets Manager lookups in every function
+
+**Supported engines:** MySQL, PostgreSQL, MariaDB, SQL Server (and Aurora MySQL/PostgreSQL).
+
+**Exam triggers:**
+- *"Lambda functions timing out connecting to RDS"* → RDS Proxy
+- *"too many database connections"* → RDS Proxy
+- *"reduce database failover time for the application"* → RDS Proxy
+- *"serverless application with a relational database"* → RDS Proxy
+
 ### Read Replicas
 
 A single RDS instance handles both reads and writes. Under heavy read load (reporting, analytics, dashboards) the primary gets overwhelmed even when writes are infrequent. Read replicas offload that traffic to separate instances.
