@@ -754,3 +754,45 @@ A Read Replica can be promoted to become a standalone primary. This breaks repli
 - **Cross-region migration** — create a Read Replica in the target region, let it catch up, then promote it and cut over with minimal downtime
 - **Disaster recovery** — if the primary region fails entirely, promote a cross-region replica to take over
 - **Forking for testing** — promote a replica to create a copy of production for testing without affecting the live database
+
+### RDS Custom
+
+RDS Custom gives you OS and database-engine-level access while still getting some managed benefits (automated backups, monitoring). Standard RDS is a black box — you can't SSH in or install anything on the host. RDS Custom opens that up.
+
+**Available for:** Oracle and SQL Server only.
+
+**RDS vs RDS Custom:**
+
+| | RDS | RDS Custom |
+| - | --- | ---------- |
+| OS access | No | Yes (SSH, RDP) |
+| Custom software on host | No | Yes |
+| DB engine customization | No | Yes |
+| Managed backups | Yes | Yes |
+| Multi-AZ | Yes | Yes |
+
+**When you need RDS Custom — real-world examples:**
+
+Oracle-specific:
+- Installing Oracle Application Express (APEX) or custom Oracle patches AWS doesn't ship
+- Configuring Oracle Data Guard in ways not supported by standard RDS
+- Running Oracle Enterprise Manager agents on the host
+
+SQL Server-specific:
+- Installing SSIS, SSRS, or SSAS — these require OS-level installation
+- Running CLR assemblies that depend on OS-level libraries
+- Custom backup solutions using third-party tools (Commvault, Veeam)
+
+General:
+- Legacy enterprise apps (SAP, PeopleSoft) that require specific OS kernel parameters or custom shared libraries
+- Compliance regimes (financial, healthcare) mandating OS hardening, antivirus agents, or audit daemons on the DB server
+- Custom authentication plugins needing OS-level installation (e.g. Kerberos configurations beyond what RDS exposes)
+- Vendor-supplied database software that bundles stored procedures with native OS dependencies
+
+**The common thread:** a third-party or legacy application dictates specific OS or DB-engine-level requirements that standard RDS can't accommodate.
+
+**Exam triggers:**
+- *"need to install custom software on the database host"* → RDS Custom
+- *"need SSH/RDP access to the database instance"* → RDS Custom
+- *"Oracle or SQL Server with OS-level customization"* → RDS Custom
+- *"need OS access but still want managed backups"* → RDS Custom (not DB on EC2)
