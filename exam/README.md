@@ -879,6 +879,25 @@ Your app
 
 With standard RDS Read Replicas, you get separate endpoints per replica and have to manage load balancing yourself (or use Route 53). Aurora handles this natively.
 
+**Custom Endpoints:**
+
+The Reader Endpoint load-balances across *all* replicas equally. This is a problem when your replicas aren't all the same size or purpose — an expensive analytics query hitting a small production replica can hurt live service.
+
+Custom Endpoints let you group specific replicas and route traffic to just that subset:
+
+```
+App (production reads) → Custom Endpoint A → Replica 1 (r5.2xlarge)
+                                            → Replica 2 (r5.2xlarge)
+
+Analytics team         → Custom Endpoint B → Replica 3 (r5.8xlarge)
+```
+
+Real-world scenario: someone runs an expensive reporting query on the production database — it saturates CPU on the replica and degrades live customer traffic. With Custom Endpoints, the analytics team hits a dedicated replica and production reads are isolated.
+
+Once you create Custom Endpoints, avoid using the default Reader Endpoint — it still includes all replicas, which defeats the purpose of your segmentation.
+
+**Exam trigger:** *"isolate reporting/analytics queries from production read traffic"* → Aurora Custom Endpoints.
+
 **When to use standard RDS over Aurora:**
 
 - Cost-sensitive workloads — Aurora is ~20% more expensive than standard RDS
