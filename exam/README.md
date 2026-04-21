@@ -1226,3 +1226,64 @@ In practice, combine lazy loading with TTL — data is cached on first read and 
 - *"in-memory data store with replication and failover"* → ElastiCache Redis
 - *"simple caching layer, data is disposable"* → ElastiCache Memcached
 - *"users are logged out when routed to a different instance"* → store sessions in ElastiCache instead of using sticky sessions
+
+### ElastiCache Security
+
+**Network:**
+- **VPC-only** — ElastiCache clusters are never publicly accessible (same as RDS Proxy). Must be accessed from within the VPC.
+- **Security groups** — control which resources can connect to the cache port (default Redis: 6379, Memcached: 11211)
+
+**Authentication:**
+
+| Method | Engine | How it works |
+| ------ | ------ | ------------ |
+| Redis AUTH | Redis | A token/password set on the cluster; clients must provide it on connect |
+| IAM authentication | Redis 7+ | Use IAM users/roles instead of passwords — short-lived tokens |
+| None | Memcached | No native auth — rely entirely on security groups |
+
+**Encryption:**
+- **In-transit (TLS)** — encrypts data between your app and the cache. Must be enabled at creation time.
+- **At-rest** — encrypts data on disk using KMS. Must be enabled at creation time.
+
+**Key detail:** Memcached has no authentication mechanism — security groups are your only line of defence. This is another reason Redis is preferred for anything sensitive.
+
+**Exam triggers:**
+- *"secure cache access without passwords"* → IAM authentication (Redis 7+)
+- *"encrypt data in the cache"* → at-rest encryption with KMS
+- *"encrypt traffic between app and cache"* → in-transit TLS
+- *"cache must not be accessible from the internet"* → it never is — ElastiCache is VPC-only
+
+### ElastiCache Redis Replication
+
+Redis replication in ElastiCache follows a similar pattern to RDS — a primary node handles writes, replica nodes handle reads and provide failover.
+
+```
+Primary (read/write) → replicates → Replica 1 (read-only)
+                     → replicates → Replica 2 (read-only)
+```
+
+**Cluster Mode Disabled (single shard):**
+- One primary + up to 5 replicas
+- All nodes have the full dataset
+- Multi-AZ failover — if the primary dies, a replica is promoted automatically
+- Use case: dataset fits in one node's memory, you need read scaling and HA
+
+**Cluster Mode Enabled (multiple shards):**
+- Data is **sharded** across multiple primary nodes
+- Each shard has its own primary + replicas
+- Scales both reads **and writes** — each shard handles writes for its portion of the data
+- Use case: dataset is too large for one node, or you need write scaling
+
+```
+Cluster Mode Enabled:
+Shard 1: Primary → Replica
+Shard 2: Primary → Replica
+Shard 3: Primary → Replica
+(each shard holds a portion of the keys)
+```
+
+**Exam triggers:**
+- *"Redis cache needs high availability"* → Multi-AZ with replicas
+- *"scale Redis read throughput"* → add read replicas
+- *"Redis dataset is too large for a single node"* → Cluster Mode Enabled (sharding)
+- *"scale Redis write throughput"* → Cluster Mode Enabled (writes distributed across shards)
