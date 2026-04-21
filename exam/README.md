@@ -1152,6 +1152,25 @@ App → ElastiCache (cache hit? return immediately)
 
 **Redis is the default choice** unless you specifically need multi-threaded performance for simple key-value caching.
 
+**Memcached — when and why:**
+
+Memcached is the simplest possible cache — a distributed hash table. You put key-value pairs in, you get them out. That's it.
+
+What Memcached has over Redis:
+- **Multi-threaded** — uses all CPU cores, higher throughput per node for simple operations
+- **Horizontal scaling** — add/remove nodes and data is redistributed (sharding built-in)
+
+What Memcached lacks:
+- No persistence — node dies, data is gone
+- No replication — no replicas, no Multi-AZ failover
+- No backup/restore
+- No data structures — just strings, no lists/sets/sorted sets/hashes/pub-sub
+- No transactions
+
+When Memcached makes sense: caching simple objects (HTML fragments, API responses, DB query results) where data loss is acceptable and you want the simplest possible layer with raw multi-threaded throughput.
+
+**Exam shortcut:** any mention of persistence, replication, failover, data structures, backups, or Multi-AZ → **Redis**. "Simple caching, data loss acceptable, multi-threaded" → **Memcached**.
+
 **Common architecture patterns:**
 
 **1. DB cache — reduce RDS load:**
