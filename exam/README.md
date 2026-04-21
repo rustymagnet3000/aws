@@ -1210,15 +1210,40 @@ This is the proper fix for the sticky sessions problem covered in the ELB sectio
 
 Redis sorted sets give you ranked data natively — e.g. a gaming leaderboard. `ZADD` to insert scores, `ZRANGE` to get the top N. No need to query and sort in your database.
 
-**Cache invalidation strategies:**
+**Caching patterns:**
 
-| Strategy | How it works | Trade-off |
-| -------- | ------------ | --------- |
-| Lazy loading | Load into cache only on cache miss | Stale data possible; cache miss penalty |
-| Write-through | Write to cache on every DB write | Always fresh; higher write latency |
-| TTL (time to live) | Data expires after N seconds | Simple; controls staleness window |
+**Lazy Loading (Cache-Aside) — the most common pattern:**
 
-In practice, combine lazy loading with TTL — data is cached on first read and expires after a set period.
+Your app manages the cache directly — check cache first, fall back to DB on miss, write result back to cache:
+
+```
+Read request
+├── Cache hit? → return cached data (fast)
+└── Cache miss? → query DB → store in cache → return data
+```
+
+| Pros | Cons |
+| ---- | ---- |
+| Only requested data gets cached — no wasted memory | First request is always slow (3 round trips: cache miss → DB → cache write) |
+| Cache failure isn't fatal — app falls back to DB | Stale data — DB updates don't update the cache |
+| Simple to implement | |
+
+**Write-Through — solves staleness:**
+
+Every DB write also updates the cache immediately. Data in the cache is always fresh.
+
+| Pros | Cons |
+| ---- | ---- |
+| Cache is never stale | Higher write latency (write to DB + cache on every write) |
+| | Caches data that might never be read — wastes memory |
+
+**TTL (Time to Live) — controls the staleness window:**
+
+Data expires after N seconds. On next request, cache miss triggers a fresh read from the DB. Simple to implement, and limits how stale data can get.
+
+**The production pattern — combine all three:**
+
+Lazy Loading + TTL for reads (cache on first access, expire after N seconds) and Write-Through for writes (update cache immediately on DB writes). Best of both worlds — fresh data on writes, efficient caching on reads, TTL as a safety net.
 
 **Exam triggers:**
 - *"reduce read load on the database"* → ElastiCache
