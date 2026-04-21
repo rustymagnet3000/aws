@@ -736,6 +736,18 @@ Managed SQL database service. AWS handles provisioning, OS patching, backups, mo
 | IAM database auth | App gets a short-lived token via AWS API instead of a password | Lambda, apps with IAM roles — no credentials to store |
 | Kerberos / Active Directory | Integrates with existing AD infrastructure | Enterprises with centralised identity (SQL Server, Oracle, PostgreSQL) |
 
+**IAM database auth engine support:**
+
+| Engine | IAM Auth |
+| ------ | -------- |
+| MySQL / MariaDB | Yes |
+| PostgreSQL | Yes |
+| Aurora MySQL / PostgreSQL | Yes |
+| Oracle | No — uses Oracle Wallet, Kerberos/AD |
+| SQL Server | No — uses Active Directory/Kerberos |
+
+Oracle and SQL Server have their own enterprise authentication ecosystems, so AWS didn't build IAM auth for them.
+
 **Audit logging:**
 
 - Enable database engine logs (slow query, general, error) and send to **CloudWatch Logs**
