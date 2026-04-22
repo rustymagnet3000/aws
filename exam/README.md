@@ -1510,15 +1510,21 @@ TTL tells recursive resolvers how long to cache a DNS response before asking Rou
 | High (e.g. 86400 = 24hrs) | A long time | Fewer DNS queries (cheaper), but changes take hours to propagate |
 | Low (e.g. 60 = 1 min) | Briefly | Changes propagate fast, but more DNS queries (higher cost, more load) |
 
-**The practical pattern:**
+**Pre-migration TTL pattern (common exam trap):**
 
-Before a migration or DNS change:
-1. Lower TTL to 60s and wait for the old TTL to expire (so all caches refresh)
-2. Make the DNS change
-3. Changes propagate within ~60s
-4. Raise TTL back to a high value
+People make a DNS change (e.g. point `api.example.com` to a new server) and expect it to take effect immediately. But if the TTL was 24 hours, clients worldwide have the old IP cached and won't ask Route 53 again for up to 24 hours. Route 53 isn't slow — the recursive resolvers are serving stale cached answers.
 
-If you skip step 1, clients with the old high TTL cached will keep hitting the old IP for hours.
+The correct migration pattern:
+
+1. TTL is currently 86400 (24hrs)
+2. **Lower TTL to 60s** — then **wait 24hrs** for all existing caches to expire and pick up the new short TTL
+3. Make the DNS change (point to new IP)
+4. Within ~60s, everyone has the new IP — because resolvers are now re-checking every 60s
+5. **Raise TTL back to 86400** — reduce query costs now that the change is stable
+
+The critical step people miss is **step 2 — the wait**. You must wait for the old high TTL to expire before making the change, otherwise clients still have the old IP cached for hours regardless of the new TTL.
+
+**Exam trap:** a question describes a migration where "some users are still reaching the old server hours later". The answer is that TTL wasn't lowered before the change, not that Route 53 is slow or broken.
 
 **Alias records:** TTL is set automatically by Route 53 to match the AWS resource — you can't override it.
 
