@@ -1410,6 +1410,8 @@ Browser → Recursive resolver (non-authoritative) → Root NS → TLD NS → Au
 - *"reduce DNS query costs"* → Alias (free for AWS resources)
 - *"point example.com to a CloudFront distribution"* → Alias record
 
+**Alias only works with Route 53:** Alias is not standard DNS — it's AWS-proprietary. If you use a third-party DNS provider (e.g. Cloudflare, GoDaddy) as your authoritative DNS, you can't create Alias records. Cloudflare solves the zone apex problem with **CNAME flattening** — their own equivalent that resolves the CNAME at the edge and returns an A record to the client. For the exam, assume Route 53 is the DNS provider.
+
 ### Private Hosted Zones
 
 A Private Hosted Zone resolves DNS names **only within your VPC(s)**. Queries from the internet get nothing.
