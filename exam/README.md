@@ -1500,3 +1500,29 @@ User → Route 53 → Primary (healthy?) → Yes → return primary IP
 - *"active-passive disaster recovery"* → Failover
 - *"shift traffic gradually from one region to another"* → Geoproximity with bias
 - *"return multiple IPs but exclude unhealthy ones"* → Multi-value answer
+
+### TTL (Time to Live)
+
+TTL tells recursive resolvers how long to cache a DNS response before asking Route 53 again. Set per record, in seconds.
+
+| TTL | Resolvers cache for | Trade-off |
+| --- | ------------------- | --------- |
+| High (e.g. 86400 = 24hrs) | A long time | Fewer DNS queries (cheaper), but changes take hours to propagate |
+| Low (e.g. 60 = 1 min) | Briefly | Changes propagate fast, but more DNS queries (higher cost, more load) |
+
+**The practical pattern:**
+
+Before a migration or DNS change:
+1. Lower TTL to 60s and wait for the old TTL to expire (so all caches refresh)
+2. Make the DNS change
+3. Changes propagate within ~60s
+4. Raise TTL back to a high value
+
+If you skip step 1, clients with the old high TTL cached will keep hitting the old IP for hours.
+
+**Alias records:** TTL is set automatically by Route 53 to match the AWS resource — you can't override it.
+
+**Exam triggers:**
+- *"users are still hitting the old server after a DNS change"* → TTL is too high, or wasn't lowered before the change
+- *"reduce DNS query costs"* → increase TTL (fewer lookups)
+- *"DNS changes must propagate quickly"* → low TTL
