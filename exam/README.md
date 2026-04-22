@@ -1435,3 +1435,68 @@ Real-world examples:
 **Exam triggers:**
 - *"resolve DNS names only within the VPC"* → Private Hosted Zone
 - *"internal service discovery without exposing to internet"* → Private Hosted Zone
+
+### Routing Policies
+
+Route 53 doesn't just resolve a domain to one IP — it can decide **which** IP to return based on different strategies.
+
+**Simple:**
+- Returns one or more IPs. If multiple, the client picks one at random.
+- No health checks.
+- Use case: single resource, no clever routing needed.
+
+**Weighted:**
+- Split traffic by percentage across multiple resources. E.g. 70% to instance A, 30% to instance B.
+- Weights don't have to add up to 100 — they're relative (70/30 is the same as 7/3).
+- Use case: gradual deployments — send 10% of traffic to the new version, 90% to the old.
+
+**Latency-based:**
+- Routes users to the region with the lowest latency **from their location**.
+- Not geographic — a user in Ireland might get routed to `us-east-1` if the latency happens to be lower.
+- Use case: global application, minimize response time for users.
+
+**Failover:**
+- Active-passive setup. Route 53 returns the primary unless its health check fails, then returns the secondary.
+- Requires health checks on the primary.
+- Use case: disaster recovery — primary in `us-east-1`, standby in `eu-west-1`.
+
+```
+User → Route 53 → Primary (healthy?) → Yes → return primary IP
+                                      → No  → return secondary IP
+```
+
+**Geolocation:**
+- Routes based on **where the user is** (continent, country, or US state).
+- If no match, returns a default record (if configured) or no answer.
+- Use case: content localization (French users → French site), compliance (EU data stays in EU).
+
+**Geoproximity:**
+- Routes based on geographic distance between user and resource, with an adjustable **bias**.
+- Increase the bias to attract more traffic to a resource; decrease to push traffic away.
+- Use case: fine-tuned geographic routing — e.g. shift traffic from one region to another during a migration.
+- Requires Route 53 **Traffic Flow** (visual editor for complex routing).
+
+**Multi-value answer:**
+- Returns up to 8 healthy IPs. Client picks one.
+- Like Simple, but with health checks — unhealthy IPs are excluded from the response.
+- Use case: simple client-side load balancing with health checking. **Not a replacement for ELB** — but better than Simple routing.
+
+**Quick reference:**
+
+| Policy | Decides based on | Health checks? | Use case |
+| ------ | ---------------- | -------------- | -------- |
+| Simple | Nothing — returns all records | No | Single resource |
+| Weighted | Assigned weights | Optional | Gradual deployments, A/B testing |
+| Latency | Network latency to regions | Optional | Global apps, minimize latency |
+| Failover | Health of primary | Yes (required) | Active-passive DR |
+| Geolocation | User's location | Optional | Localization, compliance |
+| Geoproximity | Geographic distance + bias | Optional | Fine-tuned geo routing |
+| Multi-value | Health of each target | Yes | Simple LB with health checks |
+
+**Exam triggers:**
+- *"send 10% of traffic to a new version"* → Weighted
+- *"route users to the closest region"* → Latency-based (not Geolocation — latency ≠ geography)
+- *"route French users to the French site"* → Geolocation
+- *"active-passive disaster recovery"* → Failover
+- *"shift traffic gradually from one region to another"* → Geoproximity with bias
+- *"return multiple IPs but exclude unhealthy ones"* → Multi-value answer
