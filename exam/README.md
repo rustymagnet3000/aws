@@ -45,6 +45,7 @@
 - [ElastiCache](#elasticache)
   - [ElastiCache Security](#elasticache-security)
   - [ElastiCache Redis Replication](#elasticache-redis-replication)
+- [Route 53](#route-53)
 
 <!-- /TOC -->
 
@@ -1343,3 +1344,68 @@ Shard 3: Primary → Replica
 - *"scale Redis read throughput"* → add read replicas
 - *"Redis dataset is too large for a single node"* → Cluster Mode Enabled (sharding)
 - *"scale Redis write throughput"* → Cluster Mode Enabled (writes distributed across shards)
+
+## Route 53
+
+AWS's DNS service. Named after DNS port 53. It does three things: **domain registration**, **DNS routing**, and **health checking**.
+
+### Authoritative vs Non-Authoritative DNS
+
+When you type `example.com` in your browser, a chain of DNS servers work together to resolve it:
+
+```
+Browser → Recursive resolver (non-authoritative) → Root NS → TLD NS → Authoritative NS → IP address
+```
+
+**Non-authoritative (recursive resolver):**
+- Your ISP's DNS server or a public resolver like `8.8.8.8` (Google) or `1.1.1.1` (Cloudflare)
+- Doesn't own any DNS records — it asks other servers on your behalf and caches the answers
+- Returns cached responses — may be stale until TTL expires
+- You **don't control** this server
+
+**Authoritative:**
+- The server that **owns** the DNS records for a domain and gives the definitive answer
+- When someone asks "what IP is `example.com`?", this server responds with the actual record
+- **Route 53 is an authoritative DNS service** — you create hosted zones and manage records, and Route 53 answers queries authoritatively
+- You **do control** this server (your records, your TTLs, your routing policies)
+
+**The lookup chain:**
+
+```
+1. Browser asks recursive resolver: "what is example.com?"
+2. Resolver asks root nameserver: "who handles .com?"
+3. Root NS replies: "go ask the .com TLD server"
+4. Resolver asks .com TLD: "who handles example.com?"
+5. TLD replies: "go ask ns-123.awsdns-45.com" (Route 53)
+6. Resolver asks Route 53: "what is example.com?"
+7. Route 53 replies: "54.23.100.12" ← authoritative answer
+8. Resolver caches it and returns to browser
+```
+
+**Why this matters for the exam:** Route 53 is authoritative — you can update a record and it takes effect immediately on Route 53's side. But clients may still see the old value until their resolver's cached TTL expires. If a question asks about DNS propagation delays, it's the caching at recursive resolvers, not Route 53 being slow.
+
+### DNS Record Types
+
+| Record | What it does | Example |
+| ------ | ------------ | ------- |
+| A | Maps domain to IPv4 address | `example.com` → `54.23.100.12` |
+| AAAA | Maps domain to IPv6 address | `example.com` → `2600:1f18::1` |
+| CNAME | Maps domain to another domain | `www.example.com` → `example.com` |
+| NS | Nameserver records — which servers are authoritative for this zone | `example.com` → `ns-123.awsdns-45.com` |
+| Alias | AWS-specific — maps domain to an AWS resource | `example.com` → `my-alb-123.us-east-1.elb.amazonaws.com` |
+
+**CNAME vs Alias — the most important distinction:**
+
+| | CNAME | Alias |
+| - | ----- | ----- |
+| Works at zone apex (naked domain)? | No — `example.com` can't be a CNAME | Yes — `example.com` can be an Alias |
+| Cost | Charged per query | Free for queries to AWS resources |
+| Points to | Any domain name | AWS resources only (ALB, CloudFront, S3, etc.) |
+| AWS-specific? | No — standard DNS | Yes — Route 53 only |
+
+**Zone apex** = the naked domain (`example.com` without `www`). DNS standard says the apex can't be a CNAME. AWS invented Alias records to solve this — they work like CNAMEs but are allowed at the apex.
+
+**Exam triggers:**
+- *"map the root domain to an ALB"* → Alias record (CNAME can't do zone apex)
+- *"reduce DNS query costs"* → Alias (free for AWS resources)
+- *"point example.com to a CloudFront distribution"* → Alias record
