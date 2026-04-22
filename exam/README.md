@@ -1506,8 +1506,22 @@ User → Route 53 → Primary (healthy?) → Yes → return primary IP
 **Geoproximity:**
 - Routes based on geographic distance between user and resource, with an adjustable **bias**.
 - Increase the bias to attract more traffic to a resource; decrease to push traffic away.
-- Use case: fine-tuned geographic routing — e.g. shift traffic from one region to another during a migration.
+- Bias ranges from -99 to +99. Positive = expand the region's catchment area. Negative = shrink it.
 - Requires Route 53 **Traffic Flow** (visual editor for complex routing).
+
+Real-world example — migrating from `us-east-1` to `eu-west-1`:
+
+You're moving European customers off `us-east-1` to a new deployment in `eu-west-1`. Rather than a hard cutover, you gradually shift traffic:
+
+```
+Week 1: us-east-1 (bias: 0)   eu-west-1 (bias: +20)  → EU gets ~60% of European traffic
+Week 2: us-east-1 (bias: 0)   eu-west-1 (bias: +50)  → EU gets ~85% of European traffic
+Week 3: us-east-1 (bias: 0)   eu-west-1 (bias: +99)  → EU gets nearly all European traffic
+```
+
+Each week you increase `eu-west-1`'s bias, expanding its catchment area and pulling more users toward it. If something goes wrong, dial the bias back down — instant rollback without DNS record changes.
+
+**Geoproximity vs Weighted:** both can shift traffic gradually, but Weighted splits by percentage globally. Geoproximity splits by **geography** — you're moving users in a specific part of the world, not a random 10% of all users.
 
 **Multi-value answer:**
 - Returns up to 8 healthy IPs. Client picks one.
