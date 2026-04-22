@@ -1660,5 +1660,30 @@ Real-world example — Failover routing with private databases:
 **Also useful for non-HTTP resources:** anything CloudWatch can track — DynamoDB throttling, Lambda error rates, SQS queue depth, custom app metrics. None of these have URLs to hit, but they all emit CloudWatch metrics.
 
 **Exam trigger:** *"monitor the health of a resource that has no public endpoint"* → CloudWatch Alarm health check.
+
+**Route 53 health checks vs ELB health checks — why you need both:**
+
+They operate at different levels:
+
+```
+User → Route 53 (which region?) → ALB (which instance?) → EC2
+       DNS health check              ELB health check
+       "is us-east-1 alive?"         "is instance #3 alive?"
+       Checks every 30s              Checks every request
+       Cached by TTL                 Real-time
+```
+
+| | Route 53 health check | ELB health check |
+| - | --------------------- | ---------------- |
+| Decides | Which region/endpoint to route to | Which instance receives the request |
+| Granularity | Endpoint level (ALB, IP) | Instance level |
+| Speed | Every 30s, cached by TTL | Real-time, every request |
+| Scope | Cross-region failover | Within a single load balancer |
+
+**Without ELB health checks:** Route 53 points users to a region, but if one instance behind the ALB dies, Route 53 doesn't know — it only sees the ALB endpoint. Users get errors until ELB removes the bad instance.
+
+**Without Route 53 health checks:** if an entire region goes down, users still get routed there (DNS cached) with no failover to another region.
+
+You need both layers: Route 53 for **region-level** failover, ELB for **instance-level** failover.
 - *"stop sending traffic to an unhealthy instance via DNS"* → health check + any routing policy that supports it
 - *"check is healthy only if multiple services are healthy"* → Calculated health check
