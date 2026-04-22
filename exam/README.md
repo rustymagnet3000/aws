@@ -1620,5 +1620,31 @@ Route 53 health checker → GET /health → 200 → healthy, keep in DNS
 ```
 
 **Why `/health` matters:** without it, Route 53 hits `/` — your homepage might return 200 even if the database is down because static content still renders. Route 53 thinks everything is fine while users see errors. A proper `/health` endpoint checks all critical dependencies and returns 500 if anything is broken.
+
+**CloudWatch Alarm health checks — monitoring private resources:**
+
+Route 53 endpoint health checks come from public IPs — they can't reach resources in private subnets. CloudWatch Alarm health checks solve this by watching a CloudWatch metric instead of hitting a URL directly.
+
+```
+Route 53 health checker → Private RDS instance → ❌ blocked
+
+Instead:
+Private RDS → CloudWatch metric (CPU, connections, replica lag)
+           → CloudWatch Alarm (threshold breached?)
+           → Route 53 health check watches alarm state
+           → ALARM = unhealthy → remove from DNS
+```
+
+Real-world example — Failover routing with private databases:
+
+1. Primary DB in `us-east-1` (private subnet), standby in `eu-west-1` (private subnet)
+2. CloudWatch monitors RDS metrics (connections, replica lag, CPU)
+3. CloudWatch Alarm fires if metrics cross a threshold
+4. Route 53 health check monitors that alarm
+5. Alarm = ALARM → Route 53 marks primary unhealthy → DNS flips to standby
+
+**Also useful for non-HTTP resources:** anything CloudWatch can track — DynamoDB throttling, Lambda error rates, SQS queue depth, custom app metrics. None of these have URLs to hit, but they all emit CloudWatch metrics.
+
+**Exam trigger:** *"monitor the health of a resource that has no public endpoint"* → CloudWatch Alarm health check.
 - *"stop sending traffic to an unhealthy instance via DNS"* → health check + any routing policy that supports it
 - *"check is healthy only if multiple services are healthy"* → Calculated health check
