@@ -1460,8 +1460,33 @@ Route 53 doesn't just resolve a domain to one IP — it can decide **which** IP 
 
 **Latency-based:**
 - Routes users to the region with the lowest latency **from their location**.
-- Not geographic — a user in Ireland might get routed to `us-east-1` if the latency happens to be lower.
+- AWS measures real-time network latency between the user's resolver and each AWS region — this is not geographic distance. A user in Ireland might get `us-east-1` if the network path is faster than `eu-west-1` at that moment.
+- If the lowest-latency region is unhealthy (health check enabled), Route 53 returns the next-best region.
 - Use case: global application, minimize response time for users.
+
+Real-world example — API deployed in 3 regions:
+
+```
+User in London    → Route 53 measures latency → eu-west-1 (50ms) ✅
+User in Tokyo     → Route 53 measures latency → ap-northeast-1 (20ms) ✅
+User in São Paulo → Route 53 measures latency → us-east-1 (80ms) ✅
+                    (sa-east-1 might be closer geographically but slower network-wise)
+```
+
+**Latency vs Geolocation vs Geoproximity — the three that get confused:**
+
+| | Latency | Geolocation | Geoproximity |
+| - | ------- | ----------- | ------------ |
+| Routes based on | Network latency (measured) | User's continent/country/state | Geographic distance + bias |
+| Goal | Fastest response | Content localization, compliance | Fine-tuned geographic control |
+| Can override? | No — always picks lowest latency | No — strict location match | Yes — bias shifts traffic toward/away |
+| Example | "Send users to whichever region is fastest" | "French users must hit the French site" | "Shift 20% more traffic to eu-west-1 during migration" |
+| No match? | Always matches (picks best latency) | Returns default record or nothing | Always matches (nearest resource) |
+
+**The exam distinction:**
+- "Fastest" / "lowest latency" / "best performance" → **Latency**
+- "Users in France" / "compliance" / "localization" → **Geolocation**
+- "Shift traffic" / "bias" / "gradually move traffic between regions" → **Geoproximity**
 
 **Failover:**
 - Active-passive setup. Route 53 returns the primary unless its health check fails, then returns the secondary.
