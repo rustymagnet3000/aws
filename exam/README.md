@@ -1534,3 +1534,46 @@ The critical step people miss is **step 2 — the wait**. You must wait for the 
 - *"users are still hitting the old server after a DNS change"* → TTL is too high, or wasn't lowered before the change
 - *"reduce DNS query costs"* → increase TTL (fewer lookups)
 - *"DNS changes must propagate quickly"* → low TTL
+
+### Route 53 Health Checks
+
+Route 53 can monitor the health of your resources and stop returning unhealthy IPs in DNS responses. This is how routing policies like Failover and Multi-value know when to stop sending traffic somewhere.
+
+**Three types of health checks:**
+
+| Type | What it monitors | Use case |
+| ---- | ---------------- | -------- |
+| Endpoint | Hits a URL or IP directly (HTTP, HTTPS, or TCP) | Monitor a web server, API, or ALB |
+| Calculated | Combines results of other health checks (AND/OR logic) | "Healthy if 2 out of 3 child checks pass" |
+| CloudWatch Alarm | Monitors a CloudWatch Alarm state | Monitor anything CloudWatch tracks (DynamoDB throttling, custom metrics, etc.) |
+
+**Endpoint health checks — how they work:**
+
+- Route 53 sends requests from ~15 health checkers globally every 30s (or 10s for fast checks — costs more)
+- Resource is healthy if ≥18% of checkers report it healthy
+- For HTTP/HTTPS checks, a 2xx or 3xx response = healthy
+- Can optionally search the response body for a string (first 5,120 bytes)
+
+**Key detail:** health checkers are **public Route 53 IPs**. They must be able to reach your endpoint. If your resource is in a private subnet with no public access, endpoint health checks won't work — use a **CloudWatch Alarm** health check instead.
+
+```
+Public resource → Endpoint health check (Route 53 hits it directly) ✅
+Private resource → Endpoint health check ❌ (can't reach it)
+Private resource → CloudWatch Alarm → Route 53 health check ✅
+```
+
+**Calculated health checks:**
+
+Combine up to 256 child health checks with OR, AND, or "at least N of M must pass". Use case: your app has multiple components (web server, API, database) — the parent check is healthy only if all critical children are healthy.
+
+**Health checks + routing policies:**
+
+- **Failover** — health check is **required** on the primary. If it fails, Route 53 returns the secondary.
+- **Weighted / Latency / Geolocation / Multi-value** — health checks are optional but recommended. Unhealthy records are excluded from responses.
+- **Simple** — no health checks. Route 53 returns all records blindly.
+
+**Exam triggers:**
+- *"automatically failover DNS to a standby region"* → Failover routing + health check on primary
+- *"health check a resource in a private subnet"* → CloudWatch Alarm health check (not endpoint)
+- *"stop sending traffic to an unhealthy instance via DNS"* → health check + any routing policy that supports it
+- *"check is healthy only if multiple services are healthy"* → Calculated health check
