@@ -46,6 +46,12 @@
   - [ElastiCache Security](#elasticache-security)
   - [ElastiCache Redis Replication](#elasticache-redis-replication)
 - [Route 53](#route-53)
+  - [Authoritative vs Non-Authoritative DNS](#authoritative-vs-non-authoritative-dns)
+  - [DNS Record Types](#dns-record-types)
+  - [Private Hosted Zones](#private-hosted-zones)
+  - [Routing Policies](#routing-policies)
+  - [TTL (Time to Live)](#ttl-time-to-live)
+  - [Route 53 Health Checks](#route-53-health-checks)
 
 <!-- /TOC -->
 
