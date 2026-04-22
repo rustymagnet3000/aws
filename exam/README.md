@@ -1606,5 +1606,19 @@ Combine up to 256 child health checks with OR, AND, or "at least N of M must pas
 **Exam triggers:**
 - *"automatically failover DNS to a standby region"* → Failover routing + health check on primary
 - *"health check a resource in a private subnet"* → CloudWatch Alarm health check (not endpoint)
+
+**Route 53 health checks vs your `/health` endpoint:**
+
+These are different things that work together:
+
+- **Your `/health` endpoint** — code in your app that checks dependencies (DB connected? Redis up? Disk space OK?) and returns 200 if healthy, 500 if not. You define what "healthy" means.
+- **Route 53 health check** — hits that URL from 15+ global locations every 30s. If it gets a non-2xx/3xx, it marks the resource unhealthy and removes it from DNS responses.
+
+```
+Route 53 health checker → GET /health → 200 → healthy, keep in DNS
+                                      → 500 → unhealthy, remove from DNS
+```
+
+**Why `/health` matters:** without it, Route 53 hits `/` — your homepage might return 200 even if the database is down because static content still renders. Route 53 thinks everything is fine while users see errors. A proper `/health` endpoint checks all critical dependencies and returns 500 if anything is broken.
 - *"stop sending traffic to an unhealthy instance via DNS"* → health check + any routing policy that supports it
 - *"check is healthy only if multiple services are healthy"* → Calculated health check
