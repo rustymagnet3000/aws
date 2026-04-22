@@ -1108,6 +1108,23 @@ Real-world scenario: you need a copy of your 2 TB production database to test a 
 
 **Exam trigger:** *"create a copy of a production database quickly for testing"* → Aurora clone.
 
+**Common mistake: clone vs backup for long-term retention:**
+
+A clone is a **live running database** — it costs compute, and it's not a backup strategy. Don't confuse it with snapshots.
+
+| | Aurora Clone | Manual Snapshot | AWS Backup |
+| - | ------------ | --------------- | ---------- |
+| Purpose | Quick dev/test copy | Point-in-time backup | Centralized backup management |
+| Compute cost | Yes — running instance | No — just storage | No — just storage |
+| Retention | Lives until you delete the instance | Indefinite | Policy-based (days to years) |
+| Cross-region | No | Yes (copy snapshot) | Yes (built-in) |
+| Cross-account | No | Yes (share snapshot) | Yes (built-in) |
+
+- *"long-term backup retention"* → manual snapshots or **AWS Backup**
+- *"centralized backup policy across multiple databases"* → **AWS Backup**
+- *"quick copy for testing"* → Aurora clone
+- *"retain backups beyond 35 days"* → manual snapshots (automated backups max out at 35 days)
+
 **When to use standard RDS over Aurora:**
 
 - Cost-sensitive workloads — Aurora is ~20% more expensive than standard RDS
