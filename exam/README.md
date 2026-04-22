@@ -1,20 +1,50 @@
 # AWS Exam
 
-<!-- TOC depthfrom:2 depthto:2 withlinks:true updateonsave:true orderedlist:false -->
+<!-- TOC depthfrom:2 depthto:3 withlinks:true updateonsave:true orderedlist:false -->
 
-- [AWS Exam](#aws-exam)
-  - [Useful links](#useful-links)
-  - [EC2](#ec2)
-    - [Elastic IP versus Standard Public IP](#elastic-ip-versus-standard-public-ip)
-    - [EC2 SSH Troubleshooting](#ec2-ssh-troubleshooting)
-    - [1. Security Group — open port 22](#1-security-group--open-port-22)
-    - [2. IPv6 vs IPv4](#2-ipv6-vs-ipv4)
-    - [3. Permission denied (publickey)](#3-permission-denied-publickey)
-    - [4. Accessing instance without the correct key](#4-accessing-instance-without-the-correct-key)
-    - [Placement Groups](#placement-groups)
-    - [AMI](#ami)
-  - [EFS](#efs)
-  - [Scaling and ELB](#scaling-and-elb)
+- [Useful links](#useful-links)
+- [EC2](#ec2)
+  - [Availability Zones](#availability-zones)
+  - [Elastic IP versus Standard Public IP](#elastic-ip-versus-standard-public-ip)
+  - [EC2 SSH Troubleshooting](#ec2-ssh-troubleshooting)
+  - [Placement Groups](#placement-groups)
+  - [ENIs in ECS](#enis-in-ecs)
+  - [EBS Volumes](#ebs-volumes)
+  - [Hibernate](#hibernate)
+  - [Snapshots](#snapshots)
+  - [AMI](#ami)
+- [EFS](#efs)
+- [Scaling and ELB](#scaling-and-elb)
+  - [Elastic Load Balancer (ELB)](#elastic-load-balancer-elb)
+  - [SSL/TLS and Load Balancers](#ssltls-and-load-balancers)
+  - [Connection Draining](#connection-draining)
+  - [Cross-Zone Load Balancing](#cross-zone-load-balancing)
+  - [Sticky Sessions](#sticky-sessions)
+  - [Auto Scaling Group (ASG)](#auto-scaling-group-asg)
+  - [CloudWatch Alarms and Scaling](#cloudwatch-alarms-and-scaling)
+  - [Scaling Cooldowns](#scaling-cooldowns)
+  - [Health Checks](#health-checks)
+  - [ALB and EC2 Security Groups](#alb-and-ec2-security-groups)
+  - [EC2 without a Public IP](#ec2-without-a-public-ip)
+- [ECS (Elastic Container Service)](#ecs-elastic-container-service)
+  - [ECS vs ASG + EC2](#ecs-vs-asg--ec2)
+  - [Key concepts](#key-concepts)
+  - [When to choose EC2 over ECS](#when-to-choose-ec2-over-ecs)
+  - [Bottlerocket](#bottlerocket)
+- [RDS (Relational Database Service)](#rds-relational-database-service)
+  - [RDS and Aurora Security](#rds-and-aurora-security)
+  - [RDS Backups](#rds-backups)
+  - [RDS Encryption](#rds-encryption)
+  - [RDS Proxy](#rds-proxy)
+  - [Read Replicas](#read-replicas)
+  - [Multi-AZ](#multi-az)
+  - [RDS Custom](#rds-custom)
+  - [Aurora](#aurora)
+  - [Read Replica Network Costs](#read-replica-network-costs)
+  - [RDS Storage Auto Scaling](#rds-storage-auto-scaling)
+- [ElastiCache](#elasticache)
+  - [ElastiCache Security](#elasticache-security)
+  - [ElastiCache Redis Replication](#elasticache-redis-replication)
 
 <!-- /TOC -->
 
@@ -706,6 +736,18 @@ Managed SQL database service. AWS handles provisioning, OS patching, backups, mo
 | IAM database auth | App gets a short-lived token via AWS API instead of a password | Lambda, apps with IAM roles — no credentials to store |
 | Kerberos / Active Directory | Integrates with existing AD infrastructure | Enterprises with centralised identity (SQL Server, Oracle, PostgreSQL) |
 
+**IAM database auth engine support:**
+
+| Engine | IAM Auth |
+| ------ | -------- |
+| MySQL / MariaDB | Yes |
+| PostgreSQL | Yes |
+| Aurora MySQL / PostgreSQL | Yes |
+| Oracle | No — uses Oracle Wallet, Kerberos/AD |
+| SQL Server | No — uses Active Directory/Kerberos |
+
+Oracle and SQL Server have their own enterprise authentication ecosystems, so AWS didn't build IAM auth for them.
+
 **Audit logging:**
 
 - Enable database engine logs (slow query, general, error) and send to **CloudWatch Logs**
@@ -1066,6 +1108,23 @@ Real-world scenario: you need a copy of your 2 TB production database to test a 
 
 **Exam trigger:** *"create a copy of a production database quickly for testing"* → Aurora clone.
 
+**Common mistake: clone vs backup for long-term retention:**
+
+A clone is a **live running database** — it costs compute, and it's not a backup strategy. Don't confuse it with snapshots.
+
+| | Aurora Clone | Manual Snapshot | AWS Backup |
+| - | ------------ | --------------- | ---------- |
+| Purpose | Quick dev/test copy | Point-in-time backup | Centralized backup management |
+| Compute cost | Yes — running instance | No — just storage | No — just storage |
+| Retention | Lives until you delete the instance | Indefinite | Policy-based (days to years) |
+| Cross-region | No | Yes (copy snapshot) | Yes (built-in) |
+| Cross-account | No | Yes (share snapshot) | Yes (built-in) |
+
+- *"long-term backup retention"* → manual snapshots or **AWS Backup**
+- *"centralized backup policy across multiple databases"* → **AWS Backup**
+- *"quick copy for testing"* → Aurora clone
+- *"retain backups beyond 35 days"* → manual snapshots (automated backups max out at 35 days)
+
 **When to use standard RDS over Aurora:**
 
 - Cost-sensitive workloads — Aurora is ~20% more expensive than standard RDS
@@ -1080,3 +1139,207 @@ Real-world scenario: you need a copy of your 2 TB production database to test a 
 - *"need more than 5 read replicas"* → Aurora (supports up to 15)
 - *"fastest failover for a relational database on AWS"* → Aurora
 - *"dev/test database that should pause when not in use"* → Aurora Serverless
+
+### Read Replica Network Costs
+
+| Replication path | Data transfer cost |
+| ---------------- | ------------------ |
+| Same AZ | Free |
+| Cross-AZ (same region) | Charged |
+| Cross-region | Charged (higher — inter-region data transfer rates) |
+
+**Exam trigger:** *"reduce costs of read replicas"* → keep replicas in the same AZ as the primary (but this reduces availability). Cross-region replicas are the most expensive but needed for DR.
+
+### RDS Storage Auto Scaling
+
+RDS can automatically increase storage when it detects you're running low — no downtime, no manual intervention. You set a **Maximum Storage Threshold** and RDS scales within that limit.
+
+Triggers when:
+- Free storage falls below 10% of allocated storage
+- Low-storage condition lasts at least 5 minutes
+- At least 6 hours since the last storage modification
+
+**Exam trigger:** *"database running out of storage"* or *"automatically increase storage without downtime"* → RDS Storage Auto Scaling.
+
+## ElastiCache
+
+Managed in-memory cache service. Sits between your app and the database, caching frequently accessed data in memory to reduce load on RDS.
+
+```
+App → ElastiCache (cache hit? return immediately)
+    → RDS (cache miss? query DB, store result in cache)
+```
+
+**Two engines:**
+
+| | Redis | Memcached |
+| - | ----- | --------- |
+| Data structures | Strings, lists, sets, sorted sets, hashes | Simple key-value only |
+| Persistence | Yes — survives restarts | No — pure cache |
+| Replication | Yes — read replicas + Multi-AZ failover | No |
+| Backup/restore | Yes | No |
+| Multi-threaded | No (single-threaded) | Yes |
+| Use case | Sessions, leaderboards, pub/sub, anything needing durability | Simple caching at scale, disposable data |
+
+**Redis is the default choice** unless you specifically need multi-threaded performance for simple key-value caching.
+
+**Memcached — when and why:**
+
+Memcached is the simplest possible cache — a distributed hash table. You put key-value pairs in, you get them out. That's it.
+
+What Memcached has over Redis:
+- **Multi-threaded** — uses all CPU cores, higher throughput per node for simple operations
+- **Horizontal scaling** — add/remove nodes and data is redistributed (sharding built-in)
+
+What Memcached lacks:
+- No persistence — node dies, data is gone
+- No replication — no replicas, no Multi-AZ failover
+- No backup/restore
+- No data structures — just strings, no lists/sets/sorted sets/hashes/pub-sub
+- No transactions
+
+When Memcached makes sense: caching simple objects (HTML fragments, API responses, DB query results) where data loss is acceptable and you want the simplest possible layer with raw multi-threaded throughput.
+
+**Exam shortcut:** any mention of persistence, replication, failover, data structures, backups, or Multi-AZ → **Redis**. "Simple caching, data loss acceptable, multi-threaded" → **Memcached**.
+
+**Redis data durability:**
+
+Redis has two persistence mechanisms — RDB snapshots and AOF:
+
+| | RDB Snapshots | AOF (Append Only File) |
+| - | ------------- | ---------------------- |
+| How | Point-in-time dump of entire dataset | Logs every write operation to disk |
+| Data loss on crash | Everything since last snapshot | Minimal (~1 second) |
+| Restart speed | Fast (load one file) | Slower (replay all operations) |
+| File size | Smaller (compressed) | Larger (full operation log) |
+
+In ElastiCache Redis, AWS exposes both:
+- **Backups** — automated daily snapshots (like RDB)
+- **AOF** — available in Multi-AZ replication groups for minimal data loss on failover
+
+For the exam: *"minimize data loss in a Redis cache"* → Multi-AZ with AOF. *"cache that survives restarts"* → Redis with backups enabled. Memcached has no persistence at all.
+
+**Valkey:** an open-source fork of Redis created by the Linux Foundation in 2024 after Redis changed to a restrictive license. API-compatible — same commands, same protocol. ElastiCache now offers Valkey as an engine alongside Redis and Memcached. For exam purposes, treat it as Redis.
+
+**Common architecture patterns:**
+
+**1. DB cache — reduce RDS load:**
+
+App queries ElastiCache first. On a cache miss, query RDS, then write the result to the cache. Subsequent reads are served from memory (microseconds vs milliseconds).
+
+**2. Session store — make your app stateless:**
+
+Instead of sticky sessions on an ALB, store session data in ElastiCache. Any instance behind the load balancer can serve any request — just look up the session by ID.
+
+```
+User → ALB → any EC2 instance → ElastiCache (session lookup)
+```
+
+This is the proper fix for the sticky sessions problem covered in the ELB section.
+
+**3. Leaderboards / sorted sets (Redis only):**
+
+Redis sorted sets give you ranked data natively — e.g. a gaming leaderboard. `ZADD` to insert scores, `ZRANGE` to get the top N. No need to query and sort in your database.
+
+**Caching patterns:**
+
+**Lazy Loading (Cache-Aside) — the most common pattern:**
+
+Your app manages the cache directly — check cache first, fall back to DB on miss, write result back to cache:
+
+```
+Read request
+├── Cache hit? → return cached data (fast)
+└── Cache miss? → query DB → store in cache → return data
+```
+
+| Pros | Cons |
+| ---- | ---- |
+| Only requested data gets cached — no wasted memory | First request is always slow (3 round trips: cache miss → DB → cache write) |
+| Cache failure isn't fatal — app falls back to DB | Stale data — DB updates don't update the cache |
+| Simple to implement | |
+
+**Write-Through — solves staleness:**
+
+Every DB write also updates the cache immediately. Data in the cache is always fresh.
+
+| Pros | Cons |
+| ---- | ---- |
+| Cache is never stale | Higher write latency (write to DB + cache on every write) |
+| | Caches data that might never be read — wastes memory |
+
+**TTL (Time to Live) — controls the staleness window:**
+
+Data expires after N seconds. On next request, cache miss triggers a fresh read from the DB. Simple to implement, and limits how stale data can get.
+
+**The production pattern — combine all three:**
+
+Lazy Loading + TTL for reads (cache on first access, expire after N seconds) and Write-Through for writes (update cache immediately on DB writes). Best of both worlds — fresh data on writes, efficient caching on reads, TTL as a safety net.
+
+**Exam triggers:**
+- *"reduce read load on the database"* → ElastiCache
+- *"store session data for a stateless application"* → ElastiCache (Redis)
+- *"in-memory data store with replication and failover"* → ElastiCache Redis
+- *"simple caching layer, data is disposable"* → ElastiCache Memcached
+- *"users are logged out when routed to a different instance"* → store sessions in ElastiCache instead of using sticky sessions
+
+### ElastiCache Security
+
+**Network:**
+- **VPC-only** — ElastiCache clusters are never publicly accessible (same as RDS Proxy). Must be accessed from within the VPC.
+- **Security groups** — control which resources can connect to the cache port (default Redis: 6379, Memcached: 11211)
+
+**Authentication:**
+
+| Method | Engine | How it works |
+| ------ | ------ | ------------ |
+| Redis AUTH | Redis | A token/password set on the cluster; clients must provide it on connect |
+| IAM authentication | Redis 7+ | Use IAM users/roles instead of passwords — short-lived tokens |
+| None | Memcached | No native auth — rely entirely on security groups |
+
+**Encryption:**
+- **In-transit (TLS)** — encrypts data between your app and the cache. Must be enabled at creation time.
+- **At-rest** — encrypts data on disk using KMS. Must be enabled at creation time.
+
+**Key detail:** Memcached has no authentication mechanism — security groups are your only line of defence. This is another reason Redis is preferred for anything sensitive.
+
+**Exam triggers:**
+- *"secure cache access without passwords"* → IAM authentication (Redis 7+)
+- *"encrypt data in the cache"* → at-rest encryption with KMS
+- *"encrypt traffic between app and cache"* → in-transit TLS
+- *"cache must not be accessible from the internet"* → it never is — ElastiCache is VPC-only
+
+### ElastiCache Redis Replication
+
+Redis replication in ElastiCache follows a similar pattern to RDS — a primary node handles writes, replica nodes handle reads and provide failover.
+
+```
+Primary (read/write) → replicates → Replica 1 (read-only)
+                     → replicates → Replica 2 (read-only)
+```
+
+**Cluster Mode Disabled (single shard):**
+- One primary + up to 5 replicas
+- All nodes have the full dataset
+- Multi-AZ failover — if the primary dies, a replica is promoted automatically
+- Use case: dataset fits in one node's memory, you need read scaling and HA
+
+**Cluster Mode Enabled (multiple shards):**
+- Data is **sharded** across multiple primary nodes
+- Each shard has its own primary + replicas
+- Scales both reads **and writes** — each shard handles writes for its portion of the data
+- Use case: dataset is too large for one node, or you need write scaling
+
+```
+Cluster Mode Enabled:
+Shard 1: Primary → Replica
+Shard 2: Primary → Replica
+Shard 3: Primary → Replica
+(each shard holds a portion of the keys)
+```
+
+**Exam triggers:**
+- *"Redis cache needs high availability"* → Multi-AZ with replicas
+- *"scale Redis read throughput"* → add read replicas
+- *"Redis dataset is too large for a single node"* → Cluster Mode Enabled (sharding)
+- *"scale Redis write throughput"* → Cluster Mode Enabled (writes distributed across shards)
