@@ -1409,3 +1409,29 @@ Browser → Recursive resolver (non-authoritative) → Root NS → TLD NS → Au
 - *"map the root domain to an ALB"* → Alias record (CNAME can't do zone apex)
 - *"reduce DNS query costs"* → Alias (free for AWS resources)
 - *"point example.com to a CloudFront distribution"* → Alias record
+
+### Private Hosted Zones
+
+A Private Hosted Zone resolves DNS names **only within your VPC(s)**. Queries from the internet get nothing.
+
+```
+Public internet → api.example.com → Public Hosted Zone → 54.23.100.12 ✅
+Inside VPC      → db.internal.example.com → Private Hosted Zone → 10.0.1.50 ✅
+Public internet → db.internal.example.com → ❌ doesn't resolve
+```
+
+**Use case:** internal service discovery. Microservices talk to each other using friendly DNS names instead of hardcoded IPs.
+
+Real-world examples:
+- `db.internal.company.com` → RDS private IP. Migrate to a new DB instance → update the record, no app changes.
+- `cache.internal.company.com` → ElastiCache endpoint
+- `auth-service.internal.company.com` → internal ALB for an auth microservice
+
+**Key details:**
+- Can be shared across multiple VPCs (even cross-account)
+- DNS names are completely private — invisible outside your VPCs
+- Often uses `.internal` or a subdomain like `internal.example.com`
+
+**Exam triggers:**
+- *"resolve DNS names only within the VPC"* → Private Hosted Zone
+- *"internal service discovery without exposing to internet"* → Private Hosted Zone
