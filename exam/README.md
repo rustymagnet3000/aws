@@ -45,6 +45,14 @@
 - [ElastiCache](#elasticache)
   - [ElastiCache Security](#elasticache-security)
   - [ElastiCache Redis Replication](#elasticache-redis-replication)
+- [Route 53](#route-53)
+  - [Authoritative vs Non-Authoritative DNS](#authoritative-vs-non-authoritative-dns)
+  - [DNS Record Types](#dns-record-types)
+  - [Private Hosted Zones](#private-hosted-zones)
+  - [Routing Policies](#routing-policies)
+  - [TTL (Time to Live)](#ttl-time-to-live)
+  - [Route 53 Health Checks](#route-53-health-checks)
+  - [Route 53 Resolver (Hybrid DNS)](#route-53-resolver-hybrid-dns)
 
 <!-- /TOC -->
 
@@ -1343,3 +1351,369 @@ Shard 3: Primary → Replica
 - *"scale Redis read throughput"* → add read replicas
 - *"Redis dataset is too large for a single node"* → Cluster Mode Enabled (sharding)
 - *"scale Redis write throughput"* → Cluster Mode Enabled (writes distributed across shards)
+
+## Route 53
+
+AWS's DNS service. Named after DNS port 53. It does three things: **domain registration**, **DNS routing**, and **health checking**.
+
+### Authoritative vs Non-Authoritative DNS
+
+When you type `example.com` in your browser, a chain of DNS servers work together to resolve it:
+
+```
+Browser → Recursive resolver (non-authoritative) → Root NS → TLD NS → Authoritative NS → IP address
+```
+
+**Non-authoritative (recursive resolver):**
+- Your ISP's DNS server or a public resolver like `8.8.8.8` (Google) or `1.1.1.1` (Cloudflare)
+- Doesn't own any DNS records — it asks other servers on your behalf and caches the answers
+- Returns cached responses — may be stale until TTL expires
+- You **don't control** this server
+
+**Authoritative:**
+- The server that **owns** the DNS records for a domain and gives the definitive answer
+- When someone asks "what IP is `example.com`?", this server responds with the actual record
+- **Route 53 is an authoritative DNS service** — you create hosted zones and manage records, and Route 53 answers queries authoritatively
+- You **do control** this server (your records, your TTLs, your routing policies)
+
+**The lookup chain:**
+
+```
+1. Browser asks recursive resolver: "what is example.com?"
+2. Resolver asks root nameserver: "who handles .com?"
+3. Root NS replies: "go ask the .com TLD server"
+4. Resolver asks .com TLD: "who handles example.com?"
+5. TLD replies: "go ask ns-123.awsdns-45.com" (Route 53)
+6. Resolver asks Route 53: "what is example.com?"
+7. Route 53 replies: "54.23.100.12" ← authoritative answer
+8. Resolver caches it and returns to browser
+```
+
+**Why this matters for the exam:** Route 53 is authoritative — you can update a record and it takes effect immediately on Route 53's side. But clients may still see the old value until their resolver's cached TTL expires. If a question asks about DNS propagation delays, it's the caching at recursive resolvers, not Route 53 being slow.
+
+### DNS Record Types
+
+| Record | What it does | Example |
+| ------ | ------------ | ------- |
+| A | Maps domain to IPv4 address | `example.com` → `54.23.100.12` |
+| AAAA | Maps domain to IPv6 address | `example.com` → `2600:1f18::1` |
+| CNAME | Maps domain to another domain | `www.example.com` → `example.com` |
+| NS | Nameserver records — which servers are authoritative for this zone | `example.com` → `ns-123.awsdns-45.com` |
+| Alias | AWS-specific — maps domain to an AWS resource | `example.com` → `my-alb-123.us-east-1.elb.amazonaws.com` |
+
+**CNAME vs Alias — the most important distinction:**
+
+| | CNAME | Alias |
+| - | ----- | ----- |
+| Works at zone apex (naked domain)? | No — `example.com` can't be a CNAME | Yes — `example.com` can be an Alias |
+| Cost | Charged per query | Free for queries to AWS resources |
+| Points to | Any domain name | AWS resources only (ALB, CloudFront, S3, etc.) |
+| AWS-specific? | No — standard DNS | Yes — Route 53 only |
+
+**Zone apex** = the naked domain (`example.com` without `www`). DNS standard says the apex can't be a CNAME. AWS invented Alias records to solve this — they work like CNAMEs but are allowed at the apex.
+
+**Exam triggers:**
+- *"map the root domain to an ALB"* → Alias record (CNAME can't do zone apex)
+- *"reduce DNS query costs"* → Alias (free for AWS resources)
+- *"point example.com to a CloudFront distribution"* → Alias record
+
+**Alias only works with Route 53:** Alias is not standard DNS — it's AWS-proprietary. If you use a third-party DNS provider (e.g. Cloudflare, GoDaddy) as your authoritative DNS, you can't create Alias records. Cloudflare solves the zone apex problem with **CNAME flattening** — their own equivalent that resolves the CNAME at the edge and returns an A record to the client. For the exam, assume Route 53 is the DNS provider.
+
+### Private Hosted Zones
+
+A Private Hosted Zone resolves DNS names **only within your VPC(s)**. Queries from the internet get nothing.
+
+```
+Public internet → api.example.com → Public Hosted Zone → 54.23.100.12 ✅
+Inside VPC      → db.internal.example.com → Private Hosted Zone → 10.0.1.50 ✅
+Public internet → db.internal.example.com → ❌ doesn't resolve
+```
+
+**Use case:** internal service discovery. Microservices talk to each other using friendly DNS names instead of hardcoded IPs.
+
+Real-world examples:
+- `db.internal.company.com` → RDS private IP. Migrate to a new DB instance → update the record, no app changes.
+- `cache.internal.company.com` → ElastiCache endpoint
+- `auth-service.internal.company.com` → internal ALB for an auth microservice
+
+**Key details:**
+- Can be shared across multiple VPCs (even cross-account)
+- DNS names are completely private — invisible outside your VPCs
+- Often uses `.internal` or a subdomain like `internal.example.com`
+
+**Exam triggers:**
+- *"resolve DNS names only within the VPC"* → Private Hosted Zone
+- *"internal service discovery without exposing to internet"* → Private Hosted Zone
+
+### Routing Policies
+
+Route 53 doesn't just resolve a domain to one IP — it can decide **which** IP to return based on different strategies.
+
+**Simple:**
+- Returns one or more IPs. If multiple, the client picks one at random.
+- No health checks.
+- Use case: single resource, no clever routing needed.
+
+**Weighted:**
+- Split traffic by percentage across multiple resources. E.g. 70% to instance A, 30% to instance B.
+- Weights don't have to add up to 100 — they're relative (70/30 is the same as 7/3).
+- Use case: gradual deployments — send 10% of traffic to the new version, 90% to the old.
+
+**Latency-based:**
+- Routes users to the region with the lowest latency **from their location**.
+- AWS measures real-time network latency between the user's resolver and each AWS region — this is not geographic distance. A user in Ireland might get `us-east-1` if the network path is faster than `eu-west-1` at that moment.
+- If the lowest-latency region is unhealthy (health check enabled), Route 53 returns the next-best region.
+- Use case: global application, minimize response time for users.
+
+Real-world example — API deployed in 3 regions:
+
+```
+User in London    → Route 53 measures latency → eu-west-1 (50ms) ✅
+User in Tokyo     → Route 53 measures latency → ap-northeast-1 (20ms) ✅
+User in São Paulo → Route 53 measures latency → us-east-1 (80ms) ✅
+                    (sa-east-1 might be closer geographically but slower network-wise)
+```
+
+**Latency vs Geolocation vs Geoproximity — the three that get confused:**
+
+| | Latency | Geolocation | Geoproximity |
+| - | ------- | ----------- | ------------ |
+| Routes based on | Network latency (measured) | User's continent/country/state | Geographic distance + bias |
+| Goal | Fastest response | Content localization, compliance | Fine-tuned geographic control |
+| Can override? | No — always picks lowest latency | No — strict location match | Yes — bias shifts traffic toward/away |
+| Example | "Send users to whichever region is fastest" | "French users must hit the French site" | "Shift 20% more traffic to eu-west-1 during migration" |
+| No match? | Always matches (picks best latency) | Returns default record or nothing | Always matches (nearest resource) |
+
+**The exam distinction:**
+- "Fastest" / "lowest latency" / "best performance" → **Latency**
+- "Users in France" / "compliance" / "localization" → **Geolocation**
+- "Shift traffic" / "bias" / "gradually move traffic between regions" → **Geoproximity**
+
+**Failover:**
+- Active-passive setup. Route 53 returns the primary unless its health check fails, then returns the secondary.
+- Requires health checks on the primary.
+- Use case: disaster recovery — primary in `us-east-1`, standby in `eu-west-1`.
+
+```
+User → Route 53 → Primary (healthy?) → Yes → return primary IP
+                                      → No  → return secondary IP
+```
+
+**Geolocation:**
+- Routes based on **where the user is** (continent, country, or US state).
+- If no match, returns a default record (if configured) or no answer.
+- Use case: content localization (French users → French site), compliance (EU data stays in EU).
+
+**Geoproximity:**
+- Routes based on geographic distance between user and resource, with an adjustable **bias**.
+- Increase the bias to attract more traffic to a resource; decrease to push traffic away.
+- Bias ranges from -99 to +99. Positive = expand the region's catchment area. Negative = shrink it.
+- Requires Route 53 **Traffic Flow** (visual editor for complex routing).
+
+Real-world example — migrating from `us-east-1` to `eu-west-1`:
+
+You're moving European customers off `us-east-1` to a new deployment in `eu-west-1`. Rather than a hard cutover, you gradually shift traffic:
+
+```
+Week 1: us-east-1 (bias: 0)   eu-west-1 (bias: +20)  → EU gets ~60% of European traffic
+Week 2: us-east-1 (bias: 0)   eu-west-1 (bias: +50)  → EU gets ~85% of European traffic
+Week 3: us-east-1 (bias: 0)   eu-west-1 (bias: +99)  → EU gets nearly all European traffic
+```
+
+Each week you increase `eu-west-1`'s bias, expanding its catchment area and pulling more users toward it. If something goes wrong, dial the bias back down — instant rollback without DNS record changes.
+
+**Geoproximity vs Weighted:** both can shift traffic gradually, but Weighted splits by percentage globally. Geoproximity splits by **geography** — you're moving users in a specific part of the world, not a random 10% of all users.
+
+**Multi-value answer:**
+- Returns up to 8 healthy IPs. Client picks one.
+- Like Simple, but with health checks — unhealthy IPs are excluded from the response.
+- Use case: simple client-side load balancing with health checking. **Not a replacement for ELB** — but better than Simple routing.
+
+**Quick reference:**
+
+| Policy | Decides based on | Health checks? | Use case |
+| ------ | ---------------- | -------------- | -------- |
+| Simple | Nothing — returns all records | No | Single resource |
+| Weighted | Assigned weights | Optional | Gradual deployments, A/B testing |
+| Latency | Network latency to regions | Optional | Global apps, minimize latency |
+| Failover | Health of primary | Yes (required) | Active-passive DR |
+| Geolocation | User's location | Optional | Localization, compliance |
+| Geoproximity | Geographic distance + bias | Optional | Fine-tuned geo routing |
+| Multi-value | Health of each target | Yes | Simple LB with health checks |
+
+**Exam triggers:**
+- *"send 10% of traffic to a new version"* → Weighted
+- *"route users to the closest region"* → Latency-based (not Geolocation — latency ≠ geography)
+- *"route French users to the French site"* → Geolocation
+- *"active-passive disaster recovery"* → Failover
+- *"shift traffic gradually from one region to another"* → Geoproximity with bias
+- *"return multiple IPs but exclude unhealthy ones"* → Multi-value answer
+
+### TTL (Time to Live)
+
+TTL tells recursive resolvers how long to cache a DNS response before asking Route 53 again. Set per record, in seconds.
+
+| TTL | Resolvers cache for | Trade-off |
+| --- | ------------------- | --------- |
+| High (e.g. 86400 = 24hrs) | A long time | Fewer DNS queries (cheaper), but changes take hours to propagate |
+| Low (e.g. 60 = 1 min) | Briefly | Changes propagate fast, but more DNS queries (higher cost, more load) |
+
+**Pre-migration TTL pattern (common exam trap):**
+
+People make a DNS change (e.g. point `api.example.com` to a new server) and expect it to take effect immediately. But if the TTL was 24 hours, clients worldwide have the old IP cached and won't ask Route 53 again for up to 24 hours. Route 53 isn't slow — the recursive resolvers are serving stale cached answers.
+
+The correct migration pattern:
+
+1. TTL is currently 86400 (24hrs)
+2. **Lower TTL to 60s** — then **wait 24hrs** for all existing caches to expire and pick up the new short TTL
+3. Make the DNS change (point to new IP)
+4. Within ~60s, everyone has the new IP — because resolvers are now re-checking every 60s
+5. **Raise TTL back to 86400** — reduce query costs now that the change is stable
+
+The critical step people miss is **step 2 — the wait**. You must wait for the old high TTL to expire before making the change, otherwise clients still have the old IP cached for hours regardless of the new TTL.
+
+**Exam trap:** a question describes a migration where "some users are still reaching the old server hours later". The answer is that TTL wasn't lowered before the change, not that Route 53 is slow or broken.
+
+**Alias records:** TTL is set automatically by Route 53 to match the AWS resource — you can't override it.
+
+**Exam triggers:**
+- *"users are still hitting the old server after a DNS change"* → TTL is too high, or wasn't lowered before the change
+- *"reduce DNS query costs"* → increase TTL (fewer lookups)
+- *"DNS changes must propagate quickly"* → low TTL
+
+### Route 53 Health Checks
+
+Route 53 can monitor the health of your resources and stop returning unhealthy IPs in DNS responses. This is how routing policies like Failover and Multi-value know when to stop sending traffic somewhere.
+
+**Three types of health checks:**
+
+| Type | What it monitors | Use case |
+| ---- | ---------------- | -------- |
+| Endpoint | Hits a URL or IP directly (HTTP, HTTPS, or TCP) | Monitor a web server, API, or ALB |
+| Calculated | Combines results of other health checks (AND/OR logic) | "Healthy if 2 out of 3 child checks pass" |
+| CloudWatch Alarm | Monitors a CloudWatch Alarm state | Monitor anything CloudWatch tracks (DynamoDB throttling, custom metrics, etc.) |
+
+**Endpoint health checks — how they work:**
+
+- Route 53 sends requests from ~15 health checkers globally every 30s (or 10s for fast checks — costs more)
+- Resource is healthy if ≥18% of checkers report it healthy
+- For HTTP/HTTPS checks, a 2xx or 3xx response = healthy
+- Can optionally search the response body for a string (first 5,120 bytes)
+
+**Key detail:** health checkers are **public Route 53 IPs**. They must be able to reach your endpoint. If your resource is in a private subnet with no public access, endpoint health checks won't work — use a **CloudWatch Alarm** health check instead.
+
+```
+Public resource → Endpoint health check (Route 53 hits it directly) ✅
+Private resource → Endpoint health check ❌ (can't reach it)
+Private resource → CloudWatch Alarm → Route 53 health check ✅
+```
+
+**Calculated health checks:**
+
+Combine up to 256 child health checks with OR, AND, or "at least N of M must pass". Use case: your app has multiple components (web server, API, database) — the parent check is healthy only if all critical children are healthy.
+
+**Health checks + routing policies:**
+
+- **Failover** — health check is **required** on the primary. If it fails, Route 53 returns the secondary.
+- **Weighted / Latency / Geolocation / Multi-value** — health checks are optional but recommended. Unhealthy records are excluded from responses.
+- **Simple** — no health checks. Route 53 returns all records blindly.
+
+**Exam triggers:**
+- *"automatically failover DNS to a standby region"* → Failover routing + health check on primary
+- *"health check a resource in a private subnet"* → CloudWatch Alarm health check (not endpoint)
+
+**Route 53 health checks vs your `/health` endpoint:**
+
+These are different things that work together:
+
+- **Your `/health` endpoint** — code in your app that checks dependencies (DB connected? Redis up? Disk space OK?) and returns 200 if healthy, 500 if not. You define what "healthy" means.
+- **Route 53 health check** — hits that URL from 15+ global locations every 30s. If it gets a non-2xx/3xx, it marks the resource unhealthy and removes it from DNS responses.
+
+```
+Route 53 health checker → GET /health → 200 → healthy, keep in DNS
+                                      → 500 → unhealthy, remove from DNS
+```
+
+**Why `/health` matters:** without it, Route 53 hits `/` — your homepage might return 200 even if the database is down because static content still renders. Route 53 thinks everything is fine while users see errors. A proper `/health` endpoint checks all critical dependencies and returns 500 if anything is broken.
+
+**CloudWatch Alarm health checks — monitoring private resources:**
+
+Route 53 endpoint health checks come from public IPs — they can't reach resources in private subnets. CloudWatch Alarm health checks solve this by watching a CloudWatch metric instead of hitting a URL directly.
+
+```
+Route 53 health checker → Private RDS instance → ❌ blocked
+
+Instead:
+Private RDS → CloudWatch metric (CPU, connections, replica lag)
+           → CloudWatch Alarm (threshold breached?)
+           → Route 53 health check watches alarm state
+           → ALARM = unhealthy → remove from DNS
+```
+
+Real-world example — Failover routing with private databases:
+
+1. Primary DB in `us-east-1` (private subnet), standby in `eu-west-1` (private subnet)
+2. CloudWatch monitors RDS metrics (connections, replica lag, CPU)
+3. CloudWatch Alarm fires if metrics cross a threshold
+4. Route 53 health check monitors that alarm
+5. Alarm = ALARM → Route 53 marks primary unhealthy → DNS flips to standby
+
+**Also useful for non-HTTP resources:** anything CloudWatch can track — DynamoDB throttling, Lambda error rates, SQS queue depth, custom app metrics. None of these have URLs to hit, but they all emit CloudWatch metrics.
+
+**Exam trigger:** *"monitor the health of a resource that has no public endpoint"* → CloudWatch Alarm health check.
+
+**Route 53 health checks vs ELB health checks — why you need both:**
+
+They operate at different levels:
+
+```
+User → Route 53 (which region?) → ALB (which instance?) → EC2
+       DNS health check              ELB health check
+       "is us-east-1 alive?"         "is instance #3 alive?"
+       Checks every 30s              Checks every request
+       Cached by TTL                 Real-time
+```
+
+| | Route 53 health check | ELB health check |
+| - | --------------------- | ---------------- |
+| Decides | Which region/endpoint to route to | Which instance receives the request |
+| Granularity | Endpoint level (ALB, IP) | Instance level |
+| Speed | Every 30s, cached by TTL | Real-time, every request |
+| Scope | Cross-region failover | Within a single load balancer |
+
+**Without ELB health checks:** Route 53 points users to a region, but if one instance behind the ALB dies, Route 53 doesn't know — it only sees the ALB endpoint. Users get errors until ELB removes the bad instance.
+
+**Without Route 53 health checks:** if an entire region goes down, users still get routed there (DNS cached) with no failover to another region.
+
+You need both layers: Route 53 for **region-level** failover, ELB for **instance-level** failover.
+
+### Route 53 Resolver (Hybrid DNS)
+
+When you have a **hybrid environment** (on-premises + AWS connected via VPN or Direct Connect), DNS doesn't work across the boundary by default. On-prem servers can't resolve AWS private hosted zone names, and EC2 instances can't resolve on-prem DNS names.
+
+Route 53 Resolver endpoints fix this:
+
+**Inbound endpoint** — on-prem servers forward DNS queries to AWS and resolve private hosted zone names:
+
+```
+On-prem server → "what is db.internal.company.com?"
+              → VPN/Direct Connect → Route 53 Resolver inbound endpoint
+              → Private Hosted Zone → 10.0.1.50 ✅
+```
+
+**Outbound endpoint** — EC2 instances forward DNS queries to on-prem DNS servers:
+
+```
+EC2 instance → "what is legacy-app.corp.local?"
+            → Route 53 Resolver outbound endpoint → VPN/Direct Connect
+            → On-prem DNS server → 192.168.1.100 ✅
+```
+
+**Forwarding rules** control which domains get forwarded where — e.g. "anything ending in `.corp.local` goes to the on-prem DNS server at `192.168.1.10`".
+
+**Exam triggers:**
+- *"on-premises servers need to resolve AWS private DNS names"* → Route 53 Resolver inbound endpoint
+- *"EC2 instances need to resolve on-premises DNS names"* → Route 53 Resolver outbound endpoint
+- *"hybrid DNS resolution across VPN"* → Route 53 Resolver endpoints
+- *"stop sending traffic to an unhealthy instance via DNS"* → health check + any routing policy that supports it
+- *"check is healthy only if multiple services are healthy"* → Calculated health check
