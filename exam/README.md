@@ -48,7 +48,7 @@
 - [Route 53](#route-53)
   - [Authoritative vs Non-Authoritative DNS](#authoritative-vs-non-authoritative-dns)
   - [DNS Record Types](#dns-record-types)
-  - [Private Hosted Zones](#private-hosted-zones)
+  - [Public and Private Hosted Zones](#public-and-private-hosted-zones)
   - [Routing Policies](#routing-policies)
   - [TTL (Time to Live)](#ttl-time-to-live)
   - [Route 53 Health Checks](#route-53-health-checks)
@@ -1419,7 +1419,39 @@ Browser → Recursive resolver (non-authoritative) → Root NS → TLD NS → Au
 
 **Alias only works with Route 53:** Alias is not standard DNS — it's AWS-proprietary. If you use a third-party DNS provider (e.g. Cloudflare, GoDaddy) as your authoritative DNS, you can't create Alias records. Cloudflare solves the zone apex problem with **CNAME flattening** — their own equivalent that resolves the CNAME at the edge and returns an A record to the client. For the exam, assume Route 53 is the DNS provider.
 
-### Private Hosted Zones
+### Public and Private Hosted Zones
+
+A **Hosted Zone** is a container for DNS records for a domain. Two types:
+
+| | Public Hosted Zone | Private Hosted Zone |
+| - | ------------------ | ------------------- |
+| Resolvable from | The internet | Within your VPC(s) only |
+| Use case | Public websites, APIs | Internal service discovery |
+| Example | `example.com` → `54.23.100.12` | `db.internal.company.com` → `10.0.1.50` |
+
+**Public Hosted Zone:**
+
+When you create a Public Hosted Zone, Route 53 gives you 4 NS (nameserver) records. These are what make Route 53 authoritative for your domain.
+
+**Using Route 53 with a third-party registrar (GoDaddy, OnlyDomains, etc.):**
+
+The domain registrar (where you buy the domain) and the DNS service (where you host the records) are separate things. You can buy a domain from GoDaddy but use Route 53 as your DNS:
+
+1. Buy `example.com` on GoDaddy
+2. Create a Public Hosted Zone in Route 53 — AWS gives you 4 NS records
+3. Go to GoDaddy and **replace the default nameservers** with Route 53's NS records
+4. Now Route 53 is authoritative for `example.com`, even though GoDaddy owns the registration
+
+```
+GoDaddy (registrar) → "who handles example.com?" → Route 53's nameservers
+Route 53 (DNS)      → "example.com is 54.23.100.12"
+```
+
+Why do this? Route 53 gives you Alias records, routing policies, health checks, failover — a basic registrar's DNS can't do any of that.
+
+**Exam trigger:** *"purchased domain from a third-party registrar, want to use Route 53 for DNS"* → create a Public Hosted Zone in Route 53, update the registrar's NS records to point to Route 53.
+
+**Private Hosted Zone:**
 
 A Private Hosted Zone resolves DNS names **only within your VPC(s)**. Queries from the internet get nothing.
 
