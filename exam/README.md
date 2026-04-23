@@ -1685,5 +1685,34 @@ User → Route 53 (which region?) → ALB (which instance?) → EC2
 **Without Route 53 health checks:** if an entire region goes down, users still get routed there (DNS cached) with no failover to another region.
 
 You need both layers: Route 53 for **region-level** failover, ELB for **instance-level** failover.
+
+### Route 53 Resolver (Hybrid DNS)
+
+When you have a **hybrid environment** (on-premises + AWS connected via VPN or Direct Connect), DNS doesn't work across the boundary by default. On-prem servers can't resolve AWS private hosted zone names, and EC2 instances can't resolve on-prem DNS names.
+
+Route 53 Resolver endpoints fix this:
+
+**Inbound endpoint** — on-prem servers forward DNS queries to AWS and resolve private hosted zone names:
+
+```
+On-prem server → "what is db.internal.company.com?"
+              → VPN/Direct Connect → Route 53 Resolver inbound endpoint
+              → Private Hosted Zone → 10.0.1.50 ✅
+```
+
+**Outbound endpoint** — EC2 instances forward DNS queries to on-prem DNS servers:
+
+```
+EC2 instance → "what is legacy-app.corp.local?"
+            → Route 53 Resolver outbound endpoint → VPN/Direct Connect
+            → On-prem DNS server → 192.168.1.100 ✅
+```
+
+**Forwarding rules** control which domains get forwarded where — e.g. "anything ending in `.corp.local` goes to the on-prem DNS server at `192.168.1.10`".
+
+**Exam triggers:**
+- *"on-premises servers need to resolve AWS private DNS names"* → Route 53 Resolver inbound endpoint
+- *"EC2 instances need to resolve on-premises DNS names"* → Route 53 Resolver outbound endpoint
+- *"hybrid DNS resolution across VPN"* → Route 53 Resolver endpoints
 - *"stop sending traffic to an unhealthy instance via DNS"* → health check + any routing policy that supports it
 - *"check is healthy only if multiple services are healthy"* → Calculated health check
