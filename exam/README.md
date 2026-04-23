@@ -53,6 +53,7 @@
   - [TTL (Time to Live)](#ttl-time-to-live)
   - [Route 53 Health Checks](#route-53-health-checks)
   - [Route 53 Resolver (Hybrid DNS)](#route-53-resolver-hybrid-dns)
+- [Elastic Beanstalk](#elastic-beanstalk)
 
 <!-- /TOC -->
 
@@ -1749,3 +1750,45 @@ EC2 instance → "what is legacy-app.corp.local?"
 - *"hybrid DNS resolution across VPN"* → Route 53 Resolver endpoints
 - *"stop sending traffic to an unhealthy instance via DNS"* → health check + any routing policy that supports it
 - *"check is healthy only if multiple services are healthy"* → Calculated health check
+
+## Elastic Beanstalk
+
+A PaaS (Platform as a Service) — you upload your code and AWS handles everything else: provisioning EC2 instances, ALB, ASG, security groups, CloudWatch monitoring, and deployments.
+
+**Think of it as:** "I don't want to set up infrastructure, just run my app."
+
+Under the hood it creates real AWS resources (EC2, ALB, ASG, etc.) that you can still see and modify — it's not a black box like Lambda. It's a managed wrapper around the infrastructure you'd otherwise configure manually.
+
+**Key properties:**
+
+- **Supported platforms:** Java, .NET, Node.js, Python, Ruby, Go, Docker
+- **Free service** — you only pay for the underlying resources it creates
+- **Full control** — you can still access and tweak the underlying resources (EC2 instances, ALB settings, etc.)
+- **Environment = a running version of your app** — includes the EC2 instances, load balancer, ASG, and configuration
+
+**Deployment strategies:**
+
+| Strategy | How it works | Downtime? | Rollback |
+| -------- | ------------ | --------- | -------- |
+| All at once | Deploy to all instances simultaneously | Yes | Redeploy old version |
+| Rolling | Deploy in batches — some instances run old version during deploy | No | Redeploy old version |
+| Rolling with additional batch | Like rolling, but launches new instances first so capacity isn't reduced | No | Redeploy old version |
+| Immutable | Launches entirely new instances with new version, swaps when healthy | No | Terminate new instances (fast) |
+| Blue/Green | Create a new environment, swap URLs | No | Swap URLs back (fast) |
+
+**Immutable vs Blue/Green:** immutable replaces instances within the same environment. Blue/Green creates a completely separate environment (new ALB, new ASG, everything) and swaps the Route 53 or Elastic Beanstalk URL.
+
+**Beanstalk vs doing it yourself:**
+
+| | Elastic Beanstalk | Manual setup |
+| - | ----------------- | ------------ |
+| Time to deploy | Minutes | Hours to days |
+| Infrastructure knowledge needed | Minimal | Significant |
+| Customization | Good (can override most settings) | Full |
+| Best for | Standard web apps, quick prototypes, small teams | Complex architectures, very specific requirements |
+
+**Exam triggers:**
+- *"deploy an application without managing infrastructure"* → Elastic Beanstalk
+- *"developer wants to focus on code, not servers"* → Elastic Beanstalk
+- *"deploy with zero downtime and fast rollback"* → Immutable or Blue/Green deployment
+- *"PaaS on AWS"* → Elastic Beanstalk
