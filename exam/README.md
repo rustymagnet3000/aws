@@ -52,6 +52,7 @@
   - [Routing Policies](#routing-policies)
   - [TTL (Time to Live)](#ttl-time-to-live)
   - [Route 53 Health Checks](#route-53-health-checks)
+  - [Route 53 Resolver (Hybrid DNS)](#route-53-resolver-hybrid-dns)
 
 <!-- /TOC -->
 
