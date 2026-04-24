@@ -54,6 +54,11 @@
   - [Route 53 Health Checks](#route-53-health-checks)
   - [Route 53 Resolver (Hybrid DNS)](#route-53-resolver-hybrid-dns)
 - [Elastic Beanstalk](#elastic-beanstalk)
+- [Solution Architecture Examples](#solution-architecture-examples)
+  - [Classic Web App](#classic-web-app)
+  - [Multi-Region Disaster Recovery](#multi-region-disaster-recovery)
+  - [Serverless](#serverless)
+  - [Static Website with CloudFront](#static-website-with-cloudfront)
 
 <!-- /TOC -->
 
@@ -1792,3 +1797,120 @@ Under the hood it creates real AWS resources (EC2, ALB, ASG, etc.) that you can 
 - *"developer wants to focus on code, not servers"* → Elastic Beanstalk
 - *"deploy with zero downtime and fast rollback"* → Immutable or Blue/Green deployment
 - *"PaaS on AWS"* → Elastic Beanstalk
+
+## Solution Architecture Examples
+
+Reference architectures that appear frequently in exam questions. Each combines services covered in earlier sections.
+
+### Classic Web App
+
+The most common exam architecture — a scalable, highly available web application.
+
+```
+Users → Route 53 (DNS)
+      → ALB (distributes traffic, terminates TLS)
+      → ASG (auto-scales EC2 instances across AZs)
+      → RDS Multi-AZ (primary + standby for failover)
+      → ElastiCache (session store + DB cache)
+```
+
+**Why each component:**
+
+| Component | Purpose |
+| --------- | ------- |
+| Route 53 | DNS resolution, Alias record pointing to ALB |
+| ALB | Distributes traffic across instances, SSL termination, health checks |
+| ASG | Scales instances based on demand, replaces unhealthy instances |
+| RDS Multi-AZ | Database with automatic failover — no data loss |
+| ElastiCache Redis | Session store (stateless app) + cache (reduce DB reads) |
+
+**Key design decisions:**
+- EC2 instances are **stateless** — sessions stored in ElastiCache, not on the instance
+- Instances in **private subnets** — only ALB is in the public subnet
+- RDS in **private subnets** — security group allows traffic only from the EC2 security group
+- Multi-AZ for both RDS and ALB — survives an AZ failure
+
+### Multi-Region Disaster Recovery
+
+Active-passive setup for surviving an entire region failure.
+
+```
+Users → Route 53 (Failover routing policy)
+      ├── Primary: us-east-1
+      │   → ALB → ASG → Aurora (writer)
+      └── Secondary: eu-west-1 (standby)
+          → ALB → ASG → Aurora Global Database (read replica)
+```
+
+**How failover works:**
+
+1. Route 53 health check monitors the primary region's ALB
+2. Primary region fails → health check marks it unhealthy
+3. Route 53 returns the secondary region's ALB IP
+4. Promote Aurora Global Database secondary to writer
+5. Secondary region is now the primary — users are served from `eu-west-1`
+
+**Key design decisions:**
+- Aurora Global Database for **<1 second replication lag** cross-region
+- Route 53 Failover routing — **not** weighted or latency
+- Health checks on the primary are **required** for automatic failover
+- RTO depends on Aurora promotion time (~1 minute) + TTL propagation
+
+### Serverless
+
+No servers to manage — fully event-driven, pay-per-request.
+
+```
+Users → Route 53
+      → API Gateway (REST/HTTP API, throttling, auth)
+      → Lambda (business logic)
+      → DynamoDB (NoSQL database)
+```
+
+**Why each component:**
+
+| Component | Purpose |
+| --------- | ------- |
+| API Gateway | HTTP endpoint, request validation, rate limiting, API keys |
+| Lambda | Runs code on demand — scales to zero, scales to thousands |
+| DynamoDB | Serverless NoSQL — no provisioning, auto-scales, single-digit ms latency |
+
+**When to use this over the classic web app:**
+- Unpredictable or spiky traffic (pay per request, not per hour)
+- Simple CRUD APIs
+- Event-driven workloads (S3 triggers, SQS consumers)
+- Team doesn't want to manage any infrastructure
+
+**When NOT to use this:**
+- Long-running processes (Lambda max 15 minutes)
+- Relational data that needs complex joins → use RDS instead of DynamoDB
+- Consistent high-throughput workloads → EC2 is cheaper at steady load
+
+### Static Website with CloudFront
+
+Cheapest and fastest way to host a static website (HTML, CSS, JS, images).
+
+```
+Users → Route 53 (Alias to CloudFront)
+      → CloudFront (CDN — caches content at edge locations worldwide)
+      → S3 bucket (origin — stores the actual files)
+```
+
+**Why each component:**
+
+| Component | Purpose |
+| --------- | ------- |
+| S3 | Stores static files — cheap, durable, no servers |
+| CloudFront | CDN — caches content at 400+ edge locations, HTTPS, low latency globally |
+| Route 53 | Alias record pointing to CloudFront distribution |
+
+**Key details:**
+- S3 bucket does **not** need to be public — CloudFront uses an **Origin Access Control (OAC)** to access S3 privately
+- CloudFront handles HTTPS via ACM certificates — S3 alone only supports HTTP
+- Cache invalidation when you deploy new content — or use versioned file names (`app.v2.js`)
+
+**Exam triggers:**
+- *"host a static website with low latency globally"* → S3 + CloudFront
+- *"serve content from edge locations"* → CloudFront
+- *"HTTPS for an S3 static website"* → CloudFront (S3 alone can't do HTTPS with a custom domain)
+- *"restrict S3 access to CloudFront only"* → Origin Access Control (OAC)
