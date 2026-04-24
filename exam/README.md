@@ -1871,6 +1871,29 @@ Move session data to ElastiCache Redis. Now every instance can serve every user 
 
 **Exam trigger:** *"users lose their session when an instance is terminated"* → move sessions to ElastiCache. Sticky sessions are the workaround, not the solution.
 
+**Same problem with file uploads:**
+
+User uploads an image to instance A. Their next request goes to instance B (ALB routed it there). Instance B doesn't have the file — the image is gone.
+
+```
+Broken:   Upload → Instance A (file on local EBS) → next request → Instance B → file not found ❌
+
+Fix (EFS): Upload → Instance A → EFS (shared drive) → Instance B reads from EFS ✅
+Fix (S3):  Upload → Instance A → S3 (object storage) → Instance B reads from S3 ✅
+```
+
+| Solution | When to use |
+| -------- | ----------- |
+| EFS | App expects a filesystem (POSIX paths like `/uploads/photo.jpg`) — e.g. WordPress, legacy apps |
+| S3 | App can use an API/SDK to store and retrieve objects — modern apps, cheaper at scale |
+
+S3 is the more common answer for the exam unless the question specifically mentions a shared filesystem or POSIX compatibility.
+
+**Exam triggers:**
+- *"uploaded files are not available on all instances"* → EFS or S3
+- *"shared filesystem across instances"* → EFS
+- *"store user uploads durably and cheaply"* → S3
+
 ### Multi-Region Disaster Recovery
 
 Active-passive setup for surviving an entire region failure.
