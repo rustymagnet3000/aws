@@ -56,6 +56,7 @@
 - [Elastic Beanstalk](#elastic-beanstalk)
 - [Solution Architecture Examples](#solution-architecture-examples)
   - [Classic Web App](#classic-web-app)
+  - [Stateful Web App → Stateless Evolution](#stateful-web-app--stateless-evolution)
   - [Multi-Region Disaster Recovery](#multi-region-disaster-recovery)
   - [Serverless](#serverless)
   - [Static Website with CloudFront](#static-website-with-cloudfront)
@@ -1829,6 +1830,46 @@ Users → Route 53 (DNS)
 - Instances in **private subnets** — only ALB is in the public subnet
 - RDS in **private subnets** — security group allows traffic only from the EC2 security group
 - Multi-AZ for both RDS and ALB — survives an AZ failure
+
+### Stateful Web App → Stateless Evolution
+
+A common exam pattern — start with the problem (stateful), show the fix (stateless).
+
+**The problem — stateful with sticky sessions:**
+
+```
+Users → Route 53 → ALB (sticky sessions enabled)
+                  → EC2 instance A (holds User 1's session in memory)
+                  → EC2 instance B (holds User 2's session in memory)
+```
+
+Session data (login state, shopping cart) lives in the instance's memory. ALB uses a cookie (`AWSALB`) to route a user to the same instance every time.
+
+**What goes wrong:**
+- Instance A dies → User 1's session is gone → logged out, cart emptied
+- Can't scale freely — adding instances doesn't help users stuck on a busy instance
+- Uneven load — some instances are overloaded while others are idle
+
+**The fix — stateless with ElastiCache:**
+
+```
+Users → Route 53 → ALB (no sticky sessions)
+                  → any EC2 instance → ElastiCache Redis (session store)
+                                     → RDS (database)
+```
+
+Move session data to ElastiCache Redis. Now every instance can serve every user — just look up the session by ID. Instances are interchangeable.
+
+| | Stateful (sticky sessions) | Stateless (ElastiCache) |
+| - | -------------------------- | ----------------------- |
+| Instance fails | Session lost | Session survives in Redis |
+| Scaling | Limited — users are pinned | Free — any instance serves any user |
+| Load distribution | Uneven | Even |
+| Cost | Cheaper (no Redis) | Slightly more (Redis cluster) |
+
+**Alternative session stores:** DynamoDB (serverless, auto-scales) or EFS (shared filesystem). ElastiCache Redis is the most common answer for the exam.
+
+**Exam trigger:** *"users lose their session when an instance is terminated"* → move sessions to ElastiCache. Sticky sessions are the workaround, not the solution.
 
 ### Multi-Region Disaster Recovery
 
