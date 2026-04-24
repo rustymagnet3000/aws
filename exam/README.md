@@ -58,6 +58,7 @@
   - [Classic Web App](#classic-web-app)
   - [Stateful Web App → Stateless Evolution](#stateful-web-app--stateless-evolution)
   - [Multi-Region Disaster Recovery](#multi-region-disaster-recovery)
+  - [Golden AMI vs Docker Image](#golden-ami-vs-docker-image)
   - [Serverless](#serverless)
   - [Static Website with CloudFront](#static-website-with-cloudfront)
 
@@ -1919,6 +1920,36 @@ Users → Route 53 (Failover routing policy)
 - Route 53 Failover routing — **not** weighted or latency
 - Health checks on the primary are **required** for automatic failover
 - RTO depends on Aurora promotion time (~1 minute) + TTL propagation
+
+### Golden AMI vs Docker Image
+
+Two approaches to the same problem: **"how do I get my app running fast without bootstrapping at launch time?"**
+
+**Golden AMI:**
+- A pre-baked AMI with your OS, app, dependencies, and config already installed
+- Launch an EC2 instance → it's ready in seconds, no user data scripts needed
+- Update the AMI when the app changes → redeploy instances from the new AMI
+
+**Docker image in a registry (ECR):**
+- A pre-built container image with your app and dependencies
+- Push to ECR → ECS/Fargate pulls and runs it in seconds
+- Update the image → push a new tag → redeploy tasks
+
+| | Golden AMI | Docker Image (ECR) |
+| - | ---------- | ------------------ |
+| Runs on | EC2 instances | ECS/Fargate containers |
+| Contains | Full OS + app + dependencies | App + dependencies (no OS to manage) |
+| Update cycle | Rebuild AMI → replace instances | Push new image → redeploy tasks |
+| Portability | AWS-only | Runs anywhere Docker runs |
+| OS patching | You patch the AMI and redeploy | AWS patches the host (Fargate) |
+| Best for | Legacy apps, OS-level requirements, GPU workloads | Microservices, modern apps, teams using containers |
+
+**The honest take:** if your app is containerised, a Docker image in ECR + Fargate is simpler — no AMIs to maintain, no OS to patch, no instance management. Golden AMIs make sense when you can't containerise (legacy apps, OS-level dependencies) or need EC2-specific features (instance store, GPU, custom kernel).
+
+**Exam triggers:**
+- *"reduce instance launch time in an ASG"* → Golden AMI (pre-baked)
+- *"deploy containers without managing servers"* → Docker image + Fargate
+- *"application takes too long to bootstrap from user data"* → Golden AMI
 
 ### Serverless
 
