@@ -12,6 +12,7 @@
   - [EBS Volumes](#ebs-volumes)
   - [Hibernate](#hibernate)
   - [Snapshots](#snapshots)
+  - [EC2 Pricing Models](#ec2-pricing-models)
   - [AMI](#ami)
 - [EFS](#efs)
 - [Scaling and ELB](#scaling-and-elb)
@@ -285,6 +286,60 @@ Snapshots are point-in-time backups of an EBS volume, stored in S3 (managed by A
 - Deleting a snapshot doesn't delete data shared with other snapshots (incremental chain is preserved)
 - Copy + re-encrypt is the standard pattern for encrypting a volume that wasn't encrypted at creation
 - Recycle Bin must be configured proactively — it doesn't protect snapshots by default
+
+### EC2 Pricing Models
+
+Four ways to pay for EC2 — the exam tests whether you can pick the cheapest option for a given scenario.
+
+| Model | Commitment | Discount | Use case |
+| ----- | ---------- | -------- | -------- |
+| On-Demand | None | 0% | Short-term, unpredictable workloads |
+| Reserved Instances | 1 or 3 years | Up to 72% | Steady-state, predictable workloads (databases, web servers) |
+| Savings Plans | 1 or 3 years | Up to 72% | Like Reserved but flexible across instance types/regions |
+| Spot Instances | None | Up to 90% | Fault-tolerant, interruptible workloads |
+
+**Reserved Instances (RI):**
+- Commit to a specific instance type, region, and OS for 1 or 3 years
+- Pay all upfront (biggest discount), partial upfront, or no upfront (smallest discount)
+- **Convertible RIs** — can change instance type/OS/tenancy during the term, but less discount (~54% vs 72%)
+- Best for: databases, web servers, anything that runs 24/7
+
+**Savings Plans:**
+- Commit to a **dollar amount per hour** of compute usage (e.g. "$10/hr for 1 year")
+- More flexible than RIs — applies across instance families, regions, and even Fargate/Lambda
+- Same discounts as RIs but without locking to a specific instance type
+- Best for: organisations with diverse or evolving workloads
+
+**Spot Instances:**
+- Use spare EC2 capacity at up to 90% discount
+- **AWS can reclaim them with 2 minutes notice** — your instance gets interrupted
+- Best for: batch processing, data analysis, CI/CD builds, ML training, anything that can handle interruption
+- **Not for:** databases, web servers, or anything that can't tolerate sudden termination
+
+**Dedicated Hosts:**
+- A physical server dedicated to you — no other AWS customers on the hardware
+- Most expensive option
+- Use case: software licensing that's per-physical-core/socket (Oracle, Windows Server), or compliance requirements mandating dedicated hardware
+
+**Decision tree:**
+
+```
+Is the workload steady and predictable (runs 24/7)?
+├── Yes → Reserved Instance or Savings Plan
+│   ├── Know the exact instance type? → Reserved Instance
+│   └── Want flexibility? → Savings Plan
+└── No
+    ├── Can it handle interruption? → Spot Instance (cheapest)
+    └── Can't handle interruption? → On-Demand
+Need dedicated hardware (licensing/compliance)? → Dedicated Host
+```
+
+**Exam triggers:**
+- *"reduce costs for a database running 24/7"* → Reserved Instance
+- *"flexible commitment across multiple instance types"* → Savings Plan
+- *"cheapest option for batch processing that can retry"* → Spot Instance
+- *"software licensed per physical socket"* → Dedicated Host
+- *"short-term, unpredictable workload"* → On-Demand
 
 ### AMI
 
