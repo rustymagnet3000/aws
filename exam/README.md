@@ -1936,6 +1936,18 @@ Move session data to ElastiCache Redis. Now every instance can serve every user 
 
 **Exam trigger:** *"users lose their session when an instance is terminated"* → move sessions to ElastiCache. Sticky sessions are the workaround, not the solution.
 
+**Exam trap: "which does NOT help with stateless design?"**
+
+| Helps with stateless? | Service | Why |
+| --------------------- | ------- | --- |
+| Yes | ElastiCache | Shared session store across all instances |
+| Yes | DynamoDB | Shared state store, serverless |
+| Yes | S3 | Shared file/object storage |
+| Yes | EFS | Shared filesystem mounted across instances |
+| **No** | **EBS** | **Locked to one instance, one AZ — the opposite of shared state** |
+
+EBS is the trap answer. It's instance-specific storage — data on instance A's EBS volume is invisible to instance B.
+
 **Same problem with file uploads:**
 
 User uploads an image to instance A. Their next request goes to instance B (ALB routed it there). Instance B doesn't have the file — the image is gone.
