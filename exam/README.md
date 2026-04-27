@@ -452,6 +452,19 @@ Real-world examples:
 | Cost | Mid | Higher (~3× gp2) | Included in instance price |
 | Use when | Single instance needs fast persistent disk | Multiple instances need shared access | Throwaway scratch space, maximum speed |
 
+**Exam scenario: "shared storage dynamically loaded on hundreds of instances"**
+
+You need to distribute software updates to 100s of Linux EC2 instances. Updates should be on shared storage, dynamically loaded, no heavy operations.
+
+Answer: **EFS**. Mount it on all instances — when you update files on EFS, every instance sees them instantly. No downloading, no copying, no per-instance operations.
+
+Why not the others:
+- **EBS** — single instance only
+- **S3** — shared, but requires downloading files to each instance (heavy operation)
+- **Instance Store** — ephemeral, single instance
+
+The keyword pattern: "shared" + "dynamically loaded" + "Linux" → **EFS**.
+
 ## Scaling and ELB
 
 **Scalability — the two types:**
