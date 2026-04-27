@@ -452,7 +452,7 @@ Real-world examples:
 | Cost | Mid | Higher (~3× gp2) | Included in instance price |
 | Use when | Single instance needs fast persistent disk | Multiple instances need shared access | Throwaway scratch space, maximum speed |
 
-**Exam scenario: "shared storage dynamically loaded on hundreds of instances"**
+Exam scenario — "shared storage dynamically loaded on hundreds of instances":
 
 You need to distribute software updates to 100s of Linux EC2 instances. Updates should be on shared storage, dynamically loaded, no heavy operations.
 
@@ -1949,7 +1949,7 @@ Move session data to ElastiCache Redis. Now every instance can serve every user 
 
 **Exam trigger:** *"users lose their session when an instance is terminated"* → move sessions to ElastiCache. Sticky sessions are the workaround, not the solution.
 
-**Exam trap: "which does NOT help with stateless design?"**
+Exam trap — "which does NOT help with stateless design?":
 
 | Helps with stateless? | Service | Why |
 | --------------------- | ------- | --- |
