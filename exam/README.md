@@ -12,6 +12,7 @@
   - [EBS Volumes](#ebs-volumes)
   - [Hibernate](#hibernate)
   - [Snapshots](#snapshots)
+  - [EC2 Pricing Models](#ec2-pricing-models)
   - [AMI](#ami)
 - [EFS](#efs)
 - [Scaling and ELB](#scaling-and-elb)
@@ -53,6 +54,14 @@
   - [TTL (Time to Live)](#ttl-time-to-live)
   - [Route 53 Health Checks](#route-53-health-checks)
   - [Route 53 Resolver (Hybrid DNS)](#route-53-resolver-hybrid-dns)
+- [Elastic Beanstalk](#elastic-beanstalk)
+- [Solution Architecture Examples](#solution-architecture-examples)
+  - [Classic Web App](#classic-web-app)
+  - [Stateful Web App → Stateless Evolution](#stateful-web-app--stateless-evolution)
+  - [Multi-Region Disaster Recovery](#multi-region-disaster-recovery)
+  - [Golden AMI vs Docker Image](#golden-ami-vs-docker-image)
+  - [Serverless](#serverless)
+  - [Static Website with CloudFront](#static-website-with-cloudfront)
 
 <!-- /TOC -->
 
@@ -278,6 +287,60 @@ Snapshots are point-in-time backups of an EBS volume, stored in S3 (managed by A
 - Copy + re-encrypt is the standard pattern for encrypting a volume that wasn't encrypted at creation
 - Recycle Bin must be configured proactively — it doesn't protect snapshots by default
 
+### EC2 Pricing Models
+
+Four ways to pay for EC2 — the exam tests whether you can pick the cheapest option for a given scenario.
+
+| Model | Commitment | Discount | Use case |
+| ----- | ---------- | -------- | -------- |
+| On-Demand | None | 0% | Short-term, unpredictable workloads |
+| Reserved Instances | 1 or 3 years | Up to 72% | Steady-state, predictable workloads (databases, web servers) |
+| Savings Plans | 1 or 3 years | Up to 72% | Like Reserved but flexible across instance types/regions |
+| Spot Instances | None | Up to 90% | Fault-tolerant, interruptible workloads |
+
+**Reserved Instances (RI):**
+- Commit to a specific instance type, region, and OS for 1 or 3 years
+- Pay all upfront (biggest discount), partial upfront, or no upfront (smallest discount)
+- **Convertible RIs** — can change instance type/OS/tenancy during the term, but less discount (~54% vs 72%)
+- Best for: databases, web servers, anything that runs 24/7
+
+**Savings Plans:**
+- Commit to a **dollar amount per hour** of compute usage (e.g. "$10/hr for 1 year")
+- More flexible than RIs — applies across instance families, regions, and even Fargate/Lambda
+- Same discounts as RIs but without locking to a specific instance type
+- Best for: organisations with diverse or evolving workloads
+
+**Spot Instances:**
+- Use spare EC2 capacity at up to 90% discount
+- **AWS can reclaim them with 2 minutes notice** — your instance gets interrupted
+- Best for: batch processing, data analysis, CI/CD builds, ML training, anything that can handle interruption
+- **Not for:** databases, web servers, or anything that can't tolerate sudden termination
+
+**Dedicated Hosts:**
+- A physical server dedicated to you — no other AWS customers on the hardware
+- Most expensive option
+- Use case: software licensing that's per-physical-core/socket (Oracle, Windows Server), or compliance requirements mandating dedicated hardware
+
+**Decision tree:**
+
+```
+Is the workload steady and predictable (runs 24/7)?
+├── Yes → Reserved Instance or Savings Plan
+│   ├── Know the exact instance type? → Reserved Instance
+│   └── Want flexibility? → Savings Plan
+└── No
+    ├── Can it handle interruption? → Spot Instance (cheapest)
+    └── Can't handle interruption? → On-Demand
+Need dedicated hardware (licensing/compliance)? → Dedicated Host
+```
+
+**Exam triggers:**
+- *"reduce costs for a database running 24/7"* → Reserved Instance
+- *"flexible commitment across multiple instance types"* → Savings Plan
+- *"cheapest option for batch processing that can retry"* → Spot Instance
+- *"software licensed per physical socket"* → Dedicated Host
+- *"short-term, unpredictable workload"* → On-Demand
+
 ### AMI
 
 An **AMI (Amazon Machine Image)** is a pre-packaged template used to launch EC2 instances. It includes the OS, application server, application code, and configuration — everything needed to boot a new instance.
@@ -388,6 +451,19 @@ Real-world examples:
 | Capacity | Fixed, pre-provisioned | Elastic, auto-scales | Fixed (comes with instance type) |
 | Cost | Mid | Higher (~3× gp2) | Included in instance price |
 | Use when | Single instance needs fast persistent disk | Multiple instances need shared access | Throwaway scratch space, maximum speed |
+
+**Exam scenario: "shared storage dynamically loaded on hundreds of instances"**
+
+You need to distribute software updates to 100s of Linux EC2 instances. Updates should be on shared storage, dynamically loaded, no heavy operations.
+
+Answer: **EFS**. Mount it on all instances — when you update files on EFS, every instance sees them instantly. No downloading, no copying, no per-instance operations.
+
+Why not the others:
+- **EBS** — single instance only
+- **S3** — shared, but requires downloading files to each instance (heavy operation)
+- **Instance Store** — ephemeral, single instance
+
+The keyword pattern: "shared" + "dynamically loaded" + "Linux" → **EFS**.
 
 ## Scaling and ELB
 
@@ -1749,3 +1825,276 @@ EC2 instance → "what is legacy-app.corp.local?"
 - *"hybrid DNS resolution across VPN"* → Route 53 Resolver endpoints
 - *"stop sending traffic to an unhealthy instance via DNS"* → health check + any routing policy that supports it
 - *"check is healthy only if multiple services are healthy"* → Calculated health check
+
+## Elastic Beanstalk
+
+A PaaS (Platform as a Service) — you upload your code and AWS handles everything else: provisioning EC2 instances, ALB, ASG, security groups, CloudWatch monitoring, and deployments.
+
+**Think of it as:** "I don't want to set up infrastructure, just run my app."
+
+Under the hood it creates real AWS resources (EC2, ALB, ASG, etc.) that you can still see and modify — it's not a black box like Lambda. It's a managed wrapper around the infrastructure you'd otherwise configure manually.
+
+**Key properties:**
+
+- **Supported platforms:** Java, .NET, Node.js, Python, Ruby, Go, Docker
+- **Free service** — you only pay for the underlying resources it creates
+- **Full control** — you can still access and tweak the underlying resources (EC2 instances, ALB settings, etc.)
+- **Environment = a running version of your app** — includes the EC2 instances, load balancer, ASG, and configuration
+
+**Deployment strategies:**
+
+| Strategy | How it works | Downtime? | Rollback |
+| -------- | ------------ | --------- | -------- |
+| All at once | Deploy to all instances simultaneously | Yes | Redeploy old version |
+| Rolling | Deploy in batches — some instances run old version during deploy | No | Redeploy old version |
+| Rolling with additional batch | Like rolling, but launches new instances first so capacity isn't reduced | No | Redeploy old version |
+| Immutable | Launches entirely new instances with new version, swaps when healthy | No | Terminate new instances (fast) |
+| Blue/Green | Create a new environment, swap URLs | No | Swap URLs back (fast) |
+
+**Immutable vs Blue/Green:** immutable replaces instances within the same environment. Blue/Green creates a completely separate environment (new ALB, new ASG, everything) and swaps the Route 53 or Elastic Beanstalk URL.
+
+**Beanstalk vs doing it yourself:**
+
+| | Elastic Beanstalk | Manual setup |
+| - | ----------------- | ------------ |
+| Time to deploy | Minutes | Hours to days |
+| Infrastructure knowledge needed | Minimal | Significant |
+| Customization | Good (can override most settings) | Full |
+| Best for | Standard web apps, quick prototypes, small teams | Complex architectures, very specific requirements |
+
+**Exam triggers:**
+- *"deploy an application without managing infrastructure"* → Elastic Beanstalk
+- *"developer wants to focus on code, not servers"* → Elastic Beanstalk
+- *"deploy with zero downtime and fast rollback"* → Immutable or Blue/Green deployment
+- *"PaaS on AWS"* → Elastic Beanstalk
+
+**When NOT to use Beanstalk:**
+
+- **Microservices** — designed for single-app environments. 10 microservices = 10 Beanstalk environments gets unwieldy. ECS with service discovery is a better fit.
+- **Complex architectures** — fights you if your setup doesn't fit its model (non-HTTP workloads, custom networking, multi-service communication)
+- **Fine-grained control** — it creates resources (ALB, ASG, security groups) behind the scenes. When something breaks, debugging is harder because you didn't set it up.
+- **Latest runtimes** — platform versions can lag behind the latest Node.js, Python, etc.
+
+**Exam shortcut:** "developer", "simple deployment", "minimal infrastructure" → **Beanstalk**. "Microservices", "complex architecture", "fine-grained control" → **ECS/Fargate** or plain EC2.
+
+## Solution Architecture Examples
+
+Reference architectures that appear frequently in exam questions. Each combines services covered in earlier sections.
+
+### Classic Web App
+
+The most common exam architecture — a scalable, highly available web application.
+
+```
+Users → Route 53 (DNS)
+      → ALB (distributes traffic, terminates TLS)
+      → ASG (auto-scales EC2 instances across AZs)
+      → RDS Multi-AZ (primary + standby for failover)
+      → ElastiCache (session store + DB cache)
+```
+
+**Why each component:**
+
+| Component | Purpose |
+| --------- | ------- |
+| Route 53 | DNS resolution, Alias record pointing to ALB |
+| ALB | Distributes traffic across instances, SSL termination, health checks |
+| ASG | Scales instances based on demand, replaces unhealthy instances |
+| RDS Multi-AZ | Database with automatic failover — no data loss |
+| ElastiCache Redis | Session store (stateless app) + cache (reduce DB reads) |
+
+**Key design decisions:**
+- EC2 instances are **stateless** — sessions stored in ElastiCache, not on the instance
+- Instances in **private subnets** — only ALB is in the public subnet
+- RDS in **private subnets** — security group allows traffic only from the EC2 security group
+- Multi-AZ for both RDS and ALB — survives an AZ failure
+
+### Stateful Web App → Stateless Evolution
+
+A common exam pattern — start with the problem (stateful), show the fix (stateless).
+
+**The problem — stateful with sticky sessions:**
+
+```
+Users → Route 53 → ALB (sticky sessions enabled)
+                  → EC2 instance A (holds User 1's session in memory)
+                  → EC2 instance B (holds User 2's session in memory)
+```
+
+Session data (login state, shopping cart) lives in the instance's memory. ALB uses a cookie (`AWSALB`) to route a user to the same instance every time.
+
+**What goes wrong:**
+- Instance A dies → User 1's session is gone → logged out, cart emptied
+- Can't scale freely — adding instances doesn't help users stuck on a busy instance
+- Uneven load — some instances are overloaded while others are idle
+
+**The fix — stateless with ElastiCache:**
+
+```
+Users → Route 53 → ALB (no sticky sessions)
+                  → any EC2 instance → ElastiCache Redis (session store)
+                                     → RDS (database)
+```
+
+Move session data to ElastiCache Redis. Now every instance can serve every user — just look up the session by ID. Instances are interchangeable.
+
+| | Stateful (sticky sessions) | Stateless (ElastiCache) |
+| - | -------------------------- | ----------------------- |
+| Instance fails | Session lost | Session survives in Redis |
+| Scaling | Limited — users are pinned | Free — any instance serves any user |
+| Load distribution | Uneven | Even |
+| Cost | Cheaper (no Redis) | Slightly more (Redis cluster) |
+
+**Alternative session stores:** DynamoDB (serverless, auto-scales) or EFS (shared filesystem). ElastiCache Redis is the most common answer for the exam.
+
+**Exam trigger:** *"users lose their session when an instance is terminated"* → move sessions to ElastiCache. Sticky sessions are the workaround, not the solution.
+
+**Exam trap: "which does NOT help with stateless design?"**
+
+| Helps with stateless? | Service | Why |
+| --------------------- | ------- | --- |
+| Yes | ElastiCache | Shared session store across all instances |
+| Yes | DynamoDB | Shared state store, serverless |
+| Yes | S3 | Shared file/object storage |
+| Yes | EFS | Shared filesystem mounted across instances |
+| **No** | **EBS** | **Locked to one instance, one AZ — the opposite of shared state** |
+
+EBS is the trap answer. It's instance-specific storage — data on instance A's EBS volume is invisible to instance B.
+
+**Same problem with file uploads:**
+
+User uploads an image to instance A. Their next request goes to instance B (ALB routed it there). Instance B doesn't have the file — the image is gone.
+
+```
+Broken:   Upload → Instance A (file on local EBS) → next request → Instance B → file not found ❌
+
+Fix (EFS): Upload → Instance A → EFS (shared drive) → Instance B reads from EFS ✅
+Fix (S3):  Upload → Instance A → S3 (object storage) → Instance B reads from S3 ✅
+```
+
+| Solution | When to use |
+| -------- | ----------- |
+| EFS | App expects a filesystem (POSIX paths like `/uploads/photo.jpg`) — e.g. WordPress, legacy apps |
+| S3 | App can use an API/SDK to store and retrieve objects — modern apps, cheaper at scale |
+
+S3 is the more common answer for the exam unless the question specifically mentions a shared filesystem or POSIX compatibility.
+
+**Exam triggers:**
+- *"uploaded files are not available on all instances"* → EFS or S3
+- *"shared filesystem across instances"* → EFS
+- *"store user uploads durably and cheaply"* → S3
+
+### Multi-Region Disaster Recovery
+
+Active-passive setup for surviving an entire region failure.
+
+```
+Users → Route 53 (Failover routing policy)
+      ├── Primary: us-east-1
+      │   → ALB → ASG → Aurora (writer)
+      └── Secondary: eu-west-1 (standby)
+          → ALB → ASG → Aurora Global Database (read replica)
+```
+
+**How failover works:**
+
+1. Route 53 health check monitors the primary region's ALB
+2. Primary region fails → health check marks it unhealthy
+3. Route 53 returns the secondary region's ALB IP
+4. Promote Aurora Global Database secondary to writer
+5. Secondary region is now the primary — users are served from `eu-west-1`
+
+**Key design decisions:**
+- Aurora Global Database for **<1 second replication lag** cross-region
+- Route 53 Failover routing — **not** weighted or latency
+- Health checks on the primary are **required** for automatic failover
+- RTO depends on Aurora promotion time (~1 minute) + TTL propagation
+
+### Golden AMI vs Docker Image
+
+Two approaches to the same problem: **"how do I get my app running fast without bootstrapping at launch time?"**
+
+**Golden AMI:**
+- A pre-baked AMI with your OS, app, dependencies, and config already installed
+- Launch an EC2 instance → it's ready in seconds, no user data scripts needed
+- Update the AMI when the app changes → redeploy instances from the new AMI
+
+**Docker image in a registry (ECR):**
+- A pre-built container image with your app and dependencies
+- Push to ECR → ECS/Fargate pulls and runs it in seconds
+- Update the image → push a new tag → redeploy tasks
+
+| | Golden AMI | Docker Image (ECR) |
+| - | ---------- | ------------------ |
+| Runs on | EC2 instances | ECS/Fargate containers |
+| Contains | Full OS + app + dependencies | App + dependencies (no OS to manage) |
+| Update cycle | Rebuild AMI → replace instances | Push new image → redeploy tasks |
+| Portability | AWS-only | Runs anywhere Docker runs |
+| OS patching | You patch the AMI and redeploy | AWS patches the host (Fargate) |
+| Best for | Legacy apps, OS-level requirements, GPU workloads | Microservices, modern apps, teams using containers |
+
+**The honest take:** if your app is containerised, a Docker image in ECR + Fargate is simpler — no AMIs to maintain, no OS to patch, no instance management. Golden AMIs make sense when you can't containerise (legacy apps, OS-level dependencies) or need EC2-specific features (instance store, GPU, custom kernel).
+
+**Exam triggers:**
+- *"reduce instance launch time in an ASG"* → Golden AMI (pre-baked)
+- *"deploy containers without managing servers"* → Docker image + Fargate
+- *"application takes too long to bootstrap from user data"* → Golden AMI
+
+### Serverless
+
+No servers to manage — fully event-driven, pay-per-request.
+
+```
+Users → Route 53
+      → API Gateway (REST/HTTP API, throttling, auth)
+      → Lambda (business logic)
+      → DynamoDB (NoSQL database)
+```
+
+**Why each component:**
+
+| Component | Purpose |
+| --------- | ------- |
+| API Gateway | HTTP endpoint, request validation, rate limiting, API keys |
+| Lambda | Runs code on demand — scales to zero, scales to thousands |
+| DynamoDB | Serverless NoSQL — no provisioning, auto-scales, single-digit ms latency |
+
+**When to use this over the classic web app:**
+- Unpredictable or spiky traffic (pay per request, not per hour)
+- Simple CRUD APIs
+- Event-driven workloads (S3 triggers, SQS consumers)
+- Team doesn't want to manage any infrastructure
+
+**When NOT to use this:**
+- Long-running processes (Lambda max 15 minutes)
+- Relational data that needs complex joins → use RDS instead of DynamoDB
+- Consistent high-throughput workloads → EC2 is cheaper at steady load
+
+### Static Website with CloudFront
+
+Cheapest and fastest way to host a static website (HTML, CSS, JS, images).
+
+```
+Users → Route 53 (Alias to CloudFront)
+      → CloudFront (CDN — caches content at edge locations worldwide)
+      → S3 bucket (origin — stores the actual files)
+```
+
+**Why each component:**
+
+| Component | Purpose |
+| --------- | ------- |
+| S3 | Stores static files — cheap, durable, no servers |
+| CloudFront | CDN — caches content at 400+ edge locations, HTTPS, low latency globally |
+| Route 53 | Alias record pointing to CloudFront distribution |
+
+**Key details:**
+- S3 bucket does **not** need to be public — CloudFront uses an **Origin Access Control (OAC)** to access S3 privately
+- CloudFront handles HTTPS via ACM certificates — S3 alone only supports HTTP
+- Cache invalidation when you deploy new content — or use versioned file names (`app.v2.js`)
+
+**Exam triggers:**
+- *"host a static website with low latency globally"* → S3 + CloudFront
+- *"serve content from edge locations"* → CloudFront
+- *"HTTPS for an S3 static website"* → CloudFront (S3 alone can't do HTTPS with a custom domain)
+- *"restrict S3 access to CloudFront only"* → Origin Access Control (OAC)
