@@ -1800,6 +1800,15 @@ Under the hood it creates real AWS resources (EC2, ALB, ASG, etc.) that you can 
 - *"deploy with zero downtime and fast rollback"* → Immutable or Blue/Green deployment
 - *"PaaS on AWS"* → Elastic Beanstalk
 
+**When NOT to use Beanstalk:**
+
+- **Microservices** — designed for single-app environments. 10 microservices = 10 Beanstalk environments gets unwieldy. ECS with service discovery is a better fit.
+- **Complex architectures** — fights you if your setup doesn't fit its model (non-HTTP workloads, custom networking, multi-service communication)
+- **Fine-grained control** — it creates resources (ALB, ASG, security groups) behind the scenes. When something breaks, debugging is harder because you didn't set it up.
+- **Latest runtimes** — platform versions can lag behind the latest Node.js, Python, etc.
+
+**Exam shortcut:** "developer", "simple deployment", "minimal infrastructure" → **Beanstalk**. "Microservices", "complex architecture", "fine-grained control" → **ECS/Fargate** or plain EC2.
+
 ## Solution Architecture Examples
 
 Reference architectures that appear frequently in exam questions. Each combines services covered in earlier sections.
