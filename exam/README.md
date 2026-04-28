@@ -62,6 +62,9 @@
   - [Golden AMI vs Docker Image](#golden-ami-vs-docker-image)
   - [Serverless](#serverless)
   - [Static Website with CloudFront](#static-website-with-cloudfront)
+- [S3 (Simple Storage Service)](#s3-simple-storage-service)
+  - [S3 Overview](#s3-overview)
+  - [S3 Storage Classes](#s3-storage-classes)
 
 <!-- /TOC -->
 
@@ -2098,3 +2101,68 @@ Users → Route 53 (Alias to CloudFront)
 - *"serve content from edge locations"* → CloudFront
 - *"HTTPS for an S3 static website"* → CloudFront (S3 alone can't do HTTPS with a custom domain)
 - *"restrict S3 access to CloudFront only"* → Origin Access Control (OAC)
+
+## S3 (Simple Storage Service)
+
+AWS's object storage — store and retrieve any amount of data, any time, from anywhere.
+
+### S3 Overview
+
+**Key concepts:**
+
+- **Buckets** — containers for objects. Globally unique name, created in a specific region.
+- **Objects** — files stored in buckets. Each has a key (full path), value (file content), and metadata.
+- **No filesystem** — looks like folders in the console, but it's flat key-value storage. `photos/2024/cat.jpg` is just a key, not a directory hierarchy.
+
+**Key properties:**
+
+- **Unlimited storage** — no capacity planning, no pre-provisioning
+- **Object size** — 0 bytes to 5 TB per object. Files over 5 GB must use **multipart upload**.
+- **Durability** — 99.999999999% (11 nines) — designed to not lose your data
+- **Region-scoped** — data stays in the region you choose (compliance)
+
+**Common use cases:**
+
+- Static website hosting (HTML, CSS, JS, images)
+- Backup and archive
+- Data lake for analytics
+- Application assets (user uploads, media files)
+- Log storage
+
+### S3 Storage Classes
+
+Storage classes sit on a cost-vs-access spectrum. The less frequently you access data, the cheaper the storage — but retrieval costs more.
+
+| Class | Use case | Retrieval speed | Min storage duration |
+| ----- | -------- | --------------- | -------------------- |
+| Standard | Frequently accessed data | Instant | None |
+| Intelligent-Tiering | Unknown/changing access patterns | Instant (auto-moves between tiers) | None |
+| Standard-IA | Infrequent access, needs fast retrieval | Instant, per-GB retrieval fee | 30 days |
+| One Zone-IA | Infrequent, non-critical (single AZ) | Instant, cheaper, less durable | 30 days |
+| Glacier Instant Retrieval | Archive, but need millisecond access | Instant | 90 days |
+| Glacier Flexible Retrieval | Archive, access within minutes to hours | 1 min to 12 hours | 90 days |
+| Glacier Deep Archive | Long-term archive, rarely accessed | 12 to 48 hours | 180 days |
+
+**Min storage duration** means you pay for at least that many days even if you delete the object sooner. Delete a Glacier Deep Archive object after 1 day → you still pay for 180 days.
+
+**Intelligent-Tiering** is the "set and forget" option — S3 monitors access patterns and moves objects between tiers automatically. Small monthly monitoring fee per object, but no retrieval charges.
+
+**Lifecycle rules** automatically transition objects between classes:
+
+```
+Upload → Standard (Day 0)
+       → Standard-IA (Day 30)
+       → Glacier Flexible (Day 90)
+       → Delete (Day 365)
+```
+
+Configure these rules per bucket or per prefix (e.g. only apply to `logs/*`).
+
+**Exam triggers:**
+- *"store unlimited data cheaply"* → S3
+- *"cheapest storage for data accessed once a year"* → Glacier Deep Archive
+- *"automatically move data to cheaper storage over time"* → S3 Lifecycle rules
+- *"unknown access pattern"* → S3 Intelligent-Tiering
+- *"infrequent access but must be available instantly"* → Standard-IA
+- *"archive data, retrieval within 12 hours is acceptable"* → Glacier Flexible Retrieval
+- *"non-critical data, cheapest infrequent access"* → One Zone-IA (single AZ risk)
