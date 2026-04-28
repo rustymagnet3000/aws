@@ -2203,3 +2203,27 @@ Configure these rules per bucket or per prefix (e.g. only apply to `logs/*`).
 - *"infrequent access but must be available instantly"* → Standard-IA
 - *"archive data, retrieval within 12 hours is acceptable"* → Glacier Flexible Retrieval
 - *"non-critical data, cheapest infrequent access"* → One Zone-IA (single AZ risk)
+
+### S3 Replication
+
+Two types — same concept, different scope:
+
+| Type | Destination | Use case |
+| ---- | ----------- | -------- |
+| Cross-Region Replication (CRR) | Bucket in a different region | DR, compliance, lower latency in another region |
+| Same-Region Replication (SRR) | Bucket in the same region | Aggregate logs, replicate between prod/test accounts |
+
+**Requirements and behaviour:**
+
+- **Versioning must be enabled** on both source and destination buckets
+- Replication is **asynchronous**
+- Only **new objects** are replicated after enabling — existing objects are not replicated retroactively
+- Use **S3 Batch Replication** to replicate existing objects
+- **Delete markers are not replicated** by default (can be enabled) — prevents accidental cascading deletes across buckets
+- **No chaining** — if bucket A replicates to B, and B replicates to C, objects in A do not appear in C
+
+**Exam triggers:**
+- *"keep a copy of data in another region for DR"* → Cross-Region Replication
+- *"replicate logs to a central bucket in the same region"* → Same-Region Replication
+- *"existing objects weren't replicated"* → S3 Batch Replication
+- *"deleted object still exists in the replica bucket"* → delete markers aren't replicated by default
