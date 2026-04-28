@@ -2131,6 +2131,41 @@ Useful tool: [AWS Policy Generator](https://awspolicygen.s3.amazonaws.com/policy
 - Application assets (user uploads, media files)
 - Log storage
 
+### S3 Versioning
+
+Versioning keeps every version of every object in a bucket. Overwrite a file → S3 keeps the old version. Delete a file → S3 adds a **delete marker** instead of actually removing it.
+
+**Why it matters:**
+
+- **Rollback** — uploaded a bad `index.html`? Restore the previous version instantly. No backups needed.
+- **Undelete** — accidentally deleted a file? Remove the delete marker and it's back.
+- **Audit trail** — see every version of a file and when it was modified.
+
+**How it works:**
+
+```
+Upload cat.jpg (version 1)
+Upload cat.jpg (version 2) → version 1 still exists
+Upload cat.jpg (version 3) → versions 1 and 2 still exist
+Delete cat.jpg             → delete marker added, versions 1-3 still exist
+Remove delete marker       → cat.jpg is back (version 3 is latest)
+```
+
+**Key details:**
+
+- Versioning is enabled **per bucket** — once enabled, it can be suspended but not disabled
+- Suspending versioning doesn't delete existing versions — they're preserved
+- Every version is stored and billed — a 1 MB file overwritten 100 times = 100 MB of storage
+- Use **lifecycle rules** to delete old versions after N days to control costs
+- Any object uploaded before versioning was enabled has version ID `null`
+
+**MFA Delete:** requires MFA to permanently delete a version or suspend versioning. Extra safety net against accidental or malicious deletion. Can only be enabled by the bucket owner using the CLI (not the console).
+
+**Exam triggers:**
+- *"protect against accidental deletion"* → versioning + MFA Delete
+- *"roll back to a previous version of a file"* → S3 versioning
+- *"storage costs are growing unexpectedly"* → check if versioning is keeping old versions; add lifecycle rules to expire them
+
 ### S3 Storage Classes
 
 Storage classes sit on a cost-vs-access spectrum. The less frequently you access data, the cheaper the storage — but retrieval costs more.
