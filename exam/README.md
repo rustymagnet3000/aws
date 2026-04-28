@@ -2106,6 +2106,8 @@ Users → Route 53 (Alias to CloudFront)
 
 AWS's object storage — store and retrieve any amount of data, any time, from anywhere.
 
+Useful tool: [AWS Policy Generator](https://awspolicygen.s3.amazonaws.com/policygen.html) — web UI for building S3 bucket policies, IAM policies, SQS/SNS policies, and VPC endpoint policies. Generates the JSON for you instead of writing it by hand.
+
 ### S3 Overview
 
 **Key concepts:**
