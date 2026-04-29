@@ -2227,3 +2227,5 @@ Two types — same concept, different scope:
 - *"replicate logs to a central bucket in the same region"* → Same-Region Replication
 - *"existing objects weren't replicated"* → S3 Batch Replication
 - *"deleted object still exists in the replica bucket"* → delete markers aren't replicated by default
+
+**Do you actually need CRR?** CRR doubles your storage costs (full copy in another region) plus cross-region data transfer fees. S3 Standard already stores data across **3 AZs** within a region with 11 nines durability — your data is extremely safe without CRR. Only use CRR when compliance requires multi-region copies, you need low-latency access from another region, or you need to survive an entire region failure. For most workloads, S3 in one region with versioning is enough.
