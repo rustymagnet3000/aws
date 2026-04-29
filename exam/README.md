@@ -2170,15 +2170,15 @@ Remove delete marker       → cat.jpg is back (version 3 is latest)
 
 Storage classes sit on a cost-vs-access spectrum. The less frequently you access data, the cheaper the storage — but retrieval costs more.
 
-| Class | Use case | Retrieval speed | Min storage duration |
-| ----- | -------- | --------------- | -------------------- |
-| Standard | Frequently accessed data | Instant | None |
-| Intelligent-Tiering | Unknown/changing access patterns | Instant (auto-moves between tiers) | None |
-| Standard-IA | Infrequent access, needs fast retrieval | Instant, per-GB retrieval fee | 30 days |
-| One Zone-IA | Infrequent, non-critical (single AZ) | Instant, cheaper, less durable | 30 days |
-| Glacier Instant Retrieval | Archive, but need millisecond access | Instant | 90 days |
-| Glacier Flexible Retrieval | Archive, access within minutes to hours | 1 min to 12 hours | 90 days |
-| Glacier Deep Archive | Long-term archive, rarely accessed | 12 to 48 hours | 180 days |
+| Class | Real-world example | Retrieval | Min duration |
+| ----- | ------------------ | --------- | ------------ |
+| Standard | Product images on an e-commerce site, app config files | Instant | None |
+| Intelligent-Tiering | A data lake where some datasets are hot, others go cold unpredictably | Instant (auto-moves) | None |
+| Standard-IA | Quarterly financial reports — accessed a few times a year but needed immediately | Instant, per-GB fee | 30 days |
+| One Zone-IA | Thumbnail copies or transcoded video — easily re-generated if lost | Instant, cheaper | 30 days |
+| Glacier Instant | Medical imaging (X-rays, MRIs) — archived but must load instantly when a doctor requests | Instant | 90 days |
+| Glacier Flexible | Annual compliance audit data — "we might need it this week, hours is fine" | 1 min–12 hrs | 90 days |
+| Glacier Deep Archive | 7-year regulatory tape replacement (tax records, legal holds) — accessed once a year at most | 12–48 hrs | 180 days |
 
 **Min storage duration** means you pay for at least that many days even if you delete the object sooner. Delete a Glacier Deep Archive object after 1 day → you still pay for 180 days.
 
