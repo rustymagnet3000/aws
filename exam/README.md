@@ -2229,3 +2229,10 @@ Two types — same concept, different scope:
 - *"deleted object still exists in the replica bucket"* → delete markers aren't replicated by default
 
 **Do you actually need CRR?** CRR doubles your storage costs (full copy in another region) plus cross-region data transfer fees. S3 Standard already stores data across **3 AZs** within a region with 11 nines durability — your data is extremely safe without CRR. Only use CRR when compliance requires multi-region copies, you need low-latency access from another region, or you need to survive an entire region failure. For most workloads, S3 in one region with versioning is enough.
+
+**Should delete markers replicate?** Generally no — and that's the default for a reason. If delete markers replicate, someone accidentally deleting a file in the source also "deletes" it in the replica. Your backup is gone too. The whole point of replication for DR is that the replica is a safety net — it should survive mistakes in the source.
+
+| Delete marker replication | When |
+| ------------------------- | ---- |
+| Disabled (default) | Replica is for DR/backup — accidental deletes shouldn't cascade. Compliance requires retaining data even if deleted from source. |
+| Enabled | Both buckets serve live traffic and must stay in exact sync (active-active). |
