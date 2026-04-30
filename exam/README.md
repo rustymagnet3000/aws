@@ -2182,6 +2182,19 @@ Storage classes sit on a cost-vs-access spectrum. The less frequently you access
 
 **Min storage duration** means you pay for at least that many days even if you delete the object sooner. Delete a Glacier Deep Archive object after 1 day → you still pay for 180 days.
 
+**S3 Express One Zone** — a separate class for ultra-low latency (single-digit milliseconds). Not in the table above because it's a different category — designed for speed, not cost optimisation.
+
+| | S3 Standard | S3 Express One Zone |
+| - | ----------- | ------------------- |
+| Latency | ~tens of milliseconds | Single-digit milliseconds |
+| AZs | 3 | 1 |
+| Cost per GB | Lower | Higher |
+| Cost per request | Higher | Lower (designed for millions of requests) |
+| Bucket type | Regular bucket | Directory bucket (different API) |
+| Use case | General purpose | ML training, analytics, real-time processing |
+
+Use Express One Zone when the workload makes millions of requests and latency matters more than durability — ML model reading millions of small files, Spark/Athena on hot datasets, real-time financial modelling. For everything else, Standard is cheaper and multi-AZ.
+
 **Intelligent-Tiering** is the "set and forget" option — S3 monitors access patterns and moves objects between tiers automatically. Small monthly monitoring fee per object, but no retrieval charges.
 
 **Lifecycle rules** automatically transition objects between classes:
