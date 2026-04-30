@@ -2185,6 +2185,25 @@ Storage classes sit on a cost-vs-access spectrum. The less frequently you access
 
 **Min storage duration** means you pay for at least that many days even if you delete the object sooner. Delete a Glacier Deep Archive object after 1 day → you still pay for 180 days.
 
+**Glacier retrieval modes — don't confuse Flexible with Instant:**
+
+Glacier Flexible Retrieval has 3 retrieval modes (you choose per request):
+
+| Mode | Speed | Cost |
+| ---- | ----- | ---- |
+| Expedited | 1–5 minutes | Most expensive |
+| Standard | 3–5 hours | Mid |
+| Bulk | 5–12 hours | Cheapest |
+
+Glacier Deep Archive also has retrieval modes:
+
+| Mode | Speed |
+| ---- | ----- |
+| Standard | 12 hours |
+| Bulk | 48 hours |
+
+There is no "seconds" retrieval for either. The fastest Glacier Flexible can do is **1 minute** (Expedited). If you need millisecond access to archived data, that's **Glacier Instant Retrieval** — a completely different storage class.
+
 **S3 Express One Zone** — a separate class for ultra-low latency (single-digit milliseconds). Not in the table above because it's a different category — designed for speed, not cost optimisation.
 
 | | S3 Standard | S3 Express One Zone |
