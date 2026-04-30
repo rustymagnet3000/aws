@@ -64,7 +64,10 @@
   - [Static Website with CloudFront](#static-website-with-cloudfront)
 - [S3 (Simple Storage Service)](#s3-simple-storage-service)
   - [S3 Overview](#s3-overview)
+  - [S3 Versioning](#s3-versioning)
   - [S3 Storage Classes](#s3-storage-classes)
+  - [S3 Security](#s3-security)
+  - [S3 Replication](#s3-replication)
 
 <!-- /TOC -->
 
@@ -2216,6 +2219,51 @@ Configure these rules per bucket or per prefix (e.g. only apply to `logs/*`).
 - *"infrequent access but must be available instantly"* → Standard-IA
 - *"archive data, retrieval within 12 hours is acceptable"* → Glacier Flexible Retrieval
 - *"non-critical data, cheapest infrequent access"* → One Zone-IA (single AZ risk)
+
+### S3 Security
+
+**Bucket policies vs IAM policies:**
+
+Both can grant access to S3. A bucket policy is attached to the bucket ("who can access this bucket?"). An IAM policy is attached to a user/role ("what can this user access?"). When both exist, AWS evaluates them together.
+
+**The golden rule — explicit Deny always wins:**
+
+```
+1. Explicit Deny anywhere? → DENIED (game over, nothing overrides this)
+2. Explicit Allow?         → ALLOWED
+3. Neither?                → DENIED (implicit deny — the default)
+```
+
+This applies across all AWS services, not just S3. If a bucket policy says Allow but the user's IAM policy has an explicit Deny on `s3:PutObject`, the user is blocked. The Deny wins every time.
+
+Exam scenario — "bucket policy allows read/write but a user can't PutObject":
+The user's IAM policy (or a group/SCP policy) has an explicit Deny. The bucket policy Allow cannot override it.
+
+**Other S3 security controls:**
+
+| Control | What it does |
+| ------- | ------------ |
+| Bucket policy | JSON policy on the bucket — controls access for any principal (users, accounts, public) |
+| IAM policy | JSON policy on the user/role — controls what AWS resources they can access |
+| ACLs (legacy) | Per-object or per-bucket access lists. AWS recommends disabling these — use bucket policies instead |
+| Block Public Access | Account or bucket-level setting that overrides any policy granting public access. Enabled by default on new buckets. |
+| Pre-signed URLs | Temporary URL granting time-limited access to a private object. Use case: let a user download a file without making the bucket public. |
+
+**S3 encryption:**
+
+| Type | How it works |
+| ---- | ------------ |
+| SSE-S3 | AWS manages the keys entirely — default encryption for new buckets |
+| SSE-KMS | You use a KMS key — audit trail via CloudTrail, can control who has access to the key |
+| SSE-C | You provide the encryption key with every request — AWS doesn't store it |
+| Client-side | You encrypt before uploading — AWS never sees the plaintext |
+
+**Exam triggers:**
+- *"user can't access S3 despite bucket policy allowing it"* → explicit Deny in IAM policy
+- *"prevent any public access to S3, even if someone misconfigures a policy"* → S3 Block Public Access
+- *"give temporary access to a private S3 object"* → pre-signed URL
+- *"audit who accessed which encryption key"* → SSE-KMS (CloudTrail logs key usage)
+- *"compliance requires customer-managed encryption keys"* → SSE-KMS or SSE-C
 
 ### S3 Replication
 
