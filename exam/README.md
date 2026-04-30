@@ -2239,6 +2239,18 @@ Configure these rules per bucket or per prefix (e.g. only apply to `logs/*`).
 - *"archive data, retrieval within 12 hours is acceptable"* → Glacier Flexible Retrieval
 - *"non-critical data, cheapest infrequent access"* → One Zone-IA (single AZ risk)
 
+### S3 Requester Pays
+
+Normally the bucket owner pays for storage **and** data transfer (downloads). With Requester Pays, the person downloading pays the transfer costs instead.
+
+Real-world example: a genomics research institution hosts a 50 TB public dataset (human genome sequences) on S3. Researchers worldwide download from it. Without Requester Pays, the institution pays thousands/month in transfer fees. With it, each researcher's AWS account is billed for their own downloads. The institution only pays for storage.
+
+Other examples: open data programs (weather, satellite imagery, government datasets), shared datasets between companies where each partner pays for what they pull.
+
+**Key detail:** anonymous access doesn't work with Requester Pays — the requester must be an authenticated AWS user so AWS knows who to bill.
+
+**Exam trigger:** *"share a large dataset without paying for data transfer"* → S3 Requester Pays.
+
 ### S3 Security
 
 **Bucket policies vs IAM policies:**
