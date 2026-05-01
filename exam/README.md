@@ -66,8 +66,10 @@
   - [S3 Overview](#s3-overview)
   - [S3 Versioning](#s3-versioning)
   - [S3 Storage Classes](#s3-storage-classes)
+  - [S3 Event Notifications](#s3-event-notifications)
   - [S3 Requester Pays](#s3-requester-pays)
   - [S3 Security](#s3-security)
+  - [S3 Performance](#s3-performance)
   - [S3 Replication](#s3-replication)
 
 <!-- /TOC -->
