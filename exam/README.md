@@ -2277,6 +2277,25 @@ EventBridge: S3 → EventBridge → any combination of 18+ targets with filterin
 - *"filter S3 events by object metadata"* → EventBridge
 - *"decouple file processing from upload"* → S3 → SQS → consumer
 
+**The key insight: one upload triggers a whole workflow — no polling, no cron jobs.**
+
+Dog shelter example — a new dog photo is uploaded for adoption:
+
+```
+Photo uploaded to S3 (new-dogs/rex.jpg)
+├── Lambda → generate thumbnail for the website listing
+├── Lambda → run image moderation (Rekognition — is it actually a dog photo?)
+├── SQS → queue triggers a service that updates the website database with the new listing
+└── SNS → email/SMS to subscribers: "New dog available for adoption!"
+```
+
+One photo upload kicks off four things automatically. No one is checking "did a new file arrive?" on a schedule. The upload **is** the trigger.
+
+Other examples that follow the same pattern:
+- **E-commerce** — seller uploads product images → resize for mobile/desktop/thumbnail → update catalog → listing goes live
+- **Insurance claim** — customer uploads damage photos → fraud detection model → queue for adjuster review → notify the adjuster
+- **Video platform** — raw video uploaded → transcode to multiple resolutions → notify uploader when ready
+
 ### S3 Requester Pays
 
 Normally the bucket owner pays for storage **and** data transfer (downloads). With Requester Pays, the person downloading pays the transfer costs instead.
