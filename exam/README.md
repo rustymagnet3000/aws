@@ -2353,6 +2353,36 @@ The user's IAM policy (or a group/SCP policy) has an explicit Deny. The bucket p
 - *"audit who accessed which encryption key"* → SSE-KMS (CloudTrail logs key usage)
 - *"compliance requires customer-managed encryption keys"* → SSE-KMS or SSE-C
 
+### S3 Performance
+
+S3 automatically scales to **3,500 PUT/POST/DELETE** and **5,500 GET** requests per second **per prefix**. A prefix is the path before the filename — `bucket/folder1/sub/` is one prefix, `bucket/folder2/` is another. Spread reads across prefixes to multiply throughput.
+
+**Multipart upload:**
+- **Required** for files over 5 GB, **recommended** for files over 100 MB
+- Splits a file into parts, uploads in parallel, S3 reassembles
+- Failed parts can be retried individually — don't restart the whole upload
+
+**S3 Transfer Acceleration:**
+- Uploads go to the nearest **CloudFront edge location** first, then AWS's private backbone to the bucket's region
+- Speeds up long-distance uploads (e.g. user in Australia uploading to `us-east-1`)
+- No benefit if the user is already close to the bucket's region
+
+```
+Without acceleration: Australia ──── public internet ────→ us-east-1 bucket (slow)
+With acceleration:    Australia → nearest edge location → AWS backbone → us-east-1 bucket (fast)
+```
+
+**Byte-Range Fetches:**
+- Download specific byte ranges of a file in parallel instead of the whole object
+- Speed up large file downloads by parallelising
+- Can also fetch just the header of a file (e.g. first 50 bytes for metadata)
+
+**Exam triggers:**
+- *"improve upload speed for large files"* → Multipart upload
+- *"speed up uploads from users far from the bucket region"* → S3 Transfer Acceleration
+- *"maximise read throughput"* → spread reads across multiple prefixes
+- *"download parts of a large file in parallel"* → Byte-Range Fetches
+
 ### S3 Replication
 
 Two types — same concept, different scope:
