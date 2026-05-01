@@ -2375,9 +2375,15 @@ With acceleration:    Australia → nearest edge location → AWS backbone → u
 ```
 
 **Byte-Range Fetches:**
-- Download specific byte ranges of a file in parallel instead of the whole object
-- Speed up large file downloads by parallelising
-- Can also fetch just the header of a file (e.g. first 50 bytes for metadata)
+
+Download specific byte ranges of a file instead of the whole object. The principle: don't download what you don't need, and parallelise what you do.
+
+Real-world examples:
+- **Video streaming** — skip to the middle of a 2 GB video? The player fetches just the byte range for the 30 seconds you're watching, not the entire file
+- **CSV processing** — 10 GB CSV on S3, you only need the first 100 rows? Fetch bytes 0–5000 instead of downloading 10 GB
+- **Resumable downloads** — 5 GB download fails at 3 GB? Resume from byte 3,000,000,000 instead of starting over
+- **Parallel downloads** — split a 10 GB file into 10 x 1 GB ranges, download all 10 in parallel, reassemble locally — 10x faster
+- **PDF preview** — fetch just the first few KB to render page 1 of a 500-page PDF
 
 **Exam triggers:**
 - *"improve upload speed for large files"* → Multipart upload
