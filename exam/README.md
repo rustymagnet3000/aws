@@ -2240,6 +2240,43 @@ Configure these rules per bucket or per prefix (e.g. only apply to `logs/*`).
 - *"archive data, retrieval within 12 hours is acceptable"* → Glacier Flexible Retrieval
 - *"non-critical data, cheapest infrequent access"* → One Zone-IA (single AZ risk)
 
+### S3 Event Notifications
+
+Trigger actions automatically when something happens in a bucket — object created, deleted, restored from Glacier, etc.
+
+**Three classic destinations:**
+
+| Destination | Use case |
+| ----------- | -------- |
+| SNS | Fan out to multiple subscribers (email, HTTP, Lambda, SQS) |
+| SQS | Queue for async processing (decouple producer from consumer) |
+| Lambda | Run code directly in response to the event |
+
+Real-world examples:
+- Image upload → Lambda generates a thumbnail automatically
+- Log file lands in S3 → SQS → processing pipeline picks it up
+- Object deleted → SNS → notify ops team via email
+
+**EventBridge — the newer, more powerful option:**
+
+S3 can also send events to Amazon EventBridge, which gives you more control:
+
+- Route events to **18+ destinations** (not just SNS/SQS/Lambda)
+- **Filter on metadata** — e.g. only trigger on `.jpg` files over 5 MB
+- **Archive and replay** events
+- **Multiple rules** on the same event — one upload can trigger multiple actions
+
+```
+Classic:     S3 → SNS/SQS/Lambda (one destination per notification rule)
+EventBridge: S3 → EventBridge → any combination of 18+ targets with filtering
+```
+
+**Exam triggers:**
+- *"automatically process files when uploaded to S3"* → S3 Event Notification → Lambda
+- *"trigger multiple actions from a single S3 event"* → EventBridge
+- *"filter S3 events by object metadata"* → EventBridge
+- *"decouple file processing from upload"* → S3 → SQS → consumer
+
 ### S3 Requester Pays
 
 Normally the bucket owner pays for storage **and** data transfer (downloads). With Requester Pays, the person downloading pays the transfer costs instead.
