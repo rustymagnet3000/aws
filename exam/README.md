@@ -82,6 +82,7 @@
   - [CloudFront vs S3 Transfer Acceleration](#cloudfront-vs-s3-transfer-acceleration)
   - [CloudFront Caching](#cloudfront-caching)
   - [CloudFront Security](#cloudfront-security)
+  - [CloudFront Functions and Lambda@Edge](#cloudfront-functions-and-lambdaedge)
   - [AWS Global Accelerator](#aws-global-accelerator)
   - [CloudFront vs Global Accelerator](#cloudfront-vs-global-accelerator)
 
@@ -2694,6 +2695,75 @@ You can customise the cache key to include:
 - *"protect against DDoS at the edge"* → CloudFront + Shield + WAF
 - *"time-limited access to a single private file"* → CloudFront Signed URL
 - *"time-limited access to many private files"* → CloudFront Signed Cookies
+
+### CloudFront Functions and Lambda@Edge
+
+Run code at edge locations — transform requests/responses without going back to the origin.
+
+**Two options:**
+
+| | CloudFront Functions | Lambda@Edge |
+| - | -------------------- | ----------- |
+| Language | JavaScript only | Node.js, Python |
+| Execution time | Sub-millisecond (< 1ms) | Up to 5–30 seconds |
+| Scale | Millions of requests/sec | Thousands of requests/sec |
+| Network/file access | No | Yes |
+| Request body access | No | Yes |
+| Cost | Very cheap (~1/6 of Lambda@Edge) | More expensive |
+| Use case | Simple, high-volume transformations | Complex logic needing external calls |
+
+**CloudFront Functions — lightweight, fast, cheap:**
+- URL rewrites and redirects (`/old-page` → `/new-page`)
+- Add/modify headers (cache-control, security headers, CORS)
+- Normalize query strings or cookies for better cache hits
+- Simple A/B testing (rewrite URL based on a cookie)
+
+**Lambda@Edge — full power at the edge:**
+- Authentication and authorization (check JWT before reaching origin)
+- Dynamic content generation (SSR at the edge)
+- A/B testing with external config (call DynamoDB to get experiment config)
+- Image transformation based on User-Agent (serve WebP to Chrome, JPEG to Safari)
+- Bot detection with external lookups
+
+**Cloudflare equivalent (for context, not for the exam):**
+
+| AWS | Cloudflare | Notes |
+| --- | ---------- | ----- |
+| CloudFront Functions | Snippets | Lightweight request/response transformations, limited runtime |
+| Lambda@Edge | Workers | Full programmable runtime at the edge, KV storage, Durable Objects, etc. |
+
+Cloudflare Workers are significantly more capable than Lambda@Edge — they run a full V8 isolate with access to storage (KV, D1, R2), WebSockets, and Durable Objects. Lambda@Edge is limited to short-lived request/response transformations. If you've used Workers, think of Lambda@Edge as a much more constrained version.
+
+**Origin Failover:**
+
+CloudFront can automatically switch to a backup origin if the primary is unavailable. Configure an **Origin Group** with a primary and secondary origin — if the primary returns 5xx or times out, CloudFront retries on the secondary.
+
+```
+CloudFront → Primary origin (S3 us-east-1) → 503 error
+           → Secondary origin (S3 eu-west-1) → 200 OK ✅
+```
+
+Use case: high availability for static content without Route 53 failover.
+
+**Price Classes:**
+
+Limit which edge locations CloudFront uses to reduce cost:
+
+| Price Class | Edge locations | Cost |
+| ----------- | -------------- | ---- |
+| All | All 400+ worldwide | Highest |
+| 200 | Most regions, excludes expensive ones (South America, Australia) | Mid |
+| 100 | US, Canada, Europe only | Cheapest |
+
+If your users are only in North America and Europe, Price Class 100 saves money without affecting their experience.
+
+**Exam triggers:**
+- *"add security headers to all responses"* → CloudFront Functions
+- *"authenticate requests at the edge before reaching origin"* → Lambda@Edge
+- *"rewrite URLs at the edge"* → CloudFront Functions
+- *"generate dynamic content at the edge"* → Lambda@Edge
+- *"origin failover for static content"* → CloudFront Origin Group
+- *"reduce CloudFront costs for a regional audience"* → Price Classes
 
 ### AWS Global Accelerator
 
