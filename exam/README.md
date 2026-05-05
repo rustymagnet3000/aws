@@ -62,6 +62,21 @@
   - [Golden AMI vs Docker Image](#golden-ami-vs-docker-image)
   - [Serverless](#serverless)
   - [Static Website with CloudFront](#static-website-with-cloudfront)
+- [S3 (Simple Storage Service)](#s3-simple-storage-service)
+  - [S3 Overview](#s3-overview)
+  - [S3 Versioning](#s3-versioning)
+  - [S3 Storage Classes](#s3-storage-classes)
+  - [S3 Object Lock and Glacier Vault Lock](#s3-object-lock-and-glacier-vault-lock)
+  - [S3 Event Notifications](#s3-event-notifications)
+  - [S3 Requester Pays](#s3-requester-pays)
+  - [S3 Security](#s3-security)
+  - [S3 Access Points](#s3-access-points)
+  - [S3 VPC Endpoint (Gateway)](#s3-vpc-endpoint-gateway)
+  - [S3 Access Logs](#s3-access-logs)
+  - [S3 CORS](#s3-cors)
+  - [S3 Performance](#s3-performance)
+  - [S3 Select and S3 Object Lambda](#s3-select-and-s3-object-lambda)
+  - [S3 Replication](#s3-replication)
 
 <!-- /TOC -->
 
@@ -452,7 +467,7 @@ Real-world examples:
 | Cost | Mid | Higher (~3× gp2) | Included in instance price |
 | Use when | Single instance needs fast persistent disk | Multiple instances need shared access | Throwaway scratch space, maximum speed |
 
-**Exam scenario: "shared storage dynamically loaded on hundreds of instances"**
+Exam scenario — "shared storage dynamically loaded on hundreds of instances":
 
 You need to distribute software updates to 100s of Linux EC2 instances. Updates should be on shared storage, dynamically loaded, no heavy operations.
 
@@ -1949,7 +1964,7 @@ Move session data to ElastiCache Redis. Now every instance can serve every user 
 
 **Exam trigger:** *"users lose their session when an instance is terminated"* → move sessions to ElastiCache. Sticky sessions are the workaround, not the solution.
 
-**Exam trap: "which does NOT help with stateless design?"**
+Exam trap — "which does NOT help with stateless design?":
 
 | Helps with stateless? | Service | Why |
 | --------------------- | ------- | --- |
@@ -2098,3 +2113,473 @@ Users → Route 53 (Alias to CloudFront)
 - *"serve content from edge locations"* → CloudFront
 - *"HTTPS for an S3 static website"* → CloudFront (S3 alone can't do HTTPS with a custom domain)
 - *"restrict S3 access to CloudFront only"* → Origin Access Control (OAC)
+
+## S3 (Simple Storage Service)
+
+AWS's object storage — store and retrieve any amount of data, any time, from anywhere.
+
+Useful tool: [AWS Policy Generator](https://awspolicygen.s3.amazonaws.com/policygen.html) — web UI for building S3 bucket policies, IAM policies, SQS/SNS policies, and VPC endpoint policies. Generates the JSON for you instead of writing it by hand.
+
+### S3 Overview
+
+**Key concepts:**
+
+- **Buckets** — containers for objects. Globally unique name, created in a specific region.
+- **Objects** — files stored in buckets. Each has a key (full path), value (file content), and metadata.
+- **No filesystem** — looks like folders in the console, but it's flat key-value storage. `photos/2024/cat.jpg` is just a key, not a directory hierarchy.
+
+**Key properties:**
+
+- **Unlimited storage** — no capacity planning, no pre-provisioning
+- **Object size** — 0 bytes to 5 TB per object. Files over 5 GB must use **multipart upload**.
+- **Durability** — 99.999999999% (11 nines) — designed to not lose your data
+- **Region-scoped** — data stays in the region you choose (compliance)
+
+**Common use cases:**
+
+- Static website hosting (HTML, CSS, JS, images)
+- Backup and archive
+- Data lake for analytics
+- Application assets (user uploads, media files)
+- Log storage
+
+### S3 Versioning
+
+Versioning keeps every version of every object in a bucket. Overwrite a file → S3 keeps the old version. Delete a file → S3 adds a **delete marker** instead of actually removing it.
+
+**Why it matters:**
+
+- **Rollback** — uploaded a bad `index.html`? Restore the previous version instantly. No backups needed.
+- **Undelete** — accidentally deleted a file? Remove the delete marker and it's back.
+- **Audit trail** — see every version of a file and when it was modified.
+
+**How it works:**
+
+```
+Upload cat.jpg (version 1)
+Upload cat.jpg (version 2) → version 1 still exists
+Upload cat.jpg (version 3) → versions 1 and 2 still exist
+Delete cat.jpg             → delete marker added, versions 1-3 still exist
+Remove delete marker       → cat.jpg is back (version 3 is latest)
+```
+
+**Key details:**
+
+- Versioning is enabled **per bucket** — once enabled, it can be suspended but not disabled
+- Suspending versioning doesn't delete existing versions — they're preserved
+- Every version is stored and billed — a 1 MB file overwritten 100 times = 100 MB of storage
+- Use **lifecycle rules** to delete old versions after N days to control costs
+- Any object uploaded before versioning was enabled has version ID `null`
+
+**MFA Delete:** requires MFA to permanently delete a version or suspend versioning. Extra safety net against accidental or malicious deletion. Can only be enabled by the bucket owner using the CLI (not the console).
+
+**Exam triggers:**
+- *"protect against accidental deletion"* → versioning + MFA Delete
+- *"roll back to a previous version of a file"* → S3 versioning
+- *"storage costs are growing unexpectedly"* → check if versioning is keeping old versions; add lifecycle rules to expire them
+
+### S3 Storage Classes
+
+Storage classes sit on a cost-vs-access spectrum. The less frequently you access data, the cheaper the storage — but retrieval costs more.
+
+| Class | Real-world example | Retrieval | Min duration |
+| ----- | ------------------ | --------- | ------------ |
+| Standard | Product images on an e-commerce site, app config files | Instant | None |
+| Intelligent-Tiering | A data lake where some datasets are hot, others go cold unpredictably | Instant (auto-moves) | None |
+| Standard-IA | Quarterly financial reports — accessed a few times a year but needed immediately | Instant, per-GB fee | 30 days |
+| One Zone-IA | Thumbnail copies or transcoded video — easily re-generated if lost | Instant, cheaper | 30 days |
+| Glacier Instant | Medical imaging (X-rays, MRIs) — archived but must load instantly when a doctor requests | Instant | 90 days |
+| Glacier Flexible | Annual compliance audit data — "we might need it this week, hours is fine" | 1 min–12 hrs | 90 days |
+| Glacier Deep Archive | 7-year regulatory tape replacement (tax records, legal holds) — accessed once a year at most | 12–48 hrs | 180 days |
+
+**Min storage duration** means you pay for at least that many days even if you delete the object sooner. Delete a Glacier Deep Archive object after 1 day → you still pay for 180 days.
+
+**Glacier retrieval modes — don't confuse Flexible with Instant:**
+
+Glacier Flexible Retrieval has 3 retrieval modes (you choose per request):
+
+| Mode | Speed | Cost |
+| ---- | ----- | ---- |
+| Expedited | 1–5 minutes | Most expensive |
+| Standard | 3–5 hours | Mid |
+| Bulk | 5–12 hours | Cheapest |
+
+Glacier Deep Archive also has retrieval modes:
+
+| Mode | Speed |
+| ---- | ----- |
+| Standard | 12 hours |
+| Bulk | 48 hours |
+
+There is no "seconds" retrieval for either. The fastest Glacier Flexible can do is **1 minute** (Expedited). If you need millisecond access to archived data, that's **Glacier Instant Retrieval** — a completely different storage class.
+
+**S3 Express One Zone** — a separate class for ultra-low latency (single-digit milliseconds). Not in the table above because it's a different category — designed for speed, not cost optimisation.
+
+| | S3 Standard | S3 Express One Zone |
+| - | ----------- | ------------------- |
+| Latency | ~tens of milliseconds | Single-digit milliseconds |
+| AZs | 3 | 1 |
+| Cost per GB | Lower | Higher |
+| Cost per request | Higher | Lower (designed for millions of requests) |
+| Bucket type | Regular bucket | Directory bucket (different API) |
+| Use case | General purpose | ML training, analytics, real-time processing |
+
+Use Express One Zone when the workload makes millions of requests and latency matters more than durability — ML model reading millions of small files, Spark/Athena on hot datasets, real-time financial modelling. For everything else, Standard is cheaper and multi-AZ.
+
+**Intelligent-Tiering** is the "set and forget" option — S3 monitors access patterns and moves objects between tiers automatically. Small monthly monitoring fee per object, but no retrieval charges.
+
+**Lifecycle rules** automatically transition objects between classes:
+
+```
+Upload → Standard (Day 0)
+       → Standard-IA (Day 30)
+       → Glacier Flexible (Day 90)
+       → Delete (Day 365)
+```
+
+Configure these rules per bucket or per prefix (e.g. only apply to `logs/*`).
+
+**Exam triggers:**
+- *"store unlimited data cheaply"* → S3
+- *"cheapest storage for data accessed once a year"* → Glacier Deep Archive
+- *"automatically move data to cheaper storage over time"* → S3 Lifecycle rules
+- *"unknown access pattern"* → S3 Intelligent-Tiering
+- *"infrequent access but must be available instantly"* → Standard-IA
+- *"archive data, retrieval within 12 hours is acceptable"* → Glacier Flexible Retrieval
+- *"non-critical data, cheapest infrequent access"* → One Zone-IA (single AZ risk)
+
+### S3 Object Lock and Glacier Vault Lock
+
+WORM (Write Once Read Many) — prevent objects from being deleted or overwritten, even by root.
+
+**Glacier Vault Lock:**
+- Applies a lock policy to an entire Glacier vault
+- Once locked, the policy is **permanently immutable** — cannot be changed by anyone, including root
+- Use case: regulatory compliance (SEC 17a-4, HIPAA) where you must prove retention policies can't be shortened or data tampered with
+
+**S3 Object Lock:**
+- WORM at the S3 bucket level (any storage class, not just Glacier)
+- Can be set per-object or as a bucket default
+- Two modes:
+
+| Mode | Who can delete/overwrite? |
+| ---- | ------------------------- |
+| Compliance | No one — not even root. Retention period cannot be shortened. |
+| Governance | Admins with special permissions (`s3:BypassGovernanceRetention`) can override. |
+
+Use **Compliance mode** when regulation demands it. Use **Governance mode** when you want protection with an escape hatch for authorised admins.
+
+**Exam triggers:**
+- *"ensure data cannot be deleted for 7 years, even by root"* → S3 Object Lock (Compliance mode) or Glacier Vault Lock
+- *"WORM storage"* → S3 Object Lock or Glacier Vault Lock
+- *"SEC 17a-4 compliance"* → Glacier Vault Lock
+- *"prevent deletion but allow admins to override in emergencies"* → S3 Object Lock (Governance mode)
+
+### S3 Event Notifications
+
+Trigger actions automatically when something happens in a bucket — object created, deleted, restored from Glacier, etc.
+
+**Three classic destinations:**
+
+| Destination | Use case |
+| ----------- | -------- |
+| SNS | Fan out to multiple subscribers (email, HTTP, Lambda, SQS) |
+| SQS | Queue for async processing (decouple producer from consumer) |
+| Lambda | Run code directly in response to the event |
+
+Real-world examples:
+- Image upload → Lambda generates a thumbnail automatically
+- Log file lands in S3 → SQS → processing pipeline picks it up
+- Object deleted → SNS → notify ops team via email
+
+**EventBridge — the newer, more powerful option:**
+
+S3 can also send events to Amazon EventBridge, which gives you more control:
+
+- Route events to **18+ destinations** (not just SNS/SQS/Lambda)
+- **Filter on metadata** — e.g. only trigger on `.jpg` files over 5 MB
+- **Archive and replay** events
+- **Multiple rules** on the same event — one upload can trigger multiple actions
+
+```
+Classic:     S3 → SNS/SQS/Lambda (one destination per notification rule)
+EventBridge: S3 → EventBridge → any combination of 18+ targets with filtering
+```
+
+**Exam triggers:**
+- *"automatically process files when uploaded to S3"* → S3 Event Notification → Lambda
+- *"trigger multiple actions from a single S3 event"* → EventBridge
+- *"filter S3 events by object metadata"* → EventBridge
+- *"decouple file processing from upload"* → S3 → SQS → consumer
+
+**The key insight: one upload triggers a whole workflow — no polling, no cron jobs.**
+
+Dog shelter example — a new dog photo is uploaded for adoption:
+
+```
+Photo uploaded to S3 (new-dogs/rex.jpg)
+├── Lambda → generate thumbnail for the website listing
+├── Lambda → run image moderation (Rekognition — is it actually a dog photo?)
+├── SQS → queue triggers a service that updates the website database with the new listing
+└── SNS → email/SMS to subscribers: "New dog available for adoption!"
+```
+
+One photo upload kicks off four things automatically. No one is checking "did a new file arrive?" on a schedule. The upload **is** the trigger.
+
+Other examples that follow the same pattern:
+- **E-commerce** — seller uploads product images → resize for mobile/desktop/thumbnail → update catalog → listing goes live
+- **Insurance claim** — customer uploads damage photos → fraud detection model → queue for adjuster review → notify the adjuster
+- **Video platform** — raw video uploaded → transcode to multiple resolutions → notify uploader when ready
+
+### S3 Requester Pays
+
+Normally the bucket owner pays for storage **and** data transfer (downloads). With Requester Pays, the person downloading pays the transfer costs instead.
+
+Real-world example: a genomics research institution hosts a 50 TB public dataset (human genome sequences) on S3. Researchers worldwide download from it. Without Requester Pays, the institution pays thousands/month in transfer fees. With it, each researcher's AWS account is billed for their own downloads. The institution only pays for storage.
+
+Other examples: open data programs (weather, satellite imagery, government datasets), shared datasets between companies where each partner pays for what they pull.
+
+**Key detail:** anonymous access doesn't work with Requester Pays — the requester must be an authenticated AWS user so AWS knows who to bill.
+
+**Exam trigger:** *"share a large dataset without paying for data transfer"* → S3 Requester Pays.
+
+### S3 Security
+
+**Bucket policies vs IAM policies:**
+
+Both can grant access to S3. A bucket policy is attached to the bucket ("who can access this bucket?"). An IAM policy is attached to a user/role ("what can this user access?"). When both exist, AWS evaluates them together.
+
+**The golden rule — explicit Deny always wins:**
+
+```
+1. Explicit Deny anywhere? → DENIED (game over, nothing overrides this)
+2. Explicit Allow?         → ALLOWED
+3. Neither?                → DENIED (implicit deny — the default)
+```
+
+This applies across all AWS services, not just S3. If a bucket policy says Allow but the user's IAM policy has an explicit Deny on `s3:PutObject`, the user is blocked. The Deny wins every time.
+
+Exam scenario — "bucket policy allows read/write but a user can't PutObject":
+The user's IAM policy (or a group/SCP policy) has an explicit Deny. The bucket policy Allow cannot override it.
+
+**Other S3 security controls:**
+
+| Control | What it does |
+| ------- | ------------ |
+| Bucket policy | JSON policy on the bucket — controls access for any principal (users, accounts, public) |
+| IAM policy | JSON policy on the user/role — controls what AWS resources they can access |
+| ACLs (legacy) | Per-object or per-bucket access lists. AWS recommends disabling these — use bucket policies instead |
+| Block Public Access | Account or bucket-level setting that overrides any policy granting public access. Enabled by default on new buckets. |
+| Pre-signed URLs | Temporary URL granting time-limited access to a private object. Use case: let a user download a file without making the bucket public. |
+
+**S3 encryption:**
+
+| Type | How it works |
+| ---- | ------------ |
+| SSE-S3 | AWS manages the keys entirely — default encryption for new buckets |
+| SSE-KMS | You use a KMS key — audit trail via CloudTrail, can control who has access to the key |
+| SSE-C | You provide the encryption key with every request — AWS doesn't store it |
+| Client-side | You encrypt before uploading — AWS never sees the plaintext |
+
+**Exam triggers:**
+- *"user can't access S3 despite bucket policy allowing it"* → explicit Deny in IAM policy
+- *"prevent any public access to S3, even if someone misconfigures a policy"* → S3 Block Public Access
+- *"give temporary access to a private S3 object"* → pre-signed URL
+- *"audit who accessed which encryption key"* → SSE-KMS (CloudTrail logs key usage)
+- *"compliance requires customer-managed encryption keys"* → SSE-KMS or SSE-C
+
+### S3 Access Points
+
+When a single bucket is shared by many teams or applications, the bucket policy becomes a giant, unmanageable JSON document. Access Points simplify this — each access point gets its own name, DNS endpoint, and policy.
+
+```
+Without Access Points:
+One bucket policy with 50 statements for different teams → hard to maintain
+
+With Access Points:
+Bucket → Access Point "finance-team" (policy: read-only to /finance/*)
+       → Access Point "data-science" (policy: read/write to /datasets/*)
+       → Access Point "public-web"   (policy: read-only to /public/*)
+```
+
+Each team uses their own access point endpoint instead of the bucket URL. Each has its own simple policy — no giant shared policy to manage.
+
+**Key details:**
+- Each access point can be restricted to a specific VPC (no internet access)
+- Access points can have their own Block Public Access settings
+- The bucket policy can delegate access control to access points entirely
+
+**Exam trigger:** *"simplify access management for a shared S3 bucket with many users"* → S3 Access Points.
+
+### S3 VPC Endpoint (Gateway)
+
+By default, EC2 instances in a private subnet access S3 over the internet (via NAT Gateway). A **VPC Gateway Endpoint** creates a private route from your VPC to S3 — traffic never leaves the AWS network.
+
+```
+Without endpoint: EC2 (private subnet) → NAT Gateway → internet → S3 (costs money, slower)
+With endpoint:    EC2 (private subnet) → VPC Gateway Endpoint → S3 (free, private, faster)
+```
+
+**Why it matters:**
+- **Free** — no data processing charges (NAT Gateway charges per GB)
+- **Secure** — traffic stays on AWS's private network, never hits the internet
+- **Faster** — lower latency than going through NAT
+
+**Key details:**
+- Gateway Endpoints work for **S3 and DynamoDB only** — other services use Interface Endpoints (different thing, costs money)
+- Configured via route tables — you add the endpoint and update the route table for the private subnet
+- Can attach a policy to the endpoint to restrict which buckets are accessible
+
+**Exam triggers:**
+- *"access S3 from a private subnet without a NAT Gateway"* → VPC Gateway Endpoint
+- *"reduce data transfer costs to S3"* → VPC Gateway Endpoint (free vs NAT Gateway charges)
+- *"keep S3 traffic off the public internet"* → VPC Gateway Endpoint
+
+### S3 Access Logs
+
+Log every request made to a bucket — who accessed what, when, from which IP, and the response status. Stored as log files in a **separate** S3 bucket.
+
+**Use case:** security auditing, compliance, access pattern analysis, troubleshooting failed requests.
+
+**Key details:**
+- Logs are delivered on a best-effort basis (slight delay, not real-time)
+- **Never log to the same bucket** — this creates an infinite loop (logging the log writes generates more logs, which generates more logs...)
+- Log format includes: requester, bucket name, request time, action, response status, error code
+
+**Exam triggers:**
+- *"audit who accessed S3 objects"* → S3 Access Logs (or CloudTrail for API-level auditing)
+- *"S3 storage is growing unexpectedly and the bucket logs to itself"* → logging loop — change the log destination to a different bucket
+
+### S3 CORS
+
+CORS (Cross-Origin Resource Sharing) — a browser security mechanism. When a webpage on `app.example.com` tries to fetch data from `api.example.com` (a different origin), the browser blocks it by default. CORS headers tell the browser "it's OK, allow this."
+
+```
+Browser loads page from Bucket A (website.example.com)
+  → JavaScript fetches image from Bucket B (assets.example.com)
+  → Browser: "different origin, blocked" ❌
+
+Fix: enable CORS on Bucket B → browser allows the cross-origin request ✅
+```
+
+**Key details:**
+
+- CORS is configured on the **receiving** bucket (the one being requested), not the sender
+- It's a **browser** restriction — server-to-server calls (Lambda, EC2) don't care about CORS
+- You specify which origins are allowed, which HTTP methods, and which headers
+
+**Exam triggers:**
+- *"static website on S3 can't load assets from another S3 bucket"* → enable CORS on the assets bucket
+- *"browser console shows Access-Control-Allow-Origin error"* → CORS not configured
+
+### S3 Performance
+
+S3 automatically scales to **3,500 PUT/POST/DELETE** and **5,500 GET** requests per second **per prefix**. A prefix is the path before the filename — `bucket/folder1/sub/` is one prefix, `bucket/folder2/` is another. Spread reads across prefixes to multiply throughput.
+
+**Multipart upload:**
+- **Required** for files over 5 GB, **recommended** for files over 100 MB
+- Splits a file into parts, uploads in parallel, S3 reassembles
+- Failed parts can be retried individually — don't restart the whole upload
+
+**S3 Transfer Acceleration:**
+- Uploads go to the nearest **CloudFront edge location** first, then AWS's private backbone to the bucket's region
+- Speeds up long-distance uploads (e.g. user in Australia uploading to `us-east-1`)
+- No benefit if the user is already close to the bucket's region
+
+```
+Without acceleration: Australia ──── public internet ────→ us-east-1 bucket (slow)
+With acceleration:    Australia → nearest edge location → AWS backbone → us-east-1 bucket (fast)
+```
+
+**Byte-Range Fetches:**
+
+Download specific byte ranges of a file instead of the whole object. The principle: don't download what you don't need, and parallelise what you do.
+
+Real-world examples:
+- **Video streaming** — skip to the middle of a 2 GB video? The player fetches just the byte range for the 30 seconds you're watching, not the entire file
+- **CSV processing** — 10 GB CSV on S3, you only need the first 100 rows? Fetch bytes 0–5000 instead of downloading 10 GB
+- **Resumable downloads** — 5 GB download fails at 3 GB? Resume from byte 3,000,000,000 instead of starting over
+- **Parallel downloads** — split a 10 GB file into 10 x 1 GB ranges, download all 10 in parallel, reassemble locally — 10x faster
+- **PDF preview** — fetch just the first few KB to render page 1 of a 500-page PDF
+
+**Exam triggers:**
+- *"improve upload speed for large files"* → Multipart upload
+- *"speed up uploads from users far from the bucket region"* → S3 Transfer Acceleration
+- *"maximise read throughput"* → spread reads across multiple prefixes
+- *"download parts of a large file in parallel"* → Byte-Range Fetches
+
+### S3 Select and S3 Object Lambda
+
+Two ways to avoid downloading entire objects — one filters, the other transforms.
+
+**S3 Select — filter rows/columns server-side:**
+
+Run SQL queries directly on S3 objects. Filtering happens on AWS's side, so you only download what you need.
+
+```
+Without S3 Select: App → download entire 10 GB CSV → filter locally → use 50 KB
+With S3 Select:    App → SQL to S3: "SELECT name, price WHERE price > 100" → receive 50 KB
+```
+
+Supports CSV, JSON, and Parquet files (optionally compressed). No setup required — it's built in.
+
+**S3 Object Lambda — transform data before it's returned:**
+
+A Lambda function sits between S3 and the requester, modifying the object on the fly. Same object in S3, different output per caller.
+
+Real-world examples:
+- **Redact PII** — marketing team gets names blanked out, analytics team gets full data
+- **Convert formats** — store XML, serve JSON
+- **Resize images on demand** — store the original, Lambda returns the requested size
+- **Watermark documents** — internal users get the original, external partners get a watermarked version
+
+**S3 Select vs S3 Object Lambda:**
+
+| | S3 Select | S3 Object Lambda |
+| - | --------- | ---------------- |
+| Purpose | Filter rows/columns | Transform the data |
+| Output | Subset of original data | Modified version of data |
+| Requires | Nothing — built-in SQL | Lambda function you write |
+| Use case | "Give me only rows where status=500" | "Redact SSNs before returning" |
+
+**S3 Select vs Athena:** S3 Select is simple queries on a single object. Athena is a full SQL engine across multiple objects with joins, aggregations, and partitions — more powerful but requires a table definition.
+
+**Exam triggers:**
+- *"reduce the amount of data retrieved from S3"* → S3 Select
+- *"filter CSV data server-side before downloading"* → S3 Select
+- *"return different versions of the same S3 object to different users"* → S3 Object Lambda
+- *"redact PII from S3 objects before returning"* → S3 Object Lambda
+- *"query across many S3 files with SQL"* → Athena (not S3 Select)
+
+### S3 Replication
+
+Two types — same concept, different scope:
+
+| Type | Destination | Use case |
+| ---- | ----------- | -------- |
+| Cross-Region Replication (CRR) | Bucket in a different region | DR, compliance, lower latency in another region |
+| Same-Region Replication (SRR) | Bucket in the same region | Aggregate logs, replicate between prod/test accounts |
+
+**Requirements and behaviour:**
+
+- **Versioning must be enabled** on both source and destination buckets
+- Replication is **asynchronous**
+- Only **new objects** are replicated after enabling — existing objects are not replicated retroactively
+- Use **S3 Batch Replication** to replicate existing objects
+- **Delete markers are not replicated** by default (can be enabled) — prevents accidental cascading deletes across buckets
+- **No chaining** — if bucket A replicates to B, and B replicates to C, objects in A do not appear in C
+
+**Exam triggers:**
+- *"keep a copy of data in another region for DR"* → Cross-Region Replication
+- *"replicate logs to a central bucket in the same region"* → Same-Region Replication
+- *"existing objects weren't replicated"* → S3 Batch Replication
+- *"deleted object still exists in the replica bucket"* → delete markers aren't replicated by default
+
+**Do you actually need CRR?** CRR doubles your storage costs (full copy in another region) plus cross-region data transfer fees. S3 Standard already stores data across **3 AZs** within a region with 11 nines durability — your data is extremely safe without CRR. Only use CRR when compliance requires multi-region copies, you need low-latency access from another region, or you need to survive an entire region failure. For most workloads, S3 in one region with versioning is enough.
+
+**Should delete markers replicate?** Generally no — and that's the default for a reason. If delete markers replicate, someone accidentally deleting a file in the source also "deletes" it in the replica. Your backup is gone too. The whole point of replication for DR is that the replica is a safety net — it should survive mistakes in the source.
+
+| Delete marker replication | When |
+| ------------------------- | ---- |
+| Disabled (default) | Replica is for DR/backup — accidental deletes shouldn't cascade. Compliance requires retaining data even if deleted from source. |
+| Enabled | Both buckets serve live traffic and must stay in exact sync (active-active). |
