@@ -2634,6 +2634,18 @@ AWS's answer to: "how do I move petabytes of data to AWS when the internet is to
 
 **The maths that makes it click:** transferring 100 TB over a 1 Gbps connection takes ~12 days. Over 100 Mbps, it takes ~120 days. Snowball Edge does it in about a week (load + ship + ingest).
 
+**How it actually works — no modems, no internet:**
+
+The speed gain isn't about a faster connection — it's about **skipping the internet entirely**. You copy data onto the device over your local network (LAN), then physically ship the box.
+
+```
+Your data centre:  Servers → LAN (10-25 Gbps) → Snowball Edge  [fast local copy]
+Ship the box:      Snowball Edge → courier → AWS data centre    [1-2 days transit]
+AWS side:          Snowball Edge → S3                           [AWS internal, fast]
+```
+
+Your 1 Gbps internet becomes irrelevant. You're copying at LAN speed locally, then shipping a box. It's like asking "should I email 10,000 photos or put them on a hard drive and FedEx it?" At a certain data volume, FedEx wins.
+
 **Snowball Edge — two flavours:**
 
 | | Storage Optimised | Compute Optimised |
