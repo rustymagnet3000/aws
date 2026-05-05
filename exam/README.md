@@ -77,6 +77,13 @@
   - [S3 Performance](#s3-performance)
   - [S3 Select and S3 Object Lambda](#s3-select-and-s3-object-lambda)
   - [S3 Replication](#s3-replication)
+- [CloudFront and Global Accelerator](#cloudfront-and-global-accelerator)
+  - [CloudFront Overview](#cloudfront-overview)
+  - [CloudFront vs S3 Transfer Acceleration](#cloudfront-vs-s3-transfer-acceleration)
+  - [CloudFront Caching](#cloudfront-caching)
+  - [CloudFront Security](#cloudfront-security)
+  - [AWS Global Accelerator](#aws-global-accelerator)
+  - [CloudFront vs Global Accelerator](#cloudfront-vs-global-accelerator)
 
 <!-- /TOC -->
 
@@ -2583,3 +2590,148 @@ Two types — same concept, different scope:
 | ------------------------- | ---- |
 | Disabled (default) | Replica is for DR/backup — accidental deletes shouldn't cascade. Compliance requires retaining data even if deleted from source. |
 | Enabled | Both buckets serve live traffic and must stay in exact sync (active-active). |
+
+## CloudFront and Global Accelerator
+
+### CloudFront Overview
+
+CloudFront is AWS's CDN (Content Delivery Network). It caches content at **400+ edge locations** worldwide so users get data from a server near them instead of crossing the globe.
+
+```
+Without CloudFront: User in Tokyo → origin server in us-east-1 (200ms latency)
+With CloudFront:    User in Tokyo → edge location in Tokyo (10ms latency, cached)
+```
+
+**Key concepts:**
+
+- **Edge locations** — data centres worldwide where CloudFront caches content. Not the same as AWS regions/AZs.
+- **Origin** — where CloudFront fetches the original content from. Can be S3, ALB, EC2, or any HTTP endpoint.
+- **Distribution** — the CloudFront configuration that ties an origin to edge locations. You get a `d1234.cloudfront.net` domain.
+- **TTL (Time to Live)** — how long content stays cached at the edge before CloudFront fetches a fresh copy from the origin.
+
+**What CloudFront caches:**
+
+- Static content — images, CSS, JS, videos, fonts (the classic CDN use case)
+- Dynamic content — API responses, personalised pages (shorter TTL)
+- Streaming video — both on-demand and live
+
+**Origin types:**
+
+| Origin | Use case |
+| ------ | -------- |
+| S3 bucket | Static website, media files, software downloads |
+| ALB / EC2 | Dynamic content, APIs |
+| Custom HTTP origin | Any external web server |
+| MediaStore / MediaPackage | Video streaming |
+
+**Key benefits:**
+- **Lower latency** — content served from nearby edge, not the origin
+- **DDoS protection** — built-in AWS Shield Standard, can add Shield Advanced and WAF
+- **HTTPS** — free SSL/TLS certificate via ACM for custom domains
+- **Cost** — reduces load on origin (fewer requests), and CloudFront data transfer is cheaper than direct S3/EC2 data transfer
+
+### CloudFront vs S3 Transfer Acceleration
+
+Both use edge locations, but for different things:
+
+| | CloudFront | S3 Transfer Acceleration |
+| - | ---------- | ------------------------ |
+| Direction | Origin → users (downloads/reads) | Users → S3 (uploads/writes) |
+| Caching | Yes — content cached at edges | No — just faster network path |
+| Use case | Serve content to users fast | Upload large files to S3 fast |
+
+CloudFront is for **reading**, Transfer Acceleration is for **writing**.
+
+### CloudFront Caching
+
+**Cache key** — by default, CloudFront caches based on the URL path. Two requests to `/images/cat.jpg` get the same cached response.
+
+You can customise the cache key to include:
+- **Query strings** — `/api/search?q=dogs` and `/api/search?q=cats` are cached separately
+- **Headers** — cache different versions for different `Accept-Language` values
+- **Cookies** — cache per-user session data
+
+**Cache invalidation:**
+- Force CloudFront to evict cached content before the TTL expires
+- `/*` invalidates everything, `/images/*` invalidates a path
+- Costs money per invalidation request — better to use **versioned file names** (`app.v2.js`) instead of invalidating `app.js`
+
+**Cache behaviours:**
+- Route different URL patterns to different origins
+- `/api/*` → ALB (dynamic, short TTL), `/*` → S3 (static, long TTL)
+- Each behaviour has its own cache settings, HTTPS settings, and allowed HTTP methods
+
+### CloudFront Security
+
+**Origin Access Control (OAC):**
+- Restricts S3 bucket access so **only CloudFront** can read from it — users can't bypass CloudFront and hit S3 directly
+- Replaces the older Origin Access Identity (OAI)
+- The bucket policy only allows the CloudFront distribution's identity
+
+**Geo Restriction:**
+- **Allowlist** — only users in specific countries can access content
+- **Blocklist** — block users in specific countries
+- Use case: content licensing (e.g. streaming video only available in certain countries)
+
+**HTTPS:**
+- **Viewer Protocol Policy** — require HTTPS between the user and CloudFront
+- **Origin Protocol Policy** — require HTTPS between CloudFront and the origin
+- Certificates from ACM (free) for custom domains
+
+**AWS WAF integration:**
+- Attach a WAF Web ACL to a CloudFront distribution
+- Block SQL injection, XSS, rate limiting, IP blocklists
+- WAF rules are evaluated at the edge — bad traffic is blocked before reaching your origin
+
+**Signed URLs / Signed Cookies:**
+- Grant time-limited access to premium or private content
+- **Signed URL** — one URL per file (e.g. paid video download)
+- **Signed Cookie** — access to multiple files with one cookie (e.g. subscriber access to entire video library)
+
+**Exam triggers:**
+- *"restrict S3 access to CloudFront only"* → OAC
+- *"block users from specific countries"* → CloudFront Geo Restriction
+- *"protect against DDoS at the edge"* → CloudFront + Shield + WAF
+- *"time-limited access to a single private file"* → CloudFront Signed URL
+- *"time-limited access to many private files"* → CloudFront Signed Cookies
+
+### AWS Global Accelerator
+
+Global Accelerator uses **AWS's global network** to route traffic to your application faster — but it's **not a CDN** and does **not cache** content.
+
+**How it works:**
+- You get **2 static anycast IPs** that act as a fixed entry point to your app
+- Users hit the nearest edge location, then traffic travels over AWS's private backbone to your origin — not the public internet
+- If an origin fails, Global Accelerator automatically reroutes to a healthy one
+
+```
+Without GA: User → public internet (variable routing, congestion) → ALB in us-east-1
+With GA:    User → nearest edge → AWS private backbone → ALB in us-east-1 (faster, reliable)
+```
+
+**Key properties:**
+- **Static IPs** — 2 anycast IPs that never change. Good for firewall whitelisting.
+- **Health checks** — automatically failover to healthy endpoints across regions
+- **No caching** — every request goes to the origin. It's about the network path, not caching.
+- **Works with any TCP/UDP traffic** — not just HTTP (gaming, IoT, VoIP)
+
+### CloudFront vs Global Accelerator
+
+The exam loves this comparison:
+
+| | CloudFront | Global Accelerator |
+| - | ---------- | ------------------ |
+| What it does | Caches content at edges | Routes traffic over AWS backbone |
+| Caching | Yes | No |
+| Static IPs | No (DNS name only) | Yes (2 anycast IPs) |
+| Protocols | HTTP/HTTPS, WebSocket | Any TCP/UDP |
+| Best for | Static/dynamic web content, video | Non-HTTP (gaming, IoT), static IP requirement, instant regional failover |
+| DDoS protection | Shield Standard included | Shield Standard included |
+
+**Exam triggers:**
+- *"improve performance for a website with global users"* → CloudFront
+- *"need static IPs for a global application"* → Global Accelerator
+- *"non-HTTP protocol with global users (gaming, IoT)"* → Global Accelerator
+- *"instant failover between regions"* → Global Accelerator
+- *"cache content at edge locations"* → CloudFront
+- *"client whitelists an IP for a global service"* → Global Accelerator (static IPs)
