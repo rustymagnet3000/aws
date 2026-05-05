@@ -2242,6 +2242,33 @@ Configure these rules per bucket or per prefix (e.g. only apply to `logs/*`).
 - *"archive data, retrieval within 12 hours is acceptable"* → Glacier Flexible Retrieval
 - *"non-critical data, cheapest infrequent access"* → One Zone-IA (single AZ risk)
 
+### S3 Object Lock and Glacier Vault Lock
+
+WORM (Write Once Read Many) — prevent objects from being deleted or overwritten, even by root.
+
+**Glacier Vault Lock:**
+- Applies a lock policy to an entire Glacier vault
+- Once locked, the policy is **permanently immutable** — cannot be changed by anyone, including root
+- Use case: regulatory compliance (SEC 17a-4, HIPAA) where you must prove retention policies can't be shortened or data tampered with
+
+**S3 Object Lock:**
+- WORM at the S3 bucket level (any storage class, not just Glacier)
+- Can be set per-object or as a bucket default
+- Two modes:
+
+| Mode | Who can delete/overwrite? |
+| ---- | ------------------------- |
+| Compliance | No one — not even root. Retention period cannot be shortened. |
+| Governance | Admins with special permissions (`s3:BypassGovernanceRetention`) can override. |
+
+Use **Compliance mode** when regulation demands it. Use **Governance mode** when you want protection with an escape hatch for authorised admins.
+
+**Exam triggers:**
+- *"ensure data cannot be deleted for 7 years, even by root"* → S3 Object Lock (Compliance mode) or Glacier Vault Lock
+- *"WORM storage"* → S3 Object Lock or Glacier Vault Lock
+- *"SEC 17a-4 compliance"* → Glacier Vault Lock
+- *"prevent deletion but allow admins to override in emergencies"* → S3 Object Lock (Governance mode)
+
 ### S3 Event Notifications
 
 Trigger actions automatically when something happens in a bucket — object created, deleted, restored from Glacier, etc.
