@@ -2839,6 +2839,25 @@ Fully managed third-party file systems on AWS. Where EFS is managed NFS (Linux),
 - *"shared storage for Linux workloads"* → EFS (not FSx, unless extreme performance is needed)
 - *"multi-protocol file share (NFS + SMB)"* → FSx for NetApp ONTAP
 
+**FSx for Lustre — Scratch vs Persistent:**
+
+| | Scratch | Persistent |
+| - | ------- | ---------- |
+| Data replicated? | No — data lost if server fails | Yes — replicated within same AZ |
+| Performance | Higher burst throughput | Consistent throughput |
+| Use case | Short-term processing (crunch data, throw away) | Long-term storage (keep results) |
+| Cost | Cheaper | More expensive |
+
+**Exam trigger:** *"temporary high-performance processing, data doesn't need to survive"* → Lustre Scratch. *"high-performance storage that must persist"* → Lustre Persistent.
+
+**FSx for Windows — availability:**
+
+| | Single-AZ | Multi-AZ |
+| - | --------- | -------- |
+| Durability | Replicated within one AZ | Active/standby across two AZs |
+| Failover | Manual | Automatic |
+| Use case | Dev/test, cost savings | Production, high availability |
+
 ## CloudFront and Global Accelerator
 
 ### CloudFront Overview
