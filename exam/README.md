@@ -2661,6 +2661,10 @@ All data is encrypted with KMS keys — if the device is lost in transit, nobody
 - *"move more than 10 PB"* → Snowmobile
 - *"data transfer would take weeks over the network"* → Snow Family
 
+Exam scenario — "move hundreds of TB to S3 and process data while in transit":
+
+You have hundreds of TB, a 1 Gbps connection (would take ~12 days), and need to process data during the move. Answer: **Snowball Edge Compute Optimised**. It has 104 vCPUs and can run EC2/Lambda locally — process data on the device while it ships. DataSync and Transfer Acceleration are still bottlenecked by your internet speed. Storage Optimised has more space but less compute — the "processing while in transit" is the giveaway for Compute Optimised.
+
 ## AWS DataSync
 
 Managed data transfer service for moving large amounts of data **over the network** — between on-premises storage and AWS, or between AWS services.
