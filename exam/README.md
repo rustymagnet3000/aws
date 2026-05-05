@@ -2391,6 +2391,49 @@ Real-world examples:
 - *"maximise read throughput"* → spread reads across multiple prefixes
 - *"download parts of a large file in parallel"* → Byte-Range Fetches
 
+### S3 Select and S3 Object Lambda
+
+Two ways to avoid downloading entire objects — one filters, the other transforms.
+
+**S3 Select — filter rows/columns server-side:**
+
+Run SQL queries directly on S3 objects. Filtering happens on AWS's side, so you only download what you need.
+
+```
+Without S3 Select: App → download entire 10 GB CSV → filter locally → use 50 KB
+With S3 Select:    App → SQL to S3: "SELECT name, price WHERE price > 100" → receive 50 KB
+```
+
+Supports CSV, JSON, and Parquet files (optionally compressed). No setup required — it's built in.
+
+**S3 Object Lambda — transform data before it's returned:**
+
+A Lambda function sits between S3 and the requester, modifying the object on the fly. Same object in S3, different output per caller.
+
+Real-world examples:
+- **Redact PII** — marketing team gets names blanked out, analytics team gets full data
+- **Convert formats** — store XML, serve JSON
+- **Resize images on demand** — store the original, Lambda returns the requested size
+- **Watermark documents** — internal users get the original, external partners get a watermarked version
+
+**S3 Select vs S3 Object Lambda:**
+
+| | S3 Select | S3 Object Lambda |
+| - | --------- | ---------------- |
+| Purpose | Filter rows/columns | Transform the data |
+| Output | Subset of original data | Modified version of data |
+| Requires | Nothing — built-in SQL | Lambda function you write |
+| Use case | "Give me only rows where status=500" | "Redact SSNs before returning" |
+
+**S3 Select vs Athena:** S3 Select is simple queries on a single object. Athena is a full SQL engine across multiple objects with joins, aggregations, and partitions — more powerful but requires a table definition.
+
+**Exam triggers:**
+- *"reduce the amount of data retrieved from S3"* → S3 Select
+- *"filter CSV data server-side before downloading"* → S3 Select
+- *"return different versions of the same S3 object to different users"* → S3 Object Lambda
+- *"redact PII from S3 objects before returning"* → S3 Object Lambda
+- *"query across many S3 files with SQL"* → Athena (not S3 Select)
+
 ### S3 Replication
 
 Two types — same concept, different scope:
