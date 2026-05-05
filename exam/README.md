@@ -79,6 +79,11 @@
   - [S3 Replication](#s3-replication)
   - [S3 Storage Lens](#s3-storage-lens)
 - [AWS Snow Family](#aws-snow-family)
+- [AWS DataSync](#aws-datasync)
+- [AWS Transfer Family](#aws-transfer-family)
+- [Hybrid Cloud Storage](#hybrid-cloud-storage)
+  - [AWS Storage Gateway](#aws-storage-gateway)
+  - [Amazon FSx](#amazon-fsx)
 - [CloudFront and Global Accelerator](#cloudfront-and-global-accelerator)
   - [CloudFront Overview](#cloudfront-overview)
   - [CloudFront vs S3 Transfer Acceleration](#cloudfront-vs-s3-transfer-acceleration)
@@ -2630,6 +2635,18 @@ AWS's answer to: "how do I move petabytes of data to AWS when the internet is to
 
 **The maths that makes it click:** transferring 100 TB over a 1 Gbps connection takes ~12 days. Over 100 Mbps, it takes ~120 days. Snowball Edge does it in about a week (load + ship + ingest).
 
+**How it actually works — no modems, no internet:**
+
+The speed gain isn't about a faster connection — it's about **skipping the internet entirely**. You copy data onto the device over your local network (LAN), then physically ship the box.
+
+```
+Your data centre:  Servers → LAN (10-25 Gbps) → Snowball Edge  [fast local copy]
+Ship the box:      Snowball Edge → courier → AWS data centre    [1-2 days transit]
+AWS side:          Snowball Edge → S3                           [AWS internal, fast]
+```
+
+Your 1 Gbps internet becomes irrelevant. You're copying at LAN speed locally, then shipping a box. It's like asking "should I email 10,000 photos or put them on a hard drive and FedEx it?" At a certain data volume, FedEx wins.
+
 **Snowball Edge — two flavours:**
 
 | | Storage Optimised | Compute Optimised |
@@ -2656,6 +2673,324 @@ All data is encrypted with KMS keys — if the device is lost in transit, nobody
 - *"run compute at a remote location with no internet"* → Snowball Edge Compute Optimised
 - *"move more than 10 PB"* → Snowmobile
 - *"data transfer would take weeks over the network"* → Snow Family
+
+Exam scenario — "move hundreds of TB to S3 and process data while in transit":
+
+You have hundreds of TB, a 1 Gbps connection (would take ~12 days), and need to process data during the move. Answer: **Snowball Edge Compute Optimised**. It has 104 vCPUs and can run EC2/Lambda locally — process data on the device while it ships. DataSync and Transfer Acceleration are still bottlenecked by your internet speed. Storage Optimised has more space but less compute — the "processing while in transit" is the giveaway for Compute Optimised.
+
+## AWS DataSync
+
+Managed data transfer service for moving large amounts of data **over the network** — between on-premises storage and AWS, or between AWS services.
+
+**DataSync vs Snow Family:**
+
+| | DataSync | Snow Family |
+| - | -------- | ----------- |
+| Transfer method | Network (internet or Direct Connect) | Physical device shipped |
+| Transfer type | One-time or scheduled/recurring | One-time bulk migration |
+| Speed | Up to 10 Gbps per agent | Limited by shipping time |
+| Use case | Ongoing sync, incremental transfers | Petabyte-scale initial migration, no/limited internet |
+
+**What DataSync moves:**
+
+| From | To |
+| ---- | -- |
+| On-premises NFS/SMB file servers | S3, EFS, FSx |
+| S3 | S3, EFS, FSx (cross-region, cross-account, or between services) |
+| EFS | EFS, S3 |
+| FSx | FSx, S3 |
+
+**How it works:**
+
+1. Install a **DataSync agent** on-premises (a VM that connects to your storage)
+2. Configure a **task** — source location, destination location, schedule
+3. DataSync transfers data, preserving metadata (permissions, timestamps)
+4. Only changed data is transferred on subsequent runs (incremental)
+
+```
+On-prem NFS server → DataSync agent → internet/Direct Connect → S3/EFS/FSx
+```
+
+For AWS-to-AWS transfers (e.g. S3 to S3 cross-region), no agent is needed.
+
+**Key features:**
+
+- **Automatic encryption** in transit and at rest
+- **Bandwidth throttling** — limit how much network capacity DataSync uses so it doesn't saturate your connection
+- **Scheduling** — run daily, weekly, or on a cron schedule
+- **Incremental transfers** — only changed files are synced after the initial transfer
+- **Data integrity validation** — verifies data at source and destination match
+
+**Real-world examples:**
+
+- Migrate an on-prem NFS file server to EFS — DataSync handles the initial copy and keeps them in sync until cutover
+- Replicate S3 data to another region for DR (alternative to S3 CRR when you need scheduling or filtering)
+- Move on-prem backups to S3 Glacier nightly
+
+**Exam triggers:**
+- *"move data from on-premises NFS/SMB to AWS"* → DataSync
+- *"scheduled/recurring data transfer to S3 or EFS"* → DataSync
+- *"migrate a file server to AWS with metadata preserved"* → DataSync
+- *"transfer data between AWS storage services"* → DataSync
+- *"move data from S3 to EFS"* → DataSync (not S3 Replication — that's S3 to S3 only. No agent needed for AWS-to-AWS.)
+- *"one-time 50 PB migration with no internet"* → Snow Family (not DataSync)
+
+Exam scenario — "migrate 30 TB from on-prem NFS to S3":
+
+The answer is **DataSync**, not Snowball Edge. 30 TB over a 1 Gbps connection takes ~3 days — not enough to justify a physical device. DataSync also has a native NFS agent that preserves metadata (permissions, timestamps). Snowball is for when transfer would take weeks to months.
+
+The mental threshold for DataSync vs Snow Family:
+
+| Data volume | Internet | Answer |
+| ----------- | -------- | ------ |
+| Under ~100 TB | Decent connection | DataSync |
+| Hundreds of TB+ | Any | Snow Family |
+| Any amount | Poor/no internet | Snow Family |
+
+If the question mentions a modest data size (10–50 TB) without emphasising bad internet, the answer is DataSync. Snow Family questions say "petabytes" or "limited connectivity."
+
+### AWS Transfer Family
+
+Managed SFTP, FTPS, and FTP service for transferring files into and out of **S3 or EFS**. Your existing file transfer workflows keep working — just point them at AWS instead of your on-prem FTP server.
+
+**The problem it solves:** third parties (vendors, partners, customers) upload files to you via SFTP. You don't want to manage an SFTP server. Transfer Family gives you a managed endpoint that drops files directly into S3 or EFS.
+
+```
+Partner → SFTP → AWS Transfer Family → S3 bucket
+                                      → EFS file system
+```
+
+**Key details:**
+- Supports **SFTP** (SSH-based), **FTPS** (TLS-based), and **FTP** (unencrypted — use only in VPC)
+- Authenticate users via **service-managed identities**, **Active Directory**, or **custom Lambda authoriser**
+- You get a DNS endpoint (or bring your own domain with Route 53)
+- Pay per protocol endpoint per hour + data transferred
+
+**Exam triggers:**
+- *"migrate an existing SFTP server to AWS"* → Transfer Family
+- *"partners upload files via SFTP into S3"* → Transfer Family
+- *"managed FTP endpoint"* → Transfer Family
+
+**Transfer Family vs DataSync:** Transfer Family is for **external parties pushing files to you** using standard FTP/SFTP protocols. DataSync is for **you moving data** between on-prem and AWS or between AWS services. Different use cases.
+
+## Hybrid Cloud Storage
+
+### AWS Storage Options — Complete Reference
+
+Every storage service in one table:
+
+| Service | Type | Protocol | Shared? | Persistence | Use case |
+| ------- | ---- | -------- | ------- | ----------- | -------- |
+| EBS | Block | Attached to EC2 | No (1 instance, except Multi-Attach io2) | Survives stop/start | OS volumes, databases |
+| Instance Store | Block | Physically attached | No (1 instance) | Lost on stop/termination | Temp scratch space, caches |
+| EFS | File (NFS) | NFS | Yes (Linux, multi-AZ) | Persistent | Shared Linux storage, web farms |
+| FSx Windows | File (SMB) | SMB | Yes (Windows, AD) | Persistent | Windows file shares |
+| FSx Lustre | File (POSIX) | POSIX | Yes (Linux) | Persistent (or scratch) | HPC, ML training, video processing |
+| S3 | Object | HTTP API | Yes (any) | Persistent (11 nines) | Anything — files, backups, data lake, static sites |
+| S3 Glacier | Object (archive) | HTTP API | Yes (any) | Persistent | Long-term archive, compliance |
+| ElastiCache | In-memory | Redis/Memcached protocol | Yes | Redis: optional. Memcached: no | Caching, session store |
+
+**Data transfer services:**
+
+| Service | Method | Use case |
+| ------- | ------ | -------- |
+| Snow Family | Physical device | One-time massive migration, no internet |
+| DataSync | Network (agent) | Scheduled/recurring transfers, file server migration |
+| Transfer Acceleration | Network (edge) | Speed up S3 uploads from distant users |
+| Storage Gateway | On-prem VM | Ongoing hybrid access (NFS/SMB/iSCSI → S3) |
+
+**Decision tree:**
+
+```
+Need block storage for EC2?
+├── Persistent → EBS
+└── Temporary, max speed → Instance Store
+
+Need shared file storage?
+├── Linux → EFS
+├── Windows / Active Directory → FSx for Windows
+├── HPC / ML / extreme throughput → FSx for Lustre
+└── Multi-protocol (NFS + SMB) → FSx for NetApp ONTAP
+
+Need object storage?
+├── Frequently accessed → S3 Standard
+├── Archive → S3 Glacier
+└── Unknown pattern → S3 Intelligent-Tiering
+
+Need caching?
+├── Sessions, data structures, replication → ElastiCache Redis
+└── Simple key-value, disposable → ElastiCache Memcached
+
+Need to move data to AWS?
+├── Petabytes, no internet → Snow Family
+├── Over the network, scheduled → DataSync
+└── On-prem apps need ongoing AWS storage access → Storage Gateway
+```
+
+When your organisation has both on-premises infrastructure and AWS, you need to bridge the two. Different services handle different patterns:
+
+| Service | What it does | Pattern |
+| ------- | ------------ | ------- |
+| Storage Gateway | On-prem apps access AWS storage using standard protocols (NFS, SMB, iSCSI) | Ongoing access — on-prem apps talk to AWS storage as if it's local |
+| DataSync | Bulk/scheduled data transfer | Migration or recurring sync |
+| Snow Family | Physical device for massive migrations | One-time, no/limited internet |
+| Direct Connect | Dedicated private network link to AWS | Network layer — faster, more reliable than internet |
+
+### AWS Storage Gateway
+
+A VM you run on-premises that gives your local applications access to AWS cloud storage using familiar protocols. Your apps don't know they're talking to AWS — it looks like a local file share, disk, or tape library.
+
+**Three modes:**
+
+**File Gateway (NFS/SMB):**
+
+```
+On-prem app → NFS/SMB mount → File Gateway VM → S3
+```
+
+- Files are stored as objects in S3, but your app sees a normal file share
+- Frequently accessed files are cached locally on the gateway for low-latency access
+- Use case: replace on-prem NAS with S3-backed storage, or extend storage to the cloud
+
+**Volume Gateway (iSCSI):**
+
+```
+On-prem app → iSCSI block storage → Volume Gateway VM → S3 (with EBS snapshots)
+```
+
+Two sub-modes:
+
+| | Cached Volumes | Stored Volumes |
+| - | -------------- | -------------- |
+| Primary data lives in | S3 (hot data cached locally) | On-premises (async backup to S3) |
+| Local storage needed | Small (cache only) | Full dataset |
+| Use case | Extend storage to cloud, most data in S3 | Keep all data local, use S3 for backups |
+
+- Both create **EBS snapshots** in S3 that can be restored to EBS volumes in AWS
+- Use case: block storage for databases or apps that need iSCSI
+
+**Tape Gateway (Virtual Tape Library):**
+
+```
+Backup software (Veeam, Veritas, etc.) → Tape Gateway → S3 Glacier
+```
+
+- Presents itself as a physical tape library to your existing backup software
+- Virtual tapes are stored in S3 and archived to Glacier
+- Use case: replace physical tape infrastructure without changing backup workflows
+- The exam loves this one — any mention of "tape backups" or "backup software" → Tape Gateway
+
+**Storage Gateway vs DataSync:**
+
+| | Storage Gateway | DataSync |
+| - | --------------- | -------- |
+| Purpose | Ongoing access — on-prem apps use AWS storage day-to-day | Data transfer — move or sync data |
+| Protocol | NFS, SMB, iSCSI | Agent-based transfer |
+| Caching | Yes — frequently accessed data cached locally | No caching |
+| Use case | "Extend our on-prem storage to the cloud" | "Migrate our file server to AWS" |
+
+**Exam triggers:**
+- *"on-prem applications need to access S3 via NFS"* → File Gateway
+- *"replace physical tape backups with cloud storage"* → Tape Gateway
+- *"on-prem block storage backed by S3"* → Volume Gateway
+- *"extend on-prem storage to the cloud without changing applications"* → Storage Gateway
+- *"backup software needs a tape library target"* → Tape Gateway
+- *"migrate data to AWS"* → DataSync (not Storage Gateway — Gateway is for ongoing access)
+
+### Amazon FSx
+
+Fully managed third-party file systems on AWS. Where EFS is managed NFS (Linux), FSx covers everything else.
+
+**Four flavours (two matter most for the exam):**
+
+**FSx for Windows File Server:**
+- Fully managed **SMB** file share with **NTFS** and **Active Directory** integration
+- Windows apps see a native Windows file share — no code changes
+- Supports DFS (Distributed File System) for namespaces and replication
+- Use case: Windows workloads migrated to AWS that need a shared drive (SharePoint, .NET apps, SQL Server backups, home directories)
+
+**FSx for Lustre:**
+- High-performance **parallel file system** — hundreds of GB/s throughput, millions of IOPS
+- Integrates natively with S3 — can read/write S3 objects as files and write results back to S3
+- Use case: HPC, ML training, video rendering, genomics, financial modelling — any workload that needs massive throughput
+
+**FSx for NetApp ONTAP:**
+- Multi-protocol (NFS, SMB, iSCSI) — works with Linux, Windows, and macOS simultaneously
+- Use case: hybrid environments migrating NetApp workloads to AWS
+
+**FSx for OpenZFS:**
+- High-performance NFS — up to 1 million IOPS
+- Use case: Linux workloads migrating from on-prem ZFS storage
+
+**Quick reference:**
+
+| FSx type | Protocol | OS | Use case |
+| -------- | -------- | -- | -------- |
+| Windows File Server | SMB | Windows | Windows file shares, AD integration |
+| Lustre | POSIX | Linux | HPC, ML, video processing — extreme throughput |
+| NetApp ONTAP | NFS, SMB, iSCSI | All | Hybrid, multi-protocol |
+| OpenZFS | NFS | Linux | ZFS migration, high-performance Linux NFS |
+
+**FSx vs EFS:**
+
+| | EFS | FSx for Windows | FSx for Lustre |
+| - | --- | --------------- | -------------- |
+| Protocol | NFS | SMB | POSIX |
+| OS | Linux only | Windows (and Linux via SMB) | Linux |
+| Use case | Shared Linux storage | Windows file shares | HPC, ML, extreme throughput |
+| S3 integration | No | No | Yes — reads/writes S3 objects natively |
+
+**Exam triggers:**
+- *"Windows file share with Active Directory"* → FSx for Windows File Server
+- *"high-performance computing or ML training needs fast shared storage"* → FSx for Lustre
+- *"process data in S3 with a high-throughput file system"* → FSx for Lustre
+- *"shared storage for Linux workloads"* → EFS (not FSx, unless extreme performance is needed)
+- *"multi-protocol file share (NFS + SMB)"* → FSx for NetApp ONTAP
+
+**What POSIX means:**
+
+POSIX (Portable Operating System Interface) is a standard for how file systems behave on Unix/Linux — `open()`, `read()`, `write()`, file paths like `/data/results.csv`, permissions like `chmod 755`. Normal Linux filesystem behaviour.
+
+When an exam question says "POSIX compliant" it means the app expects a real filesystem, not an API. This rules out S3 (object storage, accessed via HTTP API — you can't `cd` into S3). EFS and FSx for Lustre are POSIX — they mount as a regular filesystem and apps don't know the difference from a local disk.
+
+**"POSIX compliant" in a question = not S3.**
+
+**Why Lustre for HPC — parallel file system:**
+
+Lustre stripes data across multiple storage servers simultaneously. When an HPC job reads a file, it pulls from many servers at once — that's how it hits millions of IOPS. EFS is shared but reads from a single path.
+
+```
+EFS:    App → one NFS path → storage
+Lustre: App → many parallel paths → many storage servers → millions of IOPS
+```
+
+Exam keyword map:
+
+| Keywords in question | Answer |
+| -------------------- | ------ |
+| POSIX + HPC + millions of IOPS | FSx for Lustre |
+| POSIX + shared Linux storage | EFS |
+| SMB + Windows + Active Directory | FSx for Windows |
+| Block storage for one instance | EBS |
+
+**FSx for Lustre — Scratch vs Persistent:**
+
+| | Scratch | Persistent |
+| - | ------- | ---------- |
+| Data replicated? | No — data lost if server fails | Yes — replicated within same AZ |
+| Performance | Higher burst throughput | Consistent throughput |
+| Use case | Short-term processing (crunch data, throw away) | Long-term storage (keep results) |
+| Cost | Cheaper | More expensive |
+
+**Exam trigger:** *"temporary high-performance processing, data doesn't need to survive"* → Lustre Scratch. *"high-performance storage that must persist"* → Lustre Persistent.
+
+**FSx for Windows — availability:**
+
+| | Single-AZ | Multi-AZ |
+| - | --------- | -------- |
+| Durability | Replicated within one AZ | Active/standby across two AZs |
+| Failover | Manual | Automatic |
+| Use case | Dev/test, cost savings | Production, high availability |
 
 ## CloudFront and Global Accelerator
 
