@@ -77,6 +77,8 @@
   - [S3 Performance](#s3-performance)
   - [S3 Select and S3 Object Lambda](#s3-select-and-s3-object-lambda)
   - [S3 Replication](#s3-replication)
+  - [S3 Storage Lens](#s3-storage-lens)
+- [AWS Snow Family](#aws-snow-family)
 - [CloudFront and Global Accelerator](#cloudfront-and-global-accelerator)
   - [CloudFront Overview](#cloudfront-overview)
   - [CloudFront vs S3 Transfer Acceleration](#cloudfront-vs-s3-transfer-acceleration)
@@ -2591,6 +2593,69 @@ Two types — same concept, different scope:
 | ------------------------- | ---- |
 | Disabled (default) | Replica is for DR/backup — accidental deletes shouldn't cascade. Compliance requires retaining data even if deleted from source. |
 | Enabled | Both buckets serve live traffic and must stay in exact sync (active-active). |
+
+### S3 Storage Lens
+
+A dashboard that gives you **visibility across all your S3 buckets** — usage metrics, cost optimization recommendations, and activity trends. Think of it as "CloudWatch for S3 storage."
+
+**What it shows:**
+- Total storage across all buckets, broken down by storage class
+- Which buckets are growing fastest
+- How many objects lack encryption
+- Which buckets don't have versioning or lifecycle rules
+- Cost optimization recommendations (e.g. "move 500 GB of unaccessed data to Glacier")
+
+**Scope:** can aggregate across an entire AWS Organization, a single account, or specific buckets.
+
+**Two tiers:**
+
+| Tier | Metrics | Cost |
+| ---- | ------- | ---- |
+| Free | 28 usage metrics, 14-day data retention | Free |
+| Advanced | 35+ metrics including activity metrics (requests, bytes downloaded), CloudWatch publishing, prefix-level aggregation | Paid |
+
+**Exam trigger:** *"get visibility into S3 usage and cost optimization across multiple accounts"* → S3 Storage Lens.
+
+## AWS Snow Family
+
+AWS's answer to: "how do I move petabytes of data to AWS when the internet is too slow?" AWS ships you a physical device, you load your data onto it, ship it back.
+
+**Three devices:**
+
+| Device | Storage | Form factor | Use case |
+| ------ | ------- | ----------- | -------- |
+| Snowcone | 8–14 TB | Fits in a backpack | Edge computing, small transfers, remote locations |
+| Snowball Edge | 80 TB (Storage) / 42 TB (Compute) | Suitcase-sized | Data migration, edge computing with Lambda/EC2 |
+| Snowmobile | 100 PB | A literal shipping container on a truck | Massive data centre migrations (deprecated — no new orders, but may still appear on exam) |
+
+**The maths that makes it click:** transferring 100 TB over a 1 Gbps connection takes ~12 days. Over 100 Mbps, it takes ~120 days. Snowball Edge does it in about a week (load + ship + ingest).
+
+**Snowball Edge — two flavours:**
+
+| | Storage Optimised | Compute Optimised |
+| - | ----------------- | ----------------- |
+| Storage | 80 TB | 42 TB |
+| Compute | 40 vCPUs | 104 vCPUs, optional GPU |
+| Use case | Bulk data transfer | Edge ML inference, video processing |
+
+Both can run EC2 instances and Lambda functions locally — useful for remote locations with no internet (oil rigs, ships, disaster zones).
+
+**Data migration workflow:**
+
+1. Request a device from the AWS console
+2. AWS ships it to you
+3. Load your data onto the device (encrypted automatically)
+4. Ship it back to AWS
+5. AWS uploads the data into your S3 bucket
+
+All data is encrypted with KMS keys — if the device is lost in transit, nobody can read it.
+
+**Exam triggers:**
+- *"migrate petabytes of data to AWS"* → Snowball Edge or Snowmobile
+- *"transfer data from a location with limited/no internet"* → Snowcone or Snowball Edge
+- *"run compute at a remote location with no internet"* → Snowball Edge Compute Optimised
+- *"move more than 10 PB"* → Snowmobile
+- *"data transfer would take weeks over the network"* → Snow Family
 
 ## CloudFront and Global Accelerator
 
