@@ -2695,9 +2695,9 @@ Managed data transfer service for moving large amounts of data **over the networ
 | From | To |
 | ---- | -- |
 | On-premises NFS/SMB file servers | S3, EFS, FSx |
-| S3 | S3 (cross-region or cross-account) |
-| EFS | EFS |
-| FSx | FSx |
+| S3 | S3, EFS, FSx (cross-region, cross-account, or between services) |
+| EFS | EFS, S3 |
+| FSx | FSx, S3 |
 
 **How it works:**
 
@@ -2731,6 +2731,7 @@ For AWS-to-AWS transfers (e.g. S3 to S3 cross-region), no agent is needed.
 - *"scheduled/recurring data transfer to S3 or EFS"* → DataSync
 - *"migrate a file server to AWS with metadata preserved"* → DataSync
 - *"transfer data between AWS storage services"* → DataSync
+- *"move data from S3 to EFS"* → DataSync (not S3 Replication — that's S3 to S3 only. No agent needed for AWS-to-AWS.)
 - *"one-time 50 PB migration with no internet"* → Snow Family (not DataSync)
 
 Exam scenario — "migrate 30 TB from on-prem NFS to S3":
