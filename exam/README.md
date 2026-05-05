@@ -3262,7 +3262,15 @@ Messages that fail processing repeatedly (e.g. 5 times) are moved to a separate 
 | Duplicates | Possible | Exactly-once processing |
 | Queue name | Any | Must end in `.fifo` |
 
-Use FIFO when order matters (financial transactions, command sequences). Use Standard for everything else.
+**Why not always use FIFO?** Throughput. Standard is unlimited. FIFO caps at 300 msg/s (3,000 with batching). For millions of messages per second (log ingestion, click tracking, IoT), FIFO can't keep up.
+
+| Use Standard | Use FIFO |
+| ------------ | -------- |
+| Email sending queue — order doesn't matter | Financial transactions — debit before credit |
+| Image thumbnail generation — any order, same result | Command sequences — "create user" before "assign role" |
+| Log processing — timestamps tell the order | Inventory updates — stock count depends on order |
+
+Standard is the default when you need speed and can handle duplicates/reordering. FIFO is the safe choice when order or exactly-once matters.
 
 **SQS + ASG — scaling consumers based on queue depth:**
 
