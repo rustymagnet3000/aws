@@ -3251,7 +3251,29 @@ If processing takes longer than the visibility timeout, another consumer picks u
 
 **Dead Letter Queue (DLQ):**
 
-Messages that fail processing repeatedly (e.g. 5 times) are moved to a separate DLQ instead of retrying forever. Inspect the DLQ to debug why messages are failing.
+Messages that fail processing repeatedly are moved to a separate DLQ instead of retrying forever. You configure a **max receive count** (e.g. 3 attempts) — after that many failures, the message is moved to the DLQ.
+
+**DLQ is for poison messages, not outages:**
+
+If a consumer goes down for 10 minutes, messages just **wait in the main queue** — that's normal SQS behaviour. When the consumer restarts, it drains them. No DLQ involved.
+
+The DLQ catches messages the consumer *tries* to process but *fails every time*:
+
+```
+Normal outage:   Order #123 → SQS → consumer down → message waits → consumer restarts → processes ✅
+Poison message:  Order #456 → SQS → consumer tries → crashes → retries → crashes → after 3 fails → DLQ
+```
+
+Food delivery DLQ examples — messages that fail every attempt:
+- Order references a restaurant ID that doesn't exist in the database
+- Message has malformed JSON the consumer can't parse
+- Order requires an expired payment method → unhandled exception
+
+The DLQ isolates these broken messages so they don't block the thousands of healthy messages behind them.
+
+**DLQ redrive:** once you fix the bug, you can push messages back from the DLQ to the original queue for reprocessing — no data loss.
+
+**DLQ works with SNS too** — if SNS can't deliver to a subscriber, failed messages go to a configured DLQ.
 
 **SQS FIFO:**
 
