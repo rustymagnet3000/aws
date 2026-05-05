@@ -2733,6 +2733,20 @@ For AWS-to-AWS transfers (e.g. S3 to S3 cross-region), no agent is needed.
 - *"transfer data between AWS storage services"* → DataSync
 - *"one-time 50 PB migration with no internet"* → Snow Family (not DataSync)
 
+Exam scenario — "migrate 30 TB from on-prem NFS to S3":
+
+The answer is **DataSync**, not Snowball Edge. 30 TB over a 1 Gbps connection takes ~3 days — not enough to justify a physical device. DataSync also has a native NFS agent that preserves metadata (permissions, timestamps). Snowball is for when transfer would take weeks to months.
+
+The mental threshold for DataSync vs Snow Family:
+
+| Data volume | Internet | Answer |
+| ----------- | -------- | ------ |
+| Under ~100 TB | Decent connection | DataSync |
+| Hundreds of TB+ | Any | Snow Family |
+| Any amount | Poor/no internet | Snow Family |
+
+If the question mentions a modest data size (10–50 TB) without emphasising bad internet, the answer is DataSync. Snow Family questions say "petabytes" or "limited connectivity."
+
 ## Hybrid Cloud Storage
 
 ### AWS Storage Options — Complete Reference
