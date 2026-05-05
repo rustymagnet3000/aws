@@ -66,10 +66,16 @@
   - [S3 Overview](#s3-overview)
   - [S3 Versioning](#s3-versioning)
   - [S3 Storage Classes](#s3-storage-classes)
+  - [S3 Object Lock and Glacier Vault Lock](#s3-object-lock-and-glacier-vault-lock)
   - [S3 Event Notifications](#s3-event-notifications)
   - [S3 Requester Pays](#s3-requester-pays)
   - [S3 Security](#s3-security)
+  - [S3 Access Points](#s3-access-points)
+  - [S3 VPC Endpoint (Gateway)](#s3-vpc-endpoint-gateway)
+  - [S3 Access Logs](#s3-access-logs)
+  - [S3 CORS](#s3-cors)
   - [S3 Performance](#s3-performance)
+  - [S3 Select and S3 Object Lambda](#s3-select-and-s3-object-lambda)
   - [S3 Replication](#s3-replication)
 
 <!-- /TOC -->
