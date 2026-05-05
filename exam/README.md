@@ -2382,6 +2382,68 @@ The user's IAM policy (or a group/SCP policy) has an explicit Deny. The bucket p
 - *"audit who accessed which encryption key"* → SSE-KMS (CloudTrail logs key usage)
 - *"compliance requires customer-managed encryption keys"* → SSE-KMS or SSE-C
 
+### S3 Access Points
+
+When a single bucket is shared by many teams or applications, the bucket policy becomes a giant, unmanageable JSON document. Access Points simplify this — each access point gets its own name, DNS endpoint, and policy.
+
+```
+Without Access Points:
+One bucket policy with 50 statements for different teams → hard to maintain
+
+With Access Points:
+Bucket → Access Point "finance-team" (policy: read-only to /finance/*)
+       → Access Point "data-science" (policy: read/write to /datasets/*)
+       → Access Point "public-web"   (policy: read-only to /public/*)
+```
+
+Each team uses their own access point endpoint instead of the bucket URL. Each has its own simple policy — no giant shared policy to manage.
+
+**Key details:**
+- Each access point can be restricted to a specific VPC (no internet access)
+- Access points can have their own Block Public Access settings
+- The bucket policy can delegate access control to access points entirely
+
+**Exam trigger:** *"simplify access management for a shared S3 bucket with many users"* → S3 Access Points.
+
+### S3 VPC Endpoint (Gateway)
+
+By default, EC2 instances in a private subnet access S3 over the internet (via NAT Gateway). A **VPC Gateway Endpoint** creates a private route from your VPC to S3 — traffic never leaves the AWS network.
+
+```
+Without endpoint: EC2 (private subnet) → NAT Gateway → internet → S3 (costs money, slower)
+With endpoint:    EC2 (private subnet) → VPC Gateway Endpoint → S3 (free, private, faster)
+```
+
+**Why it matters:**
+- **Free** — no data processing charges (NAT Gateway charges per GB)
+- **Secure** — traffic stays on AWS's private network, never hits the internet
+- **Faster** — lower latency than going through NAT
+
+**Key details:**
+- Gateway Endpoints work for **S3 and DynamoDB only** — other services use Interface Endpoints (different thing, costs money)
+- Configured via route tables — you add the endpoint and update the route table for the private subnet
+- Can attach a policy to the endpoint to restrict which buckets are accessible
+
+**Exam triggers:**
+- *"access S3 from a private subnet without a NAT Gateway"* → VPC Gateway Endpoint
+- *"reduce data transfer costs to S3"* → VPC Gateway Endpoint (free vs NAT Gateway charges)
+- *"keep S3 traffic off the public internet"* → VPC Gateway Endpoint
+
+### S3 Access Logs
+
+Log every request made to a bucket — who accessed what, when, from which IP, and the response status. Stored as log files in a **separate** S3 bucket.
+
+**Use case:** security auditing, compliance, access pattern analysis, troubleshooting failed requests.
+
+**Key details:**
+- Logs are delivered on a best-effort basis (slight delay, not real-time)
+- **Never log to the same bucket** — this creates an infinite loop (logging the log writes generates more logs, which generates more logs...)
+- Log format includes: requester, bucket name, request time, action, response status, error code
+
+**Exam triggers:**
+- *"audit who accessed S3 objects"* → S3 Access Logs (or CloudTrail for API-level auditing)
+- *"S3 storage is growing unexpectedly and the bucket logs to itself"* → logging loop — change the log destination to a different bucket
+
 ### S3 CORS
 
 CORS (Cross-Origin Resource Sharing) — a browser security mechanism. When a webpage on `app.example.com` tries to fetch data from `api.example.com` (a different origin), the browser blocks it by default. CORS headers tell the browser "it's OK, allow this."
