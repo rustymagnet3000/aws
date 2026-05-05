@@ -2735,6 +2735,58 @@ For AWS-to-AWS transfers (e.g. S3 to S3 cross-region), no agent is needed.
 
 ## Hybrid Cloud Storage
 
+### AWS Storage Options — Complete Reference
+
+Every storage service in one table:
+
+| Service | Type | Protocol | Shared? | Persistence | Use case |
+| ------- | ---- | -------- | ------- | ----------- | -------- |
+| EBS | Block | Attached to EC2 | No (1 instance, except Multi-Attach io2) | Survives stop/start | OS volumes, databases |
+| Instance Store | Block | Physically attached | No (1 instance) | Lost on stop/termination | Temp scratch space, caches |
+| EFS | File (NFS) | NFS | Yes (Linux, multi-AZ) | Persistent | Shared Linux storage, web farms |
+| FSx Windows | File (SMB) | SMB | Yes (Windows, AD) | Persistent | Windows file shares |
+| FSx Lustre | File (POSIX) | POSIX | Yes (Linux) | Persistent (or scratch) | HPC, ML training, video processing |
+| S3 | Object | HTTP API | Yes (any) | Persistent (11 nines) | Anything — files, backups, data lake, static sites |
+| S3 Glacier | Object (archive) | HTTP API | Yes (any) | Persistent | Long-term archive, compliance |
+| ElastiCache | In-memory | Redis/Memcached protocol | Yes | Redis: optional. Memcached: no | Caching, session store |
+
+**Data transfer services:**
+
+| Service | Method | Use case |
+| ------- | ------ | -------- |
+| Snow Family | Physical device | One-time massive migration, no internet |
+| DataSync | Network (agent) | Scheduled/recurring transfers, file server migration |
+| Transfer Acceleration | Network (edge) | Speed up S3 uploads from distant users |
+| Storage Gateway | On-prem VM | Ongoing hybrid access (NFS/SMB/iSCSI → S3) |
+
+**Decision tree:**
+
+```
+Need block storage for EC2?
+├── Persistent → EBS
+└── Temporary, max speed → Instance Store
+
+Need shared file storage?
+├── Linux → EFS
+├── Windows / Active Directory → FSx for Windows
+├── HPC / ML / extreme throughput → FSx for Lustre
+└── Multi-protocol (NFS + SMB) → FSx for NetApp ONTAP
+
+Need object storage?
+├── Frequently accessed → S3 Standard
+├── Archive → S3 Glacier
+└── Unknown pattern → S3 Intelligent-Tiering
+
+Need caching?
+├── Sessions, data structures, replication → ElastiCache Redis
+└── Simple key-value, disposable → ElastiCache Memcached
+
+Need to move data to AWS?
+├── Petabytes, no internet → Snow Family
+├── Over the network, scheduled → DataSync
+└── On-prem apps need ongoing AWS storage access → Storage Gateway
+```
+
 When your organisation has both on-premises infrastructure and AWS, you need to bridge the two. Different services handle different patterns:
 
 | Service | What it does | Pattern |
