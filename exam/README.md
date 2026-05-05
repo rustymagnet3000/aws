@@ -77,6 +77,7 @@
   - [S3 Performance](#s3-performance)
   - [S3 Select and S3 Object Lambda](#s3-select-and-s3-object-lambda)
   - [S3 Replication](#s3-replication)
+  - [S3 Storage Lens](#s3-storage-lens)
 - [CloudFront and Global Accelerator](#cloudfront-and-global-accelerator)
   - [CloudFront Overview](#cloudfront-overview)
   - [CloudFront vs S3 Transfer Acceleration](#cloudfront-vs-s3-transfer-acceleration)
@@ -2591,6 +2592,28 @@ Two types — same concept, different scope:
 | ------------------------- | ---- |
 | Disabled (default) | Replica is for DR/backup — accidental deletes shouldn't cascade. Compliance requires retaining data even if deleted from source. |
 | Enabled | Both buckets serve live traffic and must stay in exact sync (active-active). |
+
+### S3 Storage Lens
+
+A dashboard that gives you **visibility across all your S3 buckets** — usage metrics, cost optimization recommendations, and activity trends. Think of it as "CloudWatch for S3 storage."
+
+**What it shows:**
+- Total storage across all buckets, broken down by storage class
+- Which buckets are growing fastest
+- How many objects lack encryption
+- Which buckets don't have versioning or lifecycle rules
+- Cost optimization recommendations (e.g. "move 500 GB of unaccessed data to Glacier")
+
+**Scope:** can aggregate across an entire AWS Organization, a single account, or specific buckets.
+
+**Two tiers:**
+
+| Tier | Metrics | Cost |
+| ---- | ------- | ---- |
+| Free | 28 usage metrics, 14-day data retention | Free |
+| Advanced | 35+ metrics including activity metrics (requests, bytes downloaded), CloudWatch publishing, prefix-level aggregation | Paid |
+
+**Exam trigger:** *"get visibility into S3 usage and cost optimization across multiple accounts"* → S3 Storage Lens.
 
 ## CloudFront and Global Accelerator
 
