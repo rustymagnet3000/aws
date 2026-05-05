@@ -79,6 +79,7 @@
   - [S3 Replication](#s3-replication)
   - [S3 Storage Lens](#s3-storage-lens)
 - [AWS Snow Family](#aws-snow-family)
+- [AWS DataSync](#aws-datasync)
 - [CloudFront and Global Accelerator](#cloudfront-and-global-accelerator)
   - [CloudFront Overview](#cloudfront-overview)
   - [CloudFront vs S3 Transfer Acceleration](#cloudfront-vs-s3-transfer-acceleration)
@@ -2656,6 +2657,62 @@ All data is encrypted with KMS keys — if the device is lost in transit, nobody
 - *"run compute at a remote location with no internet"* → Snowball Edge Compute Optimised
 - *"move more than 10 PB"* → Snowmobile
 - *"data transfer would take weeks over the network"* → Snow Family
+
+## AWS DataSync
+
+Managed data transfer service for moving large amounts of data **over the network** — between on-premises storage and AWS, or between AWS services.
+
+**DataSync vs Snow Family:**
+
+| | DataSync | Snow Family |
+| - | -------- | ----------- |
+| Transfer method | Network (internet or Direct Connect) | Physical device shipped |
+| Transfer type | One-time or scheduled/recurring | One-time bulk migration |
+| Speed | Up to 10 Gbps per agent | Limited by shipping time |
+| Use case | Ongoing sync, incremental transfers | Petabyte-scale initial migration, no/limited internet |
+
+**What DataSync moves:**
+
+| From | To |
+| ---- | -- |
+| On-premises NFS/SMB file servers | S3, EFS, FSx |
+| S3 | S3 (cross-region or cross-account) |
+| EFS | EFS |
+| FSx | FSx |
+
+**How it works:**
+
+1. Install a **DataSync agent** on-premises (a VM that connects to your storage)
+2. Configure a **task** — source location, destination location, schedule
+3. DataSync transfers data, preserving metadata (permissions, timestamps)
+4. Only changed data is transferred on subsequent runs (incremental)
+
+```
+On-prem NFS server → DataSync agent → internet/Direct Connect → S3/EFS/FSx
+```
+
+For AWS-to-AWS transfers (e.g. S3 to S3 cross-region), no agent is needed.
+
+**Key features:**
+
+- **Automatic encryption** in transit and at rest
+- **Bandwidth throttling** — limit how much network capacity DataSync uses so it doesn't saturate your connection
+- **Scheduling** — run daily, weekly, or on a cron schedule
+- **Incremental transfers** — only changed files are synced after the initial transfer
+- **Data integrity validation** — verifies data at source and destination match
+
+**Real-world examples:**
+
+- Migrate an on-prem NFS file server to EFS — DataSync handles the initial copy and keeps them in sync until cutover
+- Replicate S3 data to another region for DR (alternative to S3 CRR when you need scheduling or filtering)
+- Move on-prem backups to S3 Glacier nightly
+
+**Exam triggers:**
+- *"move data from on-premises NFS/SMB to AWS"* → DataSync
+- *"scheduled/recurring data transfer to S3 or EFS"* → DataSync
+- *"migrate a file server to AWS with metadata preserved"* → DataSync
+- *"transfer data between AWS storage services"* → DataSync
+- *"one-time 50 PB migration with no internet"* → Snow Family (not DataSync)
 
 ## CloudFront and Global Accelerator
 
