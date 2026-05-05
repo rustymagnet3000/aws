@@ -80,6 +80,8 @@
   - [S3 Storage Lens](#s3-storage-lens)
 - [AWS Snow Family](#aws-snow-family)
 - [AWS DataSync](#aws-datasync)
+- [Hybrid Cloud Storage](#hybrid-cloud-storage)
+  - [AWS Storage Gateway](#aws-storage-gateway)
 - [CloudFront and Global Accelerator](#cloudfront-and-global-accelerator)
   - [CloudFront Overview](#cloudfront-overview)
   - [CloudFront vs S3 Transfer Acceleration](#cloudfront-vs-s3-transfer-acceleration)
@@ -2713,6 +2715,78 @@ For AWS-to-AWS transfers (e.g. S3 to S3 cross-region), no agent is needed.
 - *"migrate a file server to AWS with metadata preserved"* → DataSync
 - *"transfer data between AWS storage services"* → DataSync
 - *"one-time 50 PB migration with no internet"* → Snow Family (not DataSync)
+
+## Hybrid Cloud Storage
+
+When your organisation has both on-premises infrastructure and AWS, you need to bridge the two. Different services handle different patterns:
+
+| Service | What it does | Pattern |
+| ------- | ------------ | ------- |
+| Storage Gateway | On-prem apps access AWS storage using standard protocols (NFS, SMB, iSCSI) | Ongoing access — on-prem apps talk to AWS storage as if it's local |
+| DataSync | Bulk/scheduled data transfer | Migration or recurring sync |
+| Snow Family | Physical device for massive migrations | One-time, no/limited internet |
+| Direct Connect | Dedicated private network link to AWS | Network layer — faster, more reliable than internet |
+
+### AWS Storage Gateway
+
+A VM you run on-premises that gives your local applications access to AWS cloud storage using familiar protocols. Your apps don't know they're talking to AWS — it looks like a local file share, disk, or tape library.
+
+**Three modes:**
+
+**File Gateway (NFS/SMB):**
+
+```
+On-prem app → NFS/SMB mount → File Gateway VM → S3
+```
+
+- Files are stored as objects in S3, but your app sees a normal file share
+- Frequently accessed files are cached locally on the gateway for low-latency access
+- Use case: replace on-prem NAS with S3-backed storage, or extend storage to the cloud
+
+**Volume Gateway (iSCSI):**
+
+```
+On-prem app → iSCSI block storage → Volume Gateway VM → S3 (with EBS snapshots)
+```
+
+Two sub-modes:
+
+| | Cached Volumes | Stored Volumes |
+| - | -------------- | -------------- |
+| Primary data lives in | S3 (hot data cached locally) | On-premises (async backup to S3) |
+| Local storage needed | Small (cache only) | Full dataset |
+| Use case | Extend storage to cloud, most data in S3 | Keep all data local, use S3 for backups |
+
+- Both create **EBS snapshots** in S3 that can be restored to EBS volumes in AWS
+- Use case: block storage for databases or apps that need iSCSI
+
+**Tape Gateway (Virtual Tape Library):**
+
+```
+Backup software (Veeam, Veritas, etc.) → Tape Gateway → S3 Glacier
+```
+
+- Presents itself as a physical tape library to your existing backup software
+- Virtual tapes are stored in S3 and archived to Glacier
+- Use case: replace physical tape infrastructure without changing backup workflows
+- The exam loves this one — any mention of "tape backups" or "backup software" → Tape Gateway
+
+**Storage Gateway vs DataSync:**
+
+| | Storage Gateway | DataSync |
+| - | --------------- | -------- |
+| Purpose | Ongoing access — on-prem apps use AWS storage day-to-day | Data transfer — move or sync data |
+| Protocol | NFS, SMB, iSCSI | Agent-based transfer |
+| Caching | Yes — frequently accessed data cached locally | No caching |
+| Use case | "Extend our on-prem storage to the cloud" | "Migrate our file server to AWS" |
+
+**Exam triggers:**
+- *"on-prem applications need to access S3 via NFS"* → File Gateway
+- *"replace physical tape backups with cloud storage"* → Tape Gateway
+- *"on-prem block storage backed by S3"* → Volume Gateway
+- *"extend on-prem storage to the cloud without changing applications"* → Storage Gateway
+- *"backup software needs a tape library target"* → Tape Gateway
+- *"migrate data to AWS"* → DataSync (not Storage Gateway — Gateway is for ongoing access)
 
 ## CloudFront and Global Accelerator
 
