@@ -2907,6 +2907,24 @@ Fully managed third-party file systems on AWS. Where EFS is managed NFS (Linux),
 - *"shared storage for Linux workloads"* → EFS (not FSx, unless extreme performance is needed)
 - *"multi-protocol file share (NFS + SMB)"* → FSx for NetApp ONTAP
 
+**Why Lustre for HPC — parallel file system:**
+
+Lustre stripes data across multiple storage servers simultaneously. When an HPC job reads a file, it pulls from many servers at once — that's how it hits millions of IOPS. EFS is shared but reads from a single path.
+
+```
+EFS:    App → one NFS path → storage
+Lustre: App → many parallel paths → many storage servers → millions of IOPS
+```
+
+Exam keyword map:
+
+| Keywords in question | Answer |
+| -------------------- | ------ |
+| POSIX + HPC + millions of IOPS | FSx for Lustre |
+| POSIX + shared Linux storage | EFS |
+| SMB + Windows + Active Directory | FSx for Windows |
+| Block storage for one instance | EBS |
+
 **FSx for Lustre — Scratch vs Persistent:**
 
 | | Scratch | Persistent |
