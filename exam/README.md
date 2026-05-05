@@ -2382,6 +2382,28 @@ The user's IAM policy (or a group/SCP policy) has an explicit Deny. The bucket p
 - *"audit who accessed which encryption key"* → SSE-KMS (CloudTrail logs key usage)
 - *"compliance requires customer-managed encryption keys"* → SSE-KMS or SSE-C
 
+### S3 CORS
+
+CORS (Cross-Origin Resource Sharing) — a browser security mechanism. When a webpage on `app.example.com` tries to fetch data from `api.example.com` (a different origin), the browser blocks it by default. CORS headers tell the browser "it's OK, allow this."
+
+```
+Browser loads page from Bucket A (website.example.com)
+  → JavaScript fetches image from Bucket B (assets.example.com)
+  → Browser: "different origin, blocked" ❌
+
+Fix: enable CORS on Bucket B → browser allows the cross-origin request ✅
+```
+
+**Key details:**
+
+- CORS is configured on the **receiving** bucket (the one being requested), not the sender
+- It's a **browser** restriction — server-to-server calls (Lambda, EC2) don't care about CORS
+- You specify which origins are allowed, which HTTP methods, and which headers
+
+**Exam triggers:**
+- *"static website on S3 can't load assets from another S3 bucket"* → enable CORS on the assets bucket
+- *"browser console shows Access-Control-Allow-Origin error"* → CORS not configured
+
 ### S3 Performance
 
 S3 automatically scales to **3,500 PUT/POST/DELETE** and **5,500 GET** requests per second **per prefix**. A prefix is the path before the filename — `bucket/folder1/sub/` is one prefix, `bucket/folder2/` is another. Spread reads across prefixes to multiply throughput.
