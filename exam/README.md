@@ -2907,6 +2907,14 @@ Fully managed third-party file systems on AWS. Where EFS is managed NFS (Linux),
 - *"shared storage for Linux workloads"* → EFS (not FSx, unless extreme performance is needed)
 - *"multi-protocol file share (NFS + SMB)"* → FSx for NetApp ONTAP
 
+**What POSIX means:**
+
+POSIX (Portable Operating System Interface) is a standard for how file systems behave on Unix/Linux — `open()`, `read()`, `write()`, file paths like `/data/results.csv`, permissions like `chmod 755`. Normal Linux filesystem behaviour.
+
+When an exam question says "POSIX compliant" it means the app expects a real filesystem, not an API. This rules out S3 (object storage, accessed via HTTP API — you can't `cd` into S3). EFS and FSx for Lustre are POSIX — they mount as a regular filesystem and apps don't know the difference from a local disk.
+
+**"POSIX compliant" in a question = not S3.**
+
 **Why Lustre for HPC — parallel file system:**
 
 Lustre stripes data across multiple storage servers simultaneously. When an HPC job reads a file, it pulls from many servers at once — that's how it hits millions of IOPS. EFS is shared but reads from a single path.
