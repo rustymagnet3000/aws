@@ -82,6 +82,7 @@
 - [AWS DataSync](#aws-datasync)
 - [Hybrid Cloud Storage](#hybrid-cloud-storage)
   - [AWS Storage Gateway](#aws-storage-gateway)
+  - [Amazon FSx](#amazon-fsx)
 - [CloudFront and Global Accelerator](#cloudfront-and-global-accelerator)
   - [CloudFront Overview](#cloudfront-overview)
   - [CloudFront vs S3 Transfer Acceleration](#cloudfront-vs-s3-transfer-acceleration)
@@ -2787,6 +2788,56 @@ Backup software (Veeam, Veritas, etc.) → Tape Gateway → S3 Glacier
 - *"extend on-prem storage to the cloud without changing applications"* → Storage Gateway
 - *"backup software needs a tape library target"* → Tape Gateway
 - *"migrate data to AWS"* → DataSync (not Storage Gateway — Gateway is for ongoing access)
+
+### Amazon FSx
+
+Fully managed third-party file systems on AWS. Where EFS is managed NFS (Linux), FSx covers everything else.
+
+**Four flavours (two matter most for the exam):**
+
+**FSx for Windows File Server:**
+- Fully managed **SMB** file share with **NTFS** and **Active Directory** integration
+- Windows apps see a native Windows file share — no code changes
+- Supports DFS (Distributed File System) for namespaces and replication
+- Use case: Windows workloads migrated to AWS that need a shared drive (SharePoint, .NET apps, SQL Server backups, home directories)
+
+**FSx for Lustre:**
+- High-performance **parallel file system** — hundreds of GB/s throughput, millions of IOPS
+- Integrates natively with S3 — can read/write S3 objects as files and write results back to S3
+- Use case: HPC, ML training, video rendering, genomics, financial modelling — any workload that needs massive throughput
+
+**FSx for NetApp ONTAP:**
+- Multi-protocol (NFS, SMB, iSCSI) — works with Linux, Windows, and macOS simultaneously
+- Use case: hybrid environments migrating NetApp workloads to AWS
+
+**FSx for OpenZFS:**
+- High-performance NFS — up to 1 million IOPS
+- Use case: Linux workloads migrating from on-prem ZFS storage
+
+**Quick reference:**
+
+| FSx type | Protocol | OS | Use case |
+| -------- | -------- | -- | -------- |
+| Windows File Server | SMB | Windows | Windows file shares, AD integration |
+| Lustre | POSIX | Linux | HPC, ML, video processing — extreme throughput |
+| NetApp ONTAP | NFS, SMB, iSCSI | All | Hybrid, multi-protocol |
+| OpenZFS | NFS | Linux | ZFS migration, high-performance Linux NFS |
+
+**FSx vs EFS:**
+
+| | EFS | FSx for Windows | FSx for Lustre |
+| - | --- | --------------- | -------------- |
+| Protocol | NFS | SMB | POSIX |
+| OS | Linux only | Windows (and Linux via SMB) | Linux |
+| Use case | Shared Linux storage | Windows file shares | HPC, ML, extreme throughput |
+| S3 integration | No | No | Yes — reads/writes S3 objects natively |
+
+**Exam triggers:**
+- *"Windows file share with Active Directory"* → FSx for Windows File Server
+- *"high-performance computing or ML training needs fast shared storage"* → FSx for Lustre
+- *"process data in S3 with a high-throughput file system"* → FSx for Lustre
+- *"shared storage for Linux workloads"* → EFS (not FSx, unless extreme performance is needed)
+- *"multi-protocol file share (NFS + SMB)"* → FSx for NetApp ONTAP
 
 ## CloudFront and Global Accelerator
 
