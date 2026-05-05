@@ -80,6 +80,7 @@
   - [S3 Storage Lens](#s3-storage-lens)
 - [AWS Snow Family](#aws-snow-family)
 - [AWS DataSync](#aws-datasync)
+- [AWS Transfer Family](#aws-transfer-family)
 - [Hybrid Cloud Storage](#hybrid-cloud-storage)
   - [AWS Storage Gateway](#aws-storage-gateway)
   - [Amazon FSx](#amazon-fsx)
@@ -2747,6 +2748,30 @@ The mental threshold for DataSync vs Snow Family:
 | Any amount | Poor/no internet | Snow Family |
 
 If the question mentions a modest data size (10–50 TB) without emphasising bad internet, the answer is DataSync. Snow Family questions say "petabytes" or "limited connectivity."
+
+### AWS Transfer Family
+
+Managed SFTP, FTPS, and FTP service for transferring files into and out of **S3 or EFS**. Your existing file transfer workflows keep working — just point them at AWS instead of your on-prem FTP server.
+
+**The problem it solves:** third parties (vendors, partners, customers) upload files to you via SFTP. You don't want to manage an SFTP server. Transfer Family gives you a managed endpoint that drops files directly into S3 or EFS.
+
+```
+Partner → SFTP → AWS Transfer Family → S3 bucket
+                                      → EFS file system
+```
+
+**Key details:**
+- Supports **SFTP** (SSH-based), **FTPS** (TLS-based), and **FTP** (unencrypted — use only in VPC)
+- Authenticate users via **service-managed identities**, **Active Directory**, or **custom Lambda authoriser**
+- You get a DNS endpoint (or bring your own domain with Route 53)
+- Pay per protocol endpoint per hour + data transferred
+
+**Exam triggers:**
+- *"migrate an existing SFTP server to AWS"* → Transfer Family
+- *"partners upload files via SFTP into S3"* → Transfer Family
+- *"managed FTP endpoint"* → Transfer Family
+
+**Transfer Family vs DataSync:** Transfer Family is for **external parties pushing files to you** using standard FTP/SFTP protocols. DataSync is for **you moving data** between on-prem and AWS or between AWS services. Different use cases.
 
 ## Hybrid Cloud Storage
 
