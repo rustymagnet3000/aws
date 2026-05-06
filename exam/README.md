@@ -92,6 +92,12 @@
   - [CloudFront Functions and Lambda@Edge](#cloudfront-functions-and-lambdaedge)
   - [AWS Global Accelerator](#aws-global-accelerator)
   - [CloudFront vs Global Accelerator](#cloudfront-vs-global-accelerator)
+- [AWS Integration and Messaging](#aws-integration-and-messaging)
+  - [SQS (Simple Queue Service)](#sqs-simple-queue-service)
+  - [SNS (Simple Notification Service)](#sns-simple-notification-service)
+  - [SNS + SQS Fan-Out](#sns--sqs-fan-out)
+  - [Kinesis](#kinesis)
+  - [SQS vs SNS vs Kinesis](#sqs-vs-sns-vs-kinesis)
 
 <!-- /TOC -->
 
@@ -3205,3 +3211,243 @@ The exam loves this comparison:
 - *"instant failover between regions"* → Global Accelerator
 - *"cache content at edge locations"* → CloudFront
 - *"client whitelists an IP for a global service"* → Global Accelerator (static IPs)
+
+## AWS Integration and Messaging
+
+When applications need to talk to each other, you have two patterns:
+
+- **Synchronous** — app A calls app B and waits for a response. Simple but tightly coupled — if B is down, A fails.
+- **Asynchronous** — app A puts a message in a queue/topic, app B processes it when ready. Decoupled — A doesn't know or care about B.
+
+AWS provides three services for async communication, each solving a different problem.
+
+### SQS (Simple Queue Service)
+
+A message queue — producers send messages, consumers poll and process them. The oldest AWS service (launched 2004).
+
+```
+Producer → SQS Queue → Consumer
+           (messages wait here until processed)
+```
+
+**Key properties:**
+
+- **Unlimited throughput** — no limit on messages per second
+- **Default retention** — 4 days (max 14 days)
+- **Message size** — max 256 KB
+- **At-least-once delivery** — a message can be delivered more than once (your consumer must be idempotent)
+- **Best-effort ordering** — messages may arrive out of order (use FIFO queue for strict ordering)
+
+**Visibility timeout:**
+
+When a consumer picks up a message, it becomes invisible to other consumers for a timeout period (default 30 seconds). If the consumer processes it and deletes it within the timeout → done. If the consumer crashes → the message reappears and another consumer picks it up.
+
+```
+Message picked up → invisible for 30s → consumer processes + deletes ✅
+Message picked up → invisible for 30s → consumer crashes → message reappears → retry ✅
+```
+
+If processing takes longer than the visibility timeout, another consumer picks up the same message → duplicate processing. Fix: increase the timeout to match your processing time.
+
+**Dead Letter Queue (DLQ):**
+
+Messages that fail processing repeatedly are moved to a separate DLQ instead of retrying forever. You configure a **max receive count** (e.g. 3 attempts) — after that many failures, the message is moved to the DLQ.
+
+**DLQ is for poison messages, not outages:**
+
+If a consumer goes down for 10 minutes, messages just **wait in the main queue** — that's normal SQS behaviour. When the consumer restarts, it drains them. No DLQ involved.
+
+The DLQ catches messages the consumer *tries* to process but *fails every time*:
+
+```
+Normal outage:   Order #123 → SQS → consumer down → message waits → consumer restarts → processes ✅
+Poison message:  Order #456 → SQS → consumer tries → crashes → retries → crashes → after 3 fails → DLQ
+```
+
+Food delivery DLQ examples — messages that fail every attempt:
+- Order references a restaurant ID that doesn't exist in the database
+- Message has malformed JSON the consumer can't parse
+- Order requires an expired payment method → unhandled exception
+
+The DLQ isolates these broken messages so they don't block the thousands of healthy messages behind them.
+
+**DLQ redrive:** once you fix the bug, you can push messages back from the DLQ to the original queue for reprocessing — no data loss.
+
+**DLQ works with SNS too** — if SNS can't deliver to a subscriber, failed messages go to a configured DLQ.
+
+**SQS FIFO:**
+
+| | Standard | FIFO |
+| - | -------- | ---- |
+| Ordering | Best-effort | Strict first-in-first-out |
+| Throughput | Unlimited | 300 msg/s (or 3,000 with batching) |
+| Duplicates | Possible | Exactly-once processing |
+| Queue name | Any | Must end in `.fifo` |
+
+**Why not always use FIFO?** Throughput. Standard is unlimited. FIFO caps at 300 msg/s (3,000 with batching). For millions of messages per second (log ingestion, click tracking, IoT), FIFO can't keep up.
+
+| Use Standard | Use FIFO |
+| ------------ | -------- |
+| Email sending queue — order doesn't matter | Financial transactions — debit before credit |
+| Image thumbnail generation — any order, same result | Command sequences — "create user" before "assign role" |
+| Log processing — timestamps tell the order | Inventory updates — stock count depends on order |
+
+Standard is the default when you need speed and can handle duplicates/reordering. FIFO is the safe choice when order or exactly-once matters.
+
+**SQS + ASG — scaling consumers based on queue depth:**
+
+```
+Producers → SQS → Consumers (EC2 in ASG)
+                   ↑
+CloudWatch Alarm: "ApproximateNumberOfMessagesVisible > 1000" → scale out
+```
+
+This is a common exam pattern — scale the number of consumers based on how many messages are waiting.
+
+**Exam triggers:**
+- *"decouple application components"* → SQS
+- *"buffer writes to a database"* → SQS (see below)
+- *"messages processed out of order"* → switch to SQS FIFO
+- *"messages being processed twice"* → increase visibility timeout or switch to FIFO
+- *"scale consumers based on workload"* → SQS + CloudWatch Alarm + ASG
+- *"debug failed messages"* → Dead Letter Queue
+
+**SQS as a database write buffer:**
+
+Your frontend receives 10,000 writes/s during a spike, but your database handles 1,000/s. Without a buffer, the database falls over.
+
+```
+Without buffer: Frontend (10,000/s) → Database (1,000/s capacity) → overwhelmed ❌
+With SQS:       Frontend (10,000/s) → SQS → Consumer (drains at 1,000/s) → Database ✅
+                                      (9,000 messages queue up, processed over time)
+```
+
+The queue absorbs the spike. The database never sees more than it can handle. Once the spike passes, the consumer drains the backlog. This is one of the most common SQS patterns on the exam.
+
+### SNS (Simple Notification Service)
+
+Pub/sub — a producer publishes a message to a **topic**, and all subscribers receive it. One message → many receivers.
+
+```
+Producer → SNS Topic → Subscriber 1 (SQS queue)
+                      → Subscriber 2 (Lambda)
+                      → Subscriber 3 (email)
+                      → Subscriber 4 (HTTP endpoint)
+```
+
+**SQS vs SNS — the core difference:**
+
+| | SQS | SNS |
+| - | --- | --- |
+| Pattern | Queue (1 producer → 1 consumer) | Pub/sub (1 producer → many subscribers) |
+| Who pulls? | Consumer polls the queue | SNS pushes to subscribers |
+| Persistence | Messages wait in the queue | No persistence — if subscriber is down, message is lost |
+| Use case | Decouple + buffer | Fan out to multiple receivers |
+
+**Subscriber types:** SQS, Lambda, email, SMS, HTTP/HTTPS endpoints, Kinesis Data Firehose.
+
+**SNS FIFO:** pairs with SQS FIFO queues for ordered fan-out. An SNS FIFO topic can only have SQS FIFO queues as subscribers.
+
+**Message filtering:** subscribers can set a **filter policy** — each subscriber only receives messages whose attributes match their filter. Without filtering, every subscriber gets every message.
+
+Real-world example — an order processing system with one SNS topic:
+
+```
+Order placed → SNS "orders" topic (message includes status attribute)
+
+Filter policies:
+├── SQS "fulfilment" queue    → filter: status = "order_received"   → picks, packs, ships
+├── SQS "refunds" queue       → filter: status = "order_cancelled"  → processes refund
+├── SQS "analytics" queue     → no filter (gets everything)         → tracks all order events
+└── Lambda "VIP notification" → filter: status = "order_received" AND customer_tier = "vip" → SMS alert
+```
+
+Without filtering, you'd need separate SNS topics per status — messy. With filtering, one topic handles everything and each subscriber gets only what it cares about.
+
+The filter policy is set on the **subscriber**, not the topic. Each subscriber independently decides what it wants.
+
+**Exam triggers:**
+- *"send a notification to multiple services at once"* → SNS
+- *"fan out an event to multiple queues"* → SNS + SQS (see fan-out below)
+- *"send an email alert when something happens"* → SNS
+- *"only certain subscribers should receive certain messages"* → SNS message filtering
+
+### SNS + SQS Fan-Out
+
+The most important messaging pattern for the exam — publish once to SNS, and multiple SQS queues each get a copy.
+
+```
+S3 event → SNS Topic → SQS Queue A (image processing)
+                      → SQS Queue B (metadata extraction)
+                      → SQS Queue C (audit logging)
+```
+
+**Why not just send to multiple SQS queues directly?** Because S3 event notifications can only send to **one destination** per event type. SNS solves this — one S3 event → SNS → fan out to as many SQS queues as you need.
+
+**Why SQS behind SNS (not just SNS alone)?**
+- SNS has no persistence — if a subscriber is down, the message is lost
+- SQS gives each consumer its own queue with retry, DLQ, and independent processing speed
+- Each service processes at its own pace — fast services aren't slowed by slow ones
+
+**Exam trigger:** *"one event needs to trigger multiple independent processing pipelines"* → SNS + SQS fan-out.
+
+### Kinesis
+
+Real-time streaming data — ingest and process **continuous, high-volume data** (logs, clickstreams, IoT, metrics).
+
+**Four components:**
+
+| Component | What it does |
+| --------- | ------------ |
+| Kinesis Data Streams | Ingest and store streaming data for custom processing |
+| Kinesis Data Firehose | Load streaming data into destinations (S3, Redshift, OpenSearch) — no code |
+| Kinesis Data Analytics | Run SQL or Apache Flink on streaming data in real-time |
+| Kinesis Video Streams | Ingest and process video streams |
+
+**Data Streams vs Firehose — the exam comparison:**
+
+| | Data Streams | Firehose |
+| - | ------------ | -------- |
+| You write code? | Yes — custom consumers (Lambda, KCL app) | No — managed delivery, just configure destination |
+| Latency | Real-time (~200ms) | Near real-time (~60s buffer) |
+| Storage | 1–365 days retention | No storage — delivers and forgets |
+| Scaling | You manage shards | Fully managed, auto-scales |
+| Destinations | Anything (your code decides) | S3, Redshift, OpenSearch, Splunk, HTTP |
+
+**Data Streams** = real-time processing with custom code. **Firehose** = dump data into a destination with zero code.
+
+**Kinesis vs SQS:**
+
+| | Kinesis Data Streams | SQS |
+| - | -------------------- | --- |
+| Purpose | Real-time streaming analytics | Decouple application components |
+| Ordering | Per-shard ordering guaranteed | Best-effort (Standard) or FIFO |
+| Consumers | Multiple consumers read the same data | One consumer per message |
+| Retention | 1–365 days (data can be replayed) | 4–14 days (deleted after processing) |
+| Replay | Yes — reprocess from any point | No — once deleted, gone |
+| Use case | Logs, clickstreams, IoT, real-time dashboards | Task queues, job processing, decoupling |
+
+**Exam triggers:**
+- *"real-time processing of streaming data"* → Kinesis Data Streams
+- *"load streaming data into S3 or Redshift with no code"* → Kinesis Data Firehose
+- *"run SQL on streaming data"* → Kinesis Data Analytics
+- *"replay/reprocess data from a stream"* → Kinesis Data Streams (SQS can't replay)
+- *"ingest thousands of IoT sensor readings per second"* → Kinesis Data Streams
+
+### SQS vs SNS vs Kinesis
+
+The exam's favourite three-way comparison:
+
+| | SQS | SNS | Kinesis Data Streams |
+| - | --- | --- | -------------------- |
+| Pattern | Queue | Pub/sub | Stream |
+| Consumers | One per message | Many (fan-out) | Many (shared stream) |
+| Persistence | Until processed | None | 1–365 days |
+| Replay | No | No | Yes |
+| Ordering | FIFO available | FIFO available | Per-shard |
+| Use case | Decouple, buffer | Notify, fan-out | Real-time analytics, replay |
+
+**Quick decision:**
+- Need to **decouple** two services? → SQS
+- Need to **notify** many services at once? → SNS
+- Need **real-time streaming** with replay? → Kinesis
