@@ -3306,11 +3306,23 @@ This is a common exam pattern — scale the number of consumers based on how man
 
 **Exam triggers:**
 - *"decouple application components"* → SQS
-- *"buffer writes to a database"* → SQS (producers write fast, consumers drain at DB speed)
+- *"buffer writes to a database"* → SQS (see below)
 - *"messages processed out of order"* → switch to SQS FIFO
 - *"messages being processed twice"* → increase visibility timeout or switch to FIFO
 - *"scale consumers based on workload"* → SQS + CloudWatch Alarm + ASG
 - *"debug failed messages"* → Dead Letter Queue
+
+**SQS as a database write buffer:**
+
+Your frontend receives 10,000 writes/s during a spike, but your database handles 1,000/s. Without a buffer, the database falls over.
+
+```
+Without buffer: Frontend (10,000/s) → Database (1,000/s capacity) → overwhelmed ❌
+With SQS:       Frontend (10,000/s) → SQS → Consumer (drains at 1,000/s) → Database ✅
+                                      (9,000 messages queue up, processed over time)
+```
+
+The queue absorbs the spike. The database never sees more than it can handle. Once the spike passes, the consumer drains the backlog. This is one of the most common SQS patterns on the exam.
 
 ### SNS (Simple Notification Service)
 
