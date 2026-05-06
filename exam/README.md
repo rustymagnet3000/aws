@@ -3348,7 +3348,23 @@ Producer → SNS Topic → Subscriber 1 (SQS queue)
 
 **SNS FIFO:** pairs with SQS FIFO queues for ordered fan-out. An SNS FIFO topic can only have SQS FIFO queues as subscribers.
 
-**Message filtering:** subscribers can set a filter policy to only receive messages that match certain attributes. E.g. an order topic where the "shipping" queue only gets messages with `orderType: physical` and the "digital delivery" queue only gets `orderType: digital`.
+**Message filtering:** subscribers can set a **filter policy** — each subscriber only receives messages whose attributes match their filter. Without filtering, every subscriber gets every message.
+
+Real-world example — an order processing system with one SNS topic:
+
+```
+Order placed → SNS "orders" topic (message includes status attribute)
+
+Filter policies:
+├── SQS "fulfilment" queue    → filter: status = "order_received"   → picks, packs, ships
+├── SQS "refunds" queue       → filter: status = "order_cancelled"  → processes refund
+├── SQS "analytics" queue     → no filter (gets everything)         → tracks all order events
+└── Lambda "VIP notification" → filter: status = "order_received" AND customer_tier = "vip" → SMS alert
+```
+
+Without filtering, you'd need separate SNS topics per status — messy. With filtering, one topic handles everything and each subscriber gets only what it cares about.
+
+The filter policy is set on the **subscriber**, not the topic. Each subscriber independently decides what it wants.
 
 **Exam triggers:**
 - *"send a notification to multiple services at once"* → SNS
