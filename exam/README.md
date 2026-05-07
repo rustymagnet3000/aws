@@ -3446,6 +3446,21 @@ With Firehose:  App → Firehose → S3
 
 If you just need logs/events dumped into S3 or Redshift, Firehose saves you writing and maintaining a consumer.
 
+**Firehose + Splunk — centralised log delivery:**
+
+Instead of each AWS service having its own Splunk integration, Firehose acts as a single pipeline:
+
+```
+CloudWatch Logs  ─┐
+VPC Flow Logs    ─┤→ Firehose → Splunk HEC (HTTP Event Collector)
+ALB Access Logs  ─┤
+WAF Logs         ─┘
+```
+
+One delivery pipeline instead of configuring each source separately. Firehose handles batching, retry, and buffering. Can transform data with Lambda before delivery (filter, enrich, reformat). Failed deliveries go to a backup S3 bucket automatically.
+
+Same concept as Cloudflare Logpush → Splunk — managed log delivery, zero consumer code.
+
 **Shards — how Data Streams scales:**
 
 Each shard is a unit of capacity:
