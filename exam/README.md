@@ -3423,6 +3423,29 @@ Real-time streaming data — ingest and process **continuous, high-volume data**
 
 **Data Streams** = real-time processing with custom code. **Firehose** = dump data into a destination with zero code.
 
+**Firehose vs SQS — why not just use SQS to buffer?**
+
+Different problems. SQS is for **processing** (your consumer takes an action per message). Firehose is for **delivery** (dump data into a destination, zero code).
+
+Example — 10,000 log events/second:
+
+```
+With SQS:      App → SQS → you write a consumer that reads, parses, writes to S3
+               (you manage the consumer, handle errors, scale it)
+
+With Firehose:  App → Firehose → S3
+               (done. zero code. handles batching, compression, encryption, retries)
+```
+
+| | SQS | Firehose |
+| - | --- | -------- |
+| You write consumer code? | Yes | No |
+| Processing logic? | Yes — you decide what to do per message | No — just delivers to a destination |
+| Message handled individually? | Yes | No — batched (~60s or 1 MB) |
+| Use case | "Do something with each message" | "Store all this data somewhere" |
+
+If you just need logs/events dumped into S3 or Redshift, Firehose saves you writing and maintaining a consumer.
+
 **Shards — how Data Streams scales:**
 
 Each shard is a unit of capacity:
