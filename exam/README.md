@@ -3256,6 +3256,23 @@ Message picked up → invisible for 30s → consumer crashes → message reappea
 
 If processing takes longer than the visibility timeout, another consumer picks up the same message → duplicate processing. Fix: increase the timeout to match your processing time.
 
+Real-world example — food delivery order processing (visibility timeout = 30s):
+
+A new order comes in. Worker A picks it up — the message becomes invisible. Worker A needs to validate payment, notify the restaurant, and assign a driver.
+
+- **Worker A finishes in 20s:** deletes the message. Done. Restaurant gets one order. ✅
+- **Worker A crashes at 15s:** message reappears after 30s. Worker B picks it up. Order isn't lost. ✅
+- **Worker A is slow (takes 45s):** at 30s the message reappears while Worker A is still working. Worker B picks it up. Both workers process the same order — restaurant gets it twice, customer charged twice. ❌
+
+```
+Worker A picks up order → invisible 30s → Worker A still processing at 31s...
+                                        → message reappears → Worker B picks it up
+                                        → two workers processing same order ❌
+Fix: set visibility timeout to 60s (longer than your processing time)
+```
+
+**The rule: set the visibility timeout longer than your processing time.**
+
 **Dead Letter Queue (DLQ):**
 
 Messages that fail processing repeatedly are moved to a separate DLQ instead of retrying forever. You configure a **max receive count** (e.g. 3 attempts) — after that many failures, the message is moved to the DLQ.
