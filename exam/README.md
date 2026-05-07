@@ -3536,6 +3536,17 @@ The exam's favourite three-way comparison:
 - Need to **notify** many services at once? → SNS
 - Need **real-time streaming** with replay? → Kinesis
 
+### Amazon MQ
+
+Managed **ActiveMQ and RabbitMQ** service. Exists for one reason: migrating existing on-prem applications that already use these protocols (AMQP, MQTT, STOMP, OpenWire) to AWS without rewriting code.
+
+- Building something new? → **SQS/SNS** (cloud-native, serverless, scales better)
+- Migrating an existing app that uses ActiveMQ/RabbitMQ? → **Amazon MQ** (drop-in replacement, no code changes)
+
+Amazon MQ runs on a provisioned instance (not serverless), supports Multi-AZ for HA, and has both queue and topic features built in (like SQS + SNS combined, but on traditional broker protocols).
+
+**Exam trigger:** *"migrate an application using ActiveMQ/RabbitMQ/MQTT to AWS"* → Amazon MQ. Any other messaging scenario → SQS/SNS.
+
 ## Amazon Redshift
 
 AWS's **data warehouse** — designed for running analytics queries across massive datasets (petabytes). Not a transactional database like RDS — it's for **OLAP** (Online Analytical Processing), not OLTP.
