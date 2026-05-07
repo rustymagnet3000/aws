@@ -3461,6 +3461,13 @@ One delivery pipeline instead of configuring each source separately. Firehose ha
 
 Same concept as Cloudflare Logpush → Splunk — managed log delivery, zero consumer code.
 
+**Firehose vs Data Streams — deliver vs react:**
+
+- **Firehose:** "Send all WAF logs to Splunk" → done, zero code
+- **Data Streams:** "Read WAF logs in real-time, detect attack patterns, trigger an automated IP block within 200ms, AND send to Splunk" → custom code reacts before delivery
+
+Firehose delivers data. Data Streams lets you **react** to data in real-time before it goes anywhere.
+
 **Shards — how Data Streams scales:**
 
 Each shard is a unit of capacity:
