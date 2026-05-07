@@ -98,6 +98,13 @@
   - [SNS + SQS Fan-Out](#sns--sqs-fan-out)
   - [Kinesis](#kinesis)
   - [SQS vs SNS vs Kinesis](#sqs-vs-sns-vs-kinesis)
+- [Amazon Redshift](#amazon-redshift)
+  - [OLTP vs OLAP](#oltp-vs-olap)
+  - [Why Not RDS for Analytics?](#why-not-rds-for-analytics)
+  - [Redshift Key Properties](#redshift-key-properties)
+  - [Loading Data into Redshift](#loading-data-into-redshift)
+  - [Redshift vs Athena](#redshift-vs-athena)
+  - [Redshift Snapshots](#redshift-snapshots)
 
 <!-- /TOC -->
 
@@ -3483,3 +3490,73 @@ The exam's favourite three-way comparison:
 - Need to **decouple** two services? → SQS
 - Need to **notify** many services at once? → SNS
 - Need **real-time streaming** with replay? → Kinesis
+
+## Amazon Redshift
+
+AWS's **data warehouse** — designed for running analytics queries across massive datasets (petabytes). Not a transactional database like RDS — it's for **OLAP** (Online Analytical Processing), not OLTP.
+
+### OLTP vs OLAP
+
+| | OLTP (RDS/Aurora) | OLAP (Redshift) |
+| - | ------------------ | --------------- |
+| Purpose | Run your app (orders, users, payments) | Analyse your data (reports, dashboards, trends) |
+| Queries | Simple, fast (get one user by ID) | Complex, slow (aggregate millions of rows) |
+| Data | Current state | Historical data from many sources |
+| Example | "What's order #123?" | "What were total sales by region for Q4?" |
+
+### Why Not RDS for Analytics?
+
+RDS stores data in **rows**. To answer "total sales by region," it reads every column of every row even though you only need `region` and `amount`. Redshift stores data in **columns** — it only reads the columns you ask for.
+
+```
+RDS (row storage):      reads entire rows → slow for "give me one column across 1 billion rows"
+Redshift (columnar):    reads only the columns needed → fast for analytics queries
+```
+
+### Redshift Key Properties
+
+- **Columnar storage** — optimised for aggregations (SUM, AVG, COUNT)
+- **Massively Parallel Processing (MPP)** — queries distributed across many nodes
+- **SQL interface** — standard SQL, works with BI tools (Tableau, QuickSight)
+- **Not serverless by default** — you provision a cluster (leader node + compute nodes), but **Redshift Serverless** exists for on-demand
+- **Up to 16 PB** per cluster
+
+### Loading Data into Redshift
+
+| Method | How it works | Use case |
+| ------ | ------------ | -------- |
+| COPY from S3 | Bulk load from S3 files (CSV, Parquet, JSON) | Most common — large batch loads |
+| Kinesis Data Firehose | Stream data directly into Redshift | Near real-time ingestion |
+| DMS (Database Migration Service) | Migrate from RDS/on-prem databases | One-time or ongoing replication |
+
+**Redshift Spectrum** — query data directly in S3 without loading it into Redshift. The data stays in S3, Redshift runs SQL on it. Use case: query infrequent data without paying to store it in Redshift.
+
+### Redshift vs Athena
+
+Both query data in S3 with SQL, but for different use cases:
+
+| | Redshift (+ Spectrum) | Athena |
+| - | --------------------- | ------ |
+| Data stored in | Redshift cluster (or S3 via Spectrum) | S3 only |
+| Infrastructure | Provisioned cluster or Serverless | Serverless only |
+| Performance | Faster for complex queries, joins, aggregations | Good for ad-hoc queries |
+| Cost model | Pay for cluster (always on) or Serverless (per query) | Pay per query (data scanned) |
+| Best for | Regular reporting, dashboards, BI tools | Ad-hoc exploration, infrequent queries |
+
+**Exam shortcut:** "data warehouse", "BI dashboards", "complex analytics on petabytes" → **Redshift**. "Ad-hoc SQL on S3 data, no infrastructure" → **Athena**.
+
+### Redshift Snapshots
+
+- Automated snapshots with configurable retention (1–35 days)
+- Manual snapshots persist indefinitely
+- Snapshots can be **copied to another region** for DR
+- Restore creates a new cluster
+
+**Exam triggers:**
+- *"data warehouse for analytics and reporting"* → Redshift
+- *"run complex SQL across petabytes of data"* → Redshift
+- *"connect BI tools like Tableau to AWS"* → Redshift
+- *"query S3 data with SQL, no infrastructure"* → Athena
+- *"query S3 data from within Redshift"* → Redshift Spectrum
+- *"OLAP workload"* → Redshift
+- *"OLTP workload"* → RDS/Aurora
