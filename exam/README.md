@@ -3273,6 +3273,19 @@ Fix: set visibility timeout to 60s (longer than your processing time)
 
 **The rule: set the visibility timeout longer than your processing time.**
 
+**"Doesn't FIFO make visibility timeout redundant?" — No.** They solve different problems:
+
+```
+FIFO prevents:         Producer sends order #123 twice → only one copy enters the queue ✅
+FIFO does NOT prevent: Worker A is slow → message reappears → Worker B picks it up ❌
+                       (visibility timeout still needed)
+```
+
+- **FIFO** = ordering + producer deduplication (same message not *sent* twice within 5 min)
+- **Visibility timeout** = consumer protection (same message not *processed* by two workers simultaneously)
+
+You need both. FIFO handles the producer side, visibility timeout handles the consumer side.
+
 **Dead Letter Queue (DLQ):**
 
 Messages that fail processing repeatedly are moved to a separate DLQ instead of retrying forever. You configure a **max receive count** (e.g. 3 attempts) — after that many failures, the message is moved to the DLQ.
