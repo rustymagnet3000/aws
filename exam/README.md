@@ -3416,6 +3416,38 @@ Real-time streaming data — ingest and process **continuous, high-volume data**
 
 **Data Streams** = real-time processing with custom code. **Firehose** = dump data into a destination with zero code.
 
+**Shards — how Data Streams scales:**
+
+Each shard is a unit of capacity:
+- **1 shard** = 1 MB/s write (1,000 records/s), 2 MB/s read
+- Need more throughput? Add more shards.
+- **Partition key** determines which shard a record goes to — all records with the same key land on the same shard, guaranteeing ordering per key.
+
+```
+Producer sends records with partition keys:
+  user_123 → Shard 1 (all user_123 events in order)
+  user_456 → Shard 2 (all user_456 events in order)
+  user_789 → Shard 1 (hashed to same shard)
+```
+
+**Hot shard problem — the Instagram example:**
+
+A celebrity posts a Reel → millions of views, likes, and comments stream in. If the partition key is `celebrity_id`, all those events hit one shard because they share the same key. That shard maxes out at 1 MB/s while other shards sit idle.
+
+```
+partition_key = "celebrity_123" → all events on Shard 1 → overwhelmed ❌
+partition_key = viewer_id       → events spread across all shards → no bottleneck ✅
+```
+
+The fix: choose a partition key with **high cardinality** (many unique values). `viewer_id` has millions of unique values → even distribution. `celebrity_id` has one value → hot shard.
+
+**When you want the same shard (accept the risk):** when ordering matters more than distribution. All payment events for a user must be processed in order → use `user_id` as the key and accept uneven load.
+
+**Exam triggers:**
+- *"Kinesis throughput is insufficient"* → add more shards
+- *"one shard is overwhelmed"* → hot shard — use a more granular partition key
+- *"events must be processed in order per user"* → use user_id as partition key
+
 **Kinesis vs SQS:**
 
 | | Kinesis Data Streams | SQS |
