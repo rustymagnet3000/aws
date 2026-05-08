@@ -32,6 +32,12 @@
   - [Key concepts](#key-concepts)
   - [When to choose EC2 over ECS](#when-to-choose-ec2-over-ecs)
   - [Bottlerocket](#bottlerocket)
+  - [ECR (Elastic Container Registry)](#ecr-elastic-container-registry)
+  - [ECS IAM Roles](#ecs-iam-roles)
+  - [ECS + ALB (Dynamic Port Mapping)](#ecs--alb-dynamic-port-mapping)
+  - [ECS Auto Scaling](#ecs-auto-scaling)
+  - [EKS (Elastic Kubernetes Service)](#eks-elastic-kubernetes-service)
+  - [AWS App Runner](#aws-app-runner)
 - [RDS (Relational Database Service)](#rds-relational-database-service)
   - [RDS and Aurora Security](#rds-and-aurora-security)
   - [RDS Backups](#rds-backups)
@@ -826,6 +832,141 @@ AWS publishes official Bottlerocket AMIs for ECS and EKS. Your containers behave
 - *"keep a container running and replace it if it crashes"* → ECS Service
 - *"scale containers based on load"* → ECS Service + ALB + target tracking policy
 - *"harden the OS on container instances"* → Bottlerocket
+
+### ECR (Elastic Container Registry)
+
+AWS's private Docker image registry — where you store, manage, and deploy container images. The AWS equivalent of Docker Hub (but private by default).
+
+```
+Developer → docker build → docker push → ECR → ECS/Fargate/EKS pulls image
+```
+
+**Key properties:**
+- **Private by default** — images only accessible within your AWS account
+- **Public gallery** available (public.ecr.aws) for open-source images
+- **Integrated with ECS/EKS** — no extra config, just reference the image URI
+- **Image scanning** — automatic vulnerability scanning on push
+- **Lifecycle policies** — auto-delete old/untagged images to save storage costs
+
+**Exam trigger:** *"store Docker images on AWS"* → ECR.
+
+### ECS IAM Roles
+
+Two separate roles — this confuses people:
+
+| Role | Attached to | Purpose |
+| ---- | ----------- | ------- |
+| Task Execution Role | The ECS agent | Pull images from ECR, write logs to CloudWatch, read secrets from Secrets Manager |
+| Task Role | The container itself | Your app's permissions — access S3, DynamoDB, SQS, etc. |
+
+```
+ECS Agent uses Execution Role → pull image from ECR, send logs to CloudWatch
+Your app uses Task Role       → read from S3, write to DynamoDB
+```
+
+Think of it as: **Execution Role = infrastructure plumbing** (get the container running). **Task Role = your app's permissions** (what the container does once running).
+
+**Exam triggers:**
+- *"container can't pull image from ECR"* → Task Execution Role is missing or wrong
+- *"app running in ECS needs to access S3"* → Task Role
+- *"ECS tasks can't write logs to CloudWatch"* → Task Execution Role
+
+### ECS + ALB (Dynamic Port Mapping)
+
+When running multiple tasks on the same EC2 instance, each task needs a different port. ECS handles this automatically with **dynamic port mapping** — you don't specify a host port, ECS picks one, and the ALB discovers it.
+
+```
+ALB :80 → Instance A:32768 (Task 1)
+        → Instance A:32769 (Task 2)
+        → Instance B:32770 (Task 3)
+```
+
+Each task registers itself with the ALB Target Group on its dynamic port. The ALB routes traffic to the right task. You don't manage any of this — ECS and ALB handle it.
+
+**With Fargate:** dynamic port mapping isn't needed — each task gets its own ENI and private IP. The ALB routes directly to each task's IP on the container port.
+
+**Exam trigger:** *"run multiple containers on the same EC2 instance behind an ALB"* → dynamic port mapping.
+
+### ECS Auto Scaling
+
+ECS scales **tasks** (not EC2 instances). Three scaling strategies:
+
+| Strategy | How it works |
+| -------- | ------------ |
+| Target tracking | "Keep average CPU at 60%" — ECS adjusts task count |
+| Step scaling | Add 2 tasks if CPU > 70%, add 4 if CPU > 90% |
+| Scheduled | Scale up every weekday at 8am |
+
+**Scaling on SQS queue depth** — common exam pattern:
+
+```
+SQS queue depth growing → CloudWatch Alarm → ECS Service scales out tasks
+Queue drains            → CloudWatch Alarm → ECS Service scales in tasks
+```
+
+**Fargate Auto Scaling** is easier — you just set the scaling policy. No capacity providers to manage.
+
+**ECS on EC2 — two layers of scaling:**
+
+With EC2 launch type, you need to scale **both** tasks and the underlying EC2 instances:
+- ECS scales tasks → but if there's no EC2 capacity, new tasks can't be placed
+- **Capacity Providers** handle this — automatically add/remove EC2 instances to match task demand
+
+Fargate doesn't have this problem — AWS manages the compute.
+
+### EKS (Elastic Kubernetes Service)
+
+Managed **Kubernetes** on AWS. Same concept as ECS (run containers) but using the Kubernetes ecosystem instead of AWS's proprietary orchestrator.
+
+**ECS vs EKS:**
+
+| | ECS | EKS |
+| - | --- | --- |
+| Orchestrator | AWS proprietary | Kubernetes (open-source) |
+| Learning curve | Lower — simpler API | Higher — Kubernetes complexity |
+| Portability | AWS only | Multi-cloud (same K8s everywhere) |
+| Ecosystem | AWS-native tools | Huge K8s ecosystem (Helm, Istio, ArgoCD, etc.) |
+| Launch types | EC2 or Fargate | EC2 or Fargate |
+
+**When to use EKS over ECS:**
+- Your team already knows Kubernetes
+- You need multi-cloud portability (run same workloads on AWS, GCP, Azure)
+- You need Kubernetes-specific features (custom controllers, service mesh, operators)
+- You're migrating an existing Kubernetes deployment to AWS
+
+**When to use ECS:** everything else. Simpler, cheaper, less operational overhead.
+
+**Exam trigger:** *"company already uses Kubernetes on-premises"* → EKS. *"run containers on AWS with minimal complexity"* → ECS/Fargate.
+
+### AWS App Runner
+
+The simplest way to run a container or web app on AWS — even simpler than Fargate. You give it source code or a container image, App Runner handles everything: build, deploy, scale, load balancing, TLS.
+
+```
+Source code (GitHub) → App Runner → running HTTPS app with auto-scaling
+Container image (ECR) → App Runner → running HTTPS app with auto-scaling
+```
+
+**App Runner vs Fargate:**
+
+| | App Runner | Fargate |
+| - | ---------- | ------- |
+| Setup | Minimal — point at code or image | More config — task definitions, services, ALB, target groups |
+| Networking | Managed — you get an HTTPS URL | You configure VPC, subnets, security groups, ALB |
+| Control | Less — opinionated defaults | More — fine-grained control over everything |
+| Use case | Simple web apps, APIs, quick prototypes | Complex architectures, microservices, full control |
+
+**Exam trigger:** *"simplest way to deploy a container with no infrastructure config"* → App Runner. *"need fine-grained control over networking and scaling"* → Fargate.
+
+### Container Services — Quick Reference
+
+| Service | What it is | Use case |
+| ------- | ---------- | -------- |
+| ECR | Docker image registry | Store and manage container images |
+| ECS | AWS container orchestrator | Run containers with AWS-native tooling |
+| EKS | Managed Kubernetes | Run containers with K8s ecosystem, multi-cloud |
+| Fargate | Serverless compute for ECS/EKS | No instances to manage |
+| App Runner | Simplest container deployment | Quick web apps, minimal config |
 
 ## RDS (Relational Database Service)
 
