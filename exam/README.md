@@ -98,6 +98,13 @@
   - [SNS + SQS Fan-Out](#sns--sqs-fan-out)
   - [Kinesis](#kinesis)
   - [SQS vs SNS vs Kinesis](#sqs-vs-sns-vs-kinesis)
+- [Amazon Redshift](#amazon-redshift)
+  - [OLTP vs OLAP](#oltp-vs-olap)
+  - [Why Not RDS for Analytics?](#why-not-rds-for-analytics)
+  - [Redshift Key Properties](#redshift-key-properties)
+  - [Loading Data into Redshift](#loading-data-into-redshift)
+  - [Redshift vs Athena](#redshift-vs-athena)
+  - [Redshift Snapshots](#redshift-snapshots)
 
 <!-- /TOC -->
 
@@ -3249,6 +3256,36 @@ Message picked up → invisible for 30s → consumer crashes → message reappea
 
 If processing takes longer than the visibility timeout, another consumer picks up the same message → duplicate processing. Fix: increase the timeout to match your processing time.
 
+Real-world example — food delivery order processing (visibility timeout = 30s):
+
+A new order comes in. Worker A picks it up — the message becomes invisible. Worker A needs to validate payment, notify the restaurant, and assign a driver.
+
+- **Worker A finishes in 20s:** deletes the message. Done. Restaurant gets one order. ✅
+- **Worker A crashes at 15s:** message reappears after 30s. Worker B picks it up. Order isn't lost. ✅
+- **Worker A is slow (takes 45s):** at 30s the message reappears while Worker A is still working. Worker B picks it up. Both workers process the same order — restaurant gets it twice, customer charged twice. ❌
+
+```
+Worker A picks up order → invisible 30s → Worker A still processing at 31s...
+                                        → message reappears → Worker B picks it up
+                                        → two workers processing same order ❌
+Fix: set visibility timeout to 60s (longer than your processing time)
+```
+
+**The rule: set the visibility timeout longer than your processing time.**
+
+**"Doesn't FIFO make visibility timeout redundant?" — No.** They solve different problems:
+
+```
+FIFO prevents:         Producer sends order #123 twice → only one copy enters the queue ✅
+FIFO does NOT prevent: Worker A is slow → message reappears → Worker B picks it up ❌
+                       (visibility timeout still needed)
+```
+
+- **FIFO** = ordering + producer deduplication (same message not *sent* twice within 5 min)
+- **Visibility timeout** = consumer protection (same message not *processed* by two workers simultaneously)
+
+You need both. FIFO handles the producer side, visibility timeout handles the consumer side.
+
 **Dead Letter Queue (DLQ):**
 
 Messages that fail processing repeatedly are moved to a separate DLQ instead of retrying forever. You configure a **max receive count** (e.g. 3 attempts) — after that many failures, the message is moved to the DLQ.
@@ -3416,6 +3453,51 @@ Real-time streaming data — ingest and process **continuous, high-volume data**
 
 **Data Streams** = real-time processing with custom code. **Firehose** = dump data into a destination with zero code.
 
+**Firehose vs SQS — why not just use SQS to buffer?**
+
+Different problems. SQS is for **processing** (your consumer takes an action per message). Firehose is for **delivery** (dump data into a destination, zero code).
+
+Example — 10,000 log events/second:
+
+```
+With SQS:      App → SQS → you write a consumer that reads, parses, writes to S3
+               (you manage the consumer, handle errors, scale it)
+
+With Firehose:  App → Firehose → S3
+               (done. zero code. handles batching, compression, encryption, retries)
+```
+
+| | SQS | Firehose |
+| - | --- | -------- |
+| You write consumer code? | Yes | No |
+| Processing logic? | Yes — you decide what to do per message | No — just delivers to a destination |
+| Message handled individually? | Yes | No — batched (~60s or 1 MB) |
+| Use case | "Do something with each message" | "Store all this data somewhere" |
+
+If you just need logs/events dumped into S3 or Redshift, Firehose saves you writing and maintaining a consumer.
+
+**Firehose + Splunk — centralised log delivery:**
+
+Instead of each AWS service having its own Splunk integration, Firehose acts as a single pipeline:
+
+```
+CloudWatch Logs  ─┐
+VPC Flow Logs    ─┤→ Firehose → Splunk HEC (HTTP Event Collector)
+ALB Access Logs  ─┤
+WAF Logs         ─┘
+```
+
+One delivery pipeline instead of configuring each source separately. Firehose handles batching, retry, and buffering. Can transform data with Lambda before delivery (filter, enrich, reformat). Failed deliveries go to a backup S3 bucket automatically.
+
+Same concept as Cloudflare Logpush → Splunk — managed log delivery, zero consumer code.
+
+**Firehose vs Data Streams — deliver vs react:**
+
+- **Firehose:** "Send all WAF logs to Splunk" → done, zero code
+- **Data Streams:** "Read WAF logs in real-time, detect attack patterns, trigger an automated IP block within 200ms, AND send to Splunk" → custom code reacts before delivery
+
+Firehose delivers data. Data Streams lets you **react** to data in real-time before it goes anywhere.
+
 **Shards — how Data Streams scales:**
 
 Each shard is a unit of capacity:
@@ -3447,6 +3529,17 @@ The fix: choose a partition key with **high cardinality** (many unique values). 
 - *"Kinesis throughput is insufficient"* → add more shards
 - *"one shard is overwhelmed"* → hot shard — use a more granular partition key
 - *"events must be processed in order per user"* → use user_id as partition key
+
+**Capacity modes — Provisioned vs On-Demand:**
+
+| | Provisioned | On-Demand |
+| - | ----------- | --------- |
+| Shards | You manage — manually add/remove | Auto-scales based on traffic |
+| Scaling | Manual (or custom auto-scaling) | Automatic, up to 200 MB/s write |
+| Cost | Pay per shard/hour (cheaper at steady load) | Pay per GB (more expensive, no planning needed) |
+| Use case | Predictable, steady traffic | Unpredictable, spiky traffic |
+
+Exam scenario — "traffic might grow 100x during a campaign, unpredictable": **On-Demand**. You can't predict shard count. Too few → data loss. Too many → paying for idle. On-Demand handles it automatically.
 
 **Kinesis vs SQS:**
 
@@ -3483,3 +3576,84 @@ The exam's favourite three-way comparison:
 - Need to **decouple** two services? → SQS
 - Need to **notify** many services at once? → SNS
 - Need **real-time streaming** with replay? → Kinesis
+
+### Amazon MQ
+
+Managed **ActiveMQ and RabbitMQ** service. Exists for one reason: migrating existing on-prem applications that already use these protocols (AMQP, MQTT, STOMP, OpenWire) to AWS without rewriting code.
+
+- Building something new? → **SQS/SNS** (cloud-native, serverless, scales better)
+- Migrating an existing app that uses ActiveMQ/RabbitMQ? → **Amazon MQ** (drop-in replacement, no code changes)
+
+Amazon MQ runs on a provisioned instance (not serverless), supports Multi-AZ for HA, and has both queue and topic features built in (like SQS + SNS combined, but on traditional broker protocols).
+
+**Exam trigger:** *"migrate an application using ActiveMQ/RabbitMQ/MQTT to AWS"* → Amazon MQ. Any other messaging scenario → SQS/SNS.
+
+## Amazon Redshift
+
+AWS's **data warehouse** — designed for running analytics queries across massive datasets (petabytes). Not a transactional database like RDS — it's for **OLAP** (Online Analytical Processing), not OLTP.
+
+### OLTP vs OLAP
+
+| | OLTP (RDS/Aurora) | OLAP (Redshift) |
+| - | ------------------ | --------------- |
+| Purpose | Run your app (orders, users, payments) | Analyse your data (reports, dashboards, trends) |
+| Queries | Simple, fast (get one user by ID) | Complex, slow (aggregate millions of rows) |
+| Data | Current state | Historical data from many sources |
+| Example | "What's order #123?" | "What were total sales by region for Q4?" |
+
+### Why Not RDS for Analytics?
+
+RDS stores data in **rows**. To answer "total sales by region," it reads every column of every row even though you only need `region` and `amount`. Redshift stores data in **columns** — it only reads the columns you ask for.
+
+```
+RDS (row storage):      reads entire rows → slow for "give me one column across 1 billion rows"
+Redshift (columnar):    reads only the columns needed → fast for analytics queries
+```
+
+### Redshift Key Properties
+
+- **Columnar storage** — optimised for aggregations (SUM, AVG, COUNT)
+- **Massively Parallel Processing (MPP)** — queries distributed across many nodes
+- **SQL interface** — standard SQL, works with BI tools (Tableau, QuickSight)
+- **Not serverless by default** — you provision a cluster (leader node + compute nodes), but **Redshift Serverless** exists for on-demand
+- **Up to 16 PB** per cluster
+
+### Loading Data into Redshift
+
+| Method | How it works | Use case |
+| ------ | ------------ | -------- |
+| COPY from S3 | Bulk load from S3 files (CSV, Parquet, JSON) | Most common — large batch loads |
+| Kinesis Data Firehose | Stream data directly into Redshift | Near real-time ingestion |
+| DMS (Database Migration Service) | Migrate from RDS/on-prem databases | One-time or ongoing replication |
+
+**Redshift Spectrum** — query data directly in S3 without loading it into Redshift. The data stays in S3, Redshift runs SQL on it. Use case: query infrequent data without paying to store it in Redshift.
+
+### Redshift vs Athena
+
+Both query data in S3 with SQL, but for different use cases:
+
+| | Redshift (+ Spectrum) | Athena |
+| - | --------------------- | ------ |
+| Data stored in | Redshift cluster (or S3 via Spectrum) | S3 only |
+| Infrastructure | Provisioned cluster or Serverless | Serverless only |
+| Performance | Faster for complex queries, joins, aggregations | Good for ad-hoc queries |
+| Cost model | Pay for cluster (always on) or Serverless (per query) | Pay per query (data scanned) |
+| Best for | Regular reporting, dashboards, BI tools | Ad-hoc exploration, infrequent queries |
+
+**Exam shortcut:** "data warehouse", "BI dashboards", "complex analytics on petabytes" → **Redshift**. "Ad-hoc SQL on S3 data, no infrastructure" → **Athena**.
+
+### Redshift Snapshots
+
+- Automated snapshots with configurable retention (1–35 days)
+- Manual snapshots persist indefinitely
+- Snapshots can be **copied to another region** for DR
+- Restore creates a new cluster
+
+**Exam triggers:**
+- *"data warehouse for analytics and reporting"* → Redshift
+- *"run complex SQL across petabytes of data"* → Redshift
+- *"connect BI tools like Tableau to AWS"* → Redshift
+- *"query S3 data with SQL, no infrastructure"* → Athena
+- *"query S3 data from within Redshift"* → Redshift Spectrum
+- *"OLAP workload"* → Redshift
+- *"OLTP workload"* → RDS/Aurora
