@@ -3530,6 +3530,17 @@ The fix: choose a partition key with **high cardinality** (many unique values). 
 - *"one shard is overwhelmed"* → hot shard — use a more granular partition key
 - *"events must be processed in order per user"* → use user_id as partition key
 
+**Capacity modes — Provisioned vs On-Demand:**
+
+| | Provisioned | On-Demand |
+| - | ----------- | --------- |
+| Shards | You manage — manually add/remove | Auto-scales based on traffic |
+| Scaling | Manual (or custom auto-scaling) | Automatic, up to 200 MB/s write |
+| Cost | Pay per shard/hour (cheaper at steady load) | Pay per GB (more expensive, no planning needed) |
+| Use case | Predictable, steady traffic | Unpredictable, spiky traffic |
+
+Exam scenario — "traffic might grow 100x during a campaign, unpredictable": **On-Demand**. You can't predict shard count. Too few → data loss. Too many → paying for idle. On-Demand handles it automatically.
+
 **Kinesis vs SQS:**
 
 | | Kinesis Data Streams | SQS |
