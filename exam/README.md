@@ -1051,11 +1051,25 @@ Real-world example: a web API needs at least 2 tasks for reliability but bursts 
 
 **EC2 Capacity Provider — managed scaling:**
 
-Links an ASG to ECS. You set a **target capacity percentage** (e.g. 80%):
+Links an ASG to ECS. The Capacity Provider tracks how much CPU/memory is **reserved** across all instances — not actual usage. Each task reserves capacity when placed:
 
-- Below 80% utilisation → ASG scales in (remove instances)
-- Above 80% utilisation → ASG scales out (add instances)
-- This is what prevents tasks getting stuck in PENDING
+```
+EC2 instance (4 vCPU, 8 GB)
+
+Task A reserves 1 vCPU, 2 GB → 3 vCPU, 6 GB remaining
+Task B reserves 1 vCPU, 2 GB → 2 vCPU, 4 GB remaining
+Task C reserves 1 vCPU, 2 GB → 1 vCPU, 2 GB remaining
+Task D needs    2 vCPU, 4 GB → won't fit → Capacity Provider scales out
+```
+
+It doesn't matter if Task A is actually using 0.1 vCPU — it reserved 1 vCPU, so that capacity is unavailable. This is why right-sizing task definitions matters: over-reserve and you waste capacity, under-reserve and tasks compete for resources.
+
+You set a **target capacity percentage** (e.g. 80%):
+
+- At 100%: instances packed full before scaling — risk of tasks going PENDING
+- At 80%: scale out when 80% reserved — keeps 20% headroom for bursts
+- Below target → ASG scales in (remove instances)
+- Above target → ASG scales out (add instances)
 
 **Exam triggers:**
 - *"reduce Fargate costs for fault-tolerant tasks"* → FARGATE_SPOT
