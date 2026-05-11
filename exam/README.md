@@ -37,6 +37,7 @@
   - [ECS IAM Roles](#ecs-iam-roles)
   - [ECS + ALB (Dynamic Port Mapping)](#ecs--alb-dynamic-port-mapping)
   - [ECS Auto Scaling](#ecs-auto-scaling)
+  - [ECS Capacity Providers](#ecs-capacity-providers)
   - [EKS (Elastic Kubernetes Service)](#eks-elastic-kubernetes-service)
   - [AWS App Runner](#aws-app-runner)
 - [RDS (Relational Database Service)](#rds-relational-database-service)
