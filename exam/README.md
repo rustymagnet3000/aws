@@ -1168,9 +1168,11 @@ When using EC2, the nodes boot from an AMI. AWS provides optimised AMIs (Amazon 
 - *"need GPU for ML pods on Kubernetes"* → EKS on EC2
 - *"harden the OS on container nodes"* → Bottlerocket AMI
 
-### AWS App Runner
+### AWS App Runner (being discontinued)
 
 The simplest way to run a container or web app on AWS — even simpler than Fargate. You give it source code or a container image, App Runner handles everything: build, deploy, scale, load balancing, TLS.
+
+**Note:** App Runner stopped accepting new customers April 30, 2026. AWS recommends **ECS Express Mode** as the replacement. May still appear on the current exam.
 
 ```
 Source code (GitHub) → App Runner → running HTTPS app with auto-scaling
