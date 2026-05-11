@@ -1074,6 +1074,13 @@ If you know ECS, you already understand EKS — just different names:
 | Task Execution Role | Node IAM Role | Infrastructure plumbing (pull images, write logs) |
 | Capacity Provider | Node Group / Fargate Profile | Where pods run (EC2 instances or Fargate) |
 
+**Don't confuse Task Definition with Task:**
+
+- **Task Definition / Pod spec** = the recipe (image, CPU, memory, ports, env vars)
+- **Task / Pod** = the meal you cooked from that recipe (a running instance)
+
+You can run 10 Tasks from 1 Task Definition, just like Kubernetes runs 10 Pods from 1 Deployment spec.
+
 A Pod can run multiple containers that share the same network and storage (sidecar pattern — e.g. app container + log collector container). ECS tasks can also have multiple containers, but Kubernetes makes this pattern more first-class.
 
 **Exam trigger:** *"company already uses Kubernetes on-premises"* → EKS. *"run containers on AWS with minimal complexity"* → ECS/Fargate.
