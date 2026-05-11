@@ -947,13 +947,31 @@ Queue drains            → CloudWatch Alarm → ECS Service scales in tasks
 
 **Fargate Auto Scaling** is easier — you just set the scaling policy. No capacity providers to manage.
 
-**ECS on EC2 — two layers of scaling:**
+**ECS on EC2 — two layers of scaling (why you need EC2 ASG with ECS):**
 
-With EC2 launch type, you need to scale **both** tasks and the underlying EC2 instances:
-- ECS scales tasks → but if there's no EC2 capacity, new tasks can't be placed
-- **Capacity Providers** handle this — automatically add/remove EC2 instances to match task demand
+With EC2 launch type, you scale **tasks** and **instances** separately. ECS already places tasks on the instance with the most available resources — but if **all** instances are full, there's nowhere to place new tasks.
 
-Fargate doesn't have this problem — AWS manages the compute.
+```
+Layer 1 — ECS Service Auto Scaling (tasks):
+"I need more containers running"
+
+Layer 2 — EC2 ASG Auto Scaling (instances):
+"I need more machines to put containers on"
+```
+
+The problem without both layers:
+
+```
+ECS: "Scale to 20 tasks"
+EC2 cluster: only has capacity for 12 tasks
+8 tasks stuck in PENDING ❌
+
+EC2 ASG adds 2 more instances → now capacity for 20 tasks ✅
+```
+
+**Capacity Providers** link ECS and ASG together — when ECS needs more task capacity, the ASG automatically adds instances. When tasks scale in, empty instances get terminated. Without Capacity Providers, you'd have to manage the two scaling layers independently.
+
+**This is why Fargate is simpler** — there are no instances. AWS handles the compute. You just scale tasks and never think about the underlying machines.
 
 ### EKS (Elastic Kubernetes Service)
 
