@@ -1152,11 +1152,21 @@ EKS:  Pod runs on  → EC2 node or Fargate
 
 **Fargate Profiles** define which pods run on Fargate based on namespace and labels. Pods that don't match a profile run on EC2 nodes. This lets you mix both in the same cluster — e.g. production pods on Fargate, batch jobs on EC2 Spot nodes.
 
+**AMIs still matter on EC2 launch type (ECS and EKS):**
+
+When using EC2, the nodes boot from an AMI. AWS provides optimised AMIs (Amazon Linux 2 with container runtime pre-installed), but you can also use Bottlerocket (hardened) or custom AMIs (specific software/security tools). On Fargate, AMIs are irrelevant — AWS manages the host.
+
+| | EC2 launch type | Fargate |
+| - | --------------- | ------- |
+| AMI | You choose (AWS-optimised, Bottlerocket, custom) | Not applicable — AWS manages |
+| OS patching | You (via AMI updates, rolling replacements) | AWS |
+
 **Exam triggers:**
 - *"company already uses Kubernetes on-premises"* → EKS
 - *"run containers on AWS with minimal complexity"* → ECS/Fargate
 - *"run Kubernetes pods without managing nodes"* → EKS on Fargate
 - *"need GPU for ML pods on Kubernetes"* → EKS on EC2
+- *"harden the OS on container nodes"* → Bottlerocket AMI
 
 ### AWS App Runner
 
