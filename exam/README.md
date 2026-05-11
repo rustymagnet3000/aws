@@ -1071,6 +1071,18 @@ You set a **target capacity percentage** (e.g. 80%):
 - Below target → ASG scales in (remove instances)
 - Above target → ASG scales out (add instances)
 
+**"Do busy tasks cause EC2 scaling?" — No.** It's new tasks needing placement that triggers it:
+
+```
+App gets busy
+→ ECS Service Auto Scaling: "I need more tasks"
+→ Capacity Provider: "do I have room on existing instances?"
+→ No room → tells ASG to add instances
+→ New instances join → tasks get placed
+```
+
+A single task hammering the CPU doesn't cause EC2 scaling by itself. The EC2 count only changes when ECS needs to **place new tasks** and there's no room. If a task runs hot but ECS hasn't decided to add more tasks, the instance count stays the same.
+
 **Exam triggers:**
 - *"reduce Fargate costs for fault-tolerant tasks"* → FARGATE_SPOT
 - *"mix of reliable and cost-effective compute"* → Capacity Provider Strategy (FARGATE + FARGATE_SPOT)
