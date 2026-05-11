@@ -973,6 +973,45 @@ EC2 ASG adds 2 more instances → now capacity for 20 tasks ✅
 
 **This is why Fargate is simpler** — there are no instances. AWS handles the compute. You just scale tasks and never think about the underlying machines.
 
+### ECS Capacity Providers
+
+Capacity Providers tell ECS **where and how to run tasks** — the link between your service and the underlying compute.
+
+**Three types:**
+
+| Capacity Provider | What it manages |
+| ----------------- | --------------- |
+| FARGATE | Serverless — AWS provisions compute per task |
+| FARGATE_SPOT | Same but on spare capacity — up to 70% cheaper, can be interrupted |
+| Auto Scaling Group | Your EC2 instances — scales them up/down based on task demand |
+
+**Capacity Provider Strategy — mixing compute types:**
+
+Run a single service across multiple providers with weights:
+
+```
+Service "web-api":
+  - FARGATE:      weight 1 (base: 2)  → always keep 2 Fargate tasks (guaranteed)
+  - FARGATE_SPOT: weight 3            → scale additional tasks on Spot (cheaper)
+```
+
+`base` = minimum tasks on that provider (always running). `weight` = ratio for additional tasks. For every 1 Fargate task added, 3 Spot tasks are added. The base of 2 ensures reliability even if Spot gets reclaimed.
+
+Real-world example: a web API needs at least 2 tasks for reliability but bursts to 20 during peaks. 2 tasks on FARGATE (always running), burst tasks on FARGATE_SPOT (70% cheaper, acceptable if some get interrupted).
+
+**EC2 Capacity Provider — managed scaling:**
+
+Links an ASG to ECS. You set a **target capacity percentage** (e.g. 80%):
+
+- Below 80% utilisation → ASG scales in (remove instances)
+- Above 80% utilisation → ASG scales out (add instances)
+- This is what prevents tasks getting stuck in PENDING
+
+**Exam triggers:**
+- *"reduce Fargate costs for fault-tolerant tasks"* → FARGATE_SPOT
+- *"mix of reliable and cost-effective compute"* → Capacity Provider Strategy (FARGATE + FARGATE_SPOT)
+- *"ECS tasks stuck in PENDING on EC2"* → EC2 Capacity Provider not configured
+
 ### EKS (Elastic Kubernetes Service)
 
 Managed **Kubernetes** on AWS. Same concept as ECS (run containers) but using the Kubernetes ecosystem instead of AWS's proprietary orchestrator.
