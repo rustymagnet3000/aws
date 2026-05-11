@@ -37,6 +37,7 @@
   - [ECS IAM Roles](#ecs-iam-roles)
   - [ECS + ALB (Dynamic Port Mapping)](#ecs--alb-dynamic-port-mapping)
   - [ECS Auto Scaling](#ecs-auto-scaling)
+  - [ECS Task Placement (EC2 only)](#ecs-task-placement-ec2-only)
   - [ECS Capacity Providers](#ecs-capacity-providers)
   - [EKS (Elastic Kubernetes Service)](#eks-elastic-kubernetes-service)
   - [AWS App Runner](#aws-app-runner)
@@ -973,6 +974,30 @@ EC2 ASG adds 2 more instances → now capacity for 20 tasks ✅
 **Capacity Providers** link ECS and ASG together — when ECS needs more task capacity, the ASG automatically adds instances. When tasks scale in, empty instances get terminated. Without Capacity Providers, you'd have to manage the two scaling layers independently.
 
 **This is why Fargate is simpler** — there are no instances. AWS handles the compute. You just scale tasks and never think about the underlying machines.
+
+### ECS Task Placement (EC2 only)
+
+When running ECS on EC2, ECS needs to decide **which instance** to place a task on. Not relevant for Fargate — AWS handles placement.
+
+**Placement strategies:**
+
+| Strategy | How it works | Use case |
+| -------- | ------------ | -------- |
+| binpack | Pack tasks onto fewest instances (fill up one before using the next) | Cost — minimise running instances |
+| spread | Spread tasks across AZs or instances evenly | Availability — survive instance/AZ failure |
+| random | Random placement | Testing |
+
+You can **combine strategies** — e.g. spread across AZs first, then binpack by memory within each AZ. This gives you HA (spread across AZs) while minimising cost (fewest instances per AZ).
+
+**Placement constraints:**
+
+- `distinctInstance` — each task on a different instance (no two tasks on the same host)
+- `memberOf` — place on instances matching an expression (e.g. only `t3.large` instances, or only instances in a specific AZ)
+
+**Exam triggers:**
+- *"reduce EC2 costs for ECS"* → binpack (fewer instances running)
+- *"maximise availability for ECS tasks"* → spread across AZs
+- *"each task must run on a different instance"* → distinctInstance constraint
 
 ### ECS Capacity Providers
 
