@@ -33,6 +33,7 @@
   - [When to choose EC2 over ECS](#when-to-choose-ec2-over-ecs)
   - [Bottlerocket](#bottlerocket)
   - [ECR (Elastic Container Registry)](#ecr-elastic-container-registry)
+  - [ECS Data Volumes](#ecs-data-volumes)
   - [ECS IAM Roles](#ecs-iam-roles)
   - [ECS + ALB (Dynamic Port Mapping)](#ecs--alb-dynamic-port-mapping)
   - [ECS Auto Scaling](#ecs-auto-scaling)
@@ -849,6 +850,26 @@ Developer → docker build → docker push → ECR → ECS/Fargate/EKS pulls ima
 - **Lifecycle policies** — auto-delete old/untagged images to save storage costs
 
 **Exam trigger:** *"store Docker images on AWS"* → ECR.
+
+### ECS Data Volumes
+
+Containers are ephemeral — a Fargate task stops and all data inside is gone. To persist or share data, you need a volume.
+
+| Volume type | Works with | Persistent? | Shared across tasks? | Use case |
+| ----------- | ---------- | ----------- | -------------------- | -------- |
+| EFS | Fargate + EC2 | Yes | Yes — multiple tasks mount the same EFS | Shared data, CMS uploads, ML models |
+| EBS | EC2 only | Yes | No — one task at a time | Database containers on EC2 launch type |
+| Ephemeral storage | Fargate | No — lost when task stops | No | Scratch space (20 GB default, up to 200 GB) |
+| Bind mounts | EC2 only | Depends on instance | Between containers in same task | Sidecar sharing (log collector reading app logs) |
+
+The exam answer is almost always **EFS + Fargate** — persistent shared storage across serverless containers.
+
+**EBS doesn't work with Fargate** — there's no EC2 instance to attach it to. This is a common trap answer.
+
+**Exam triggers:**
+- *"Fargate tasks need persistent shared storage"* → EFS
+- *"multiple containers need to access the same files"* → EFS
+- *"persistent block storage for ECS containers"* → EBS (EC2 launch type only, not Fargate)
 
 ### ECS IAM Roles
 
