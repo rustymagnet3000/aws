@@ -40,6 +40,7 @@
   - [ECS Task Placement (EC2 only)](#ecs-task-placement-ec2-only)
   - [ECS Capacity Providers](#ecs-capacity-providers)
   - [EKS (Elastic Kubernetes Service)](#eks-elastic-kubernetes-service)
+  - [IRSA (IAM Roles for Service Accounts)](#irsa-iam-roles-for-service-accounts)
   - [AWS App Runner](#aws-app-runner)
 - [RDS (Relational Database Service)](#rds-relational-database-service)
   - [RDS and Aurora Security](#rds-and-aurora-security)
@@ -1167,6 +1168,30 @@ When using EC2, the nodes boot from an AMI. AWS provides optimised AMIs (Amazon 
 - *"run Kubernetes pods without managing nodes"* → EKS on Fargate
 - *"need GPU for ML pods on Kubernetes"* → EKS on EC2
 - *"harden the OS on container nodes"* → Bottlerocket AMI
+
+### IRSA (IAM Roles for Service Accounts)
+
+How EKS pods get AWS permissions — the equivalent of ECS Task Roles.
+
+In ECS, you attach a Task Role to a task definition and the container gets AWS credentials automatically. In EKS, the same concept exists but uses Kubernetes-native Service Accounts linked to IAM Roles:
+
+```
+ECS:  Task Definition → Task Role (IAM) → container gets AWS credentials
+EKS:  Pod → Service Account → linked to IAM Role (IRSA) → pod gets AWS credentials
+```
+
+**How it works:**
+
+1. Create an IAM Role with the permissions your pod needs (e.g. S3 read)
+2. Create a Kubernetes Service Account and annotate it with the IAM Role ARN
+3. Assign the Service Account to your pod
+4. The pod automatically gets temporary credentials for that IAM Role
+
+**Why not just use the Node IAM Role?** The node role applies to **every pod** on that instance. IRSA gives each pod its own permissions — pod A can access S3 while pod B on the same node cannot. Least-privilege per pod.
+
+**Exam triggers:**
+- *"EKS pod needs to access S3/DynamoDB"* → IRSA
+- *"least-privilege permissions for Kubernetes pods"* → IRSA (not node role)
 
 ### AWS App Runner (being discontinued)
 
