@@ -932,6 +932,30 @@ Each task registers itself with the ALB Target Group on its dynamic port. The AL
 
 ### ECS Auto Scaling
 
+**Does scaling tasks cost money?** Depends on the launch type:
+
+On EC2: if the instance has spare CPU/memory, adding tasks is free — you're already paying for the instance. Like renting an apartment: putting more furniture in doesn't increase your rent until you need a second apartment.
+
+```
+EC2 instance (4 vCPU, 8 GB) — you pay for this regardless
+├── Task A (1 vCPU, 2 GB) — no extra cost
+├── Task B (1 vCPU, 2 GB) — no extra cost
+├── Task C (1 vCPU, 2 GB) — no extra cost
+└── Spare: 1 vCPU, 2 GB   — room for one more
+
+Task D → fits in spare → $0 extra
+Task E → no room → Capacity Provider adds new instance → now you pay more
+```
+
+On Fargate: every task costs money — you pay per vCPU/memory per second. More tasks = more cost, always.
+
+| | ECS on EC2 | ECS on Fargate |
+| - | ---------- | -------------- |
+| More tasks costs more? | Only if you need more instances | Always — pay per task |
+| Spare capacity | Free to use | No concept of spare |
+
+This is why **binpack saves money** on EC2 — fill up existing instances before adding new ones.
+
 ECS scales **tasks** (not EC2 instances). Three scaling strategies:
 
 | Strategy | How it works |
