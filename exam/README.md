@@ -1060,6 +1060,22 @@ Managed **Kubernetes** on AWS. Same concept as ECS (run containers) but using th
 
 **When to use ECS:** everything else. Simpler, cheaper, less operational overhead.
 
+**ECS to EKS concept mapping:**
+
+If you know ECS, you already understand EKS — just different names:
+
+| ECS | EKS / Kubernetes | What it is |
+| --- | ---------------- | ---------- |
+| Task Definition | Pod spec / Deployment YAML | Blueprint for your container(s) |
+| Task | Pod | Running instance of the blueprint |
+| Service | Service + Deployment | Keeps desired number of pods running, load balances |
+| Cluster | Cluster | Logical grouping of everything |
+| Task Role | Service Account (IRSA) | Your app's AWS permissions |
+| Task Execution Role | Node IAM Role | Infrastructure plumbing (pull images, write logs) |
+| Capacity Provider | Node Group / Fargate Profile | Where pods run (EC2 instances or Fargate) |
+
+A Pod can run multiple containers that share the same network and storage (sidecar pattern — e.g. app container + log collector container). ECS tasks can also have multiple containers, but Kubernetes makes this pattern more first-class.
+
 **Exam trigger:** *"company already uses Kubernetes on-premises"* → EKS. *"run containers on AWS with minimal complexity"* → ECS/Fargate.
 
 ### AWS App Runner
