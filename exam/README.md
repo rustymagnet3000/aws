@@ -37,6 +37,8 @@
   - [ECS IAM Roles](#ecs-iam-roles)
   - [ECS + ALB (Dynamic Port Mapping)](#ecs--alb-dynamic-port-mapping)
   - [ECS Auto Scaling](#ecs-auto-scaling)
+  - [ECS Task Placement (EC2 only)](#ecs-task-placement-ec2-only)
+  - [ECS Capacity Providers](#ecs-capacity-providers)
   - [EKS (Elastic Kubernetes Service)](#eks-elastic-kubernetes-service)
   - [AWS App Runner](#aws-app-runner)
 - [RDS (Relational Database Service)](#rds-relational-database-service)
@@ -881,11 +883,31 @@ Two separate roles — this confuses people:
 | Task Role | The container itself | Your app's permissions — access S3, DynamoDB, SQS, etc. |
 
 ```
-ECS Agent uses Execution Role → pull image from ECR, send logs to CloudWatch
-Your app uses Task Role       → read from S3, write to DynamoDB
+┌─────────────────────────────────────────────────────────┐
+│  ECS Task                                               │
+│                                                         │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │  Task Execution Role (infrastructure plumbing)  │    │
+│  │  Used by: ECS Agent                             │    │
+│  │                                                 │    │
+│  │  → Pull image from ECR                          │    │
+│  │  → Write logs to CloudWatch                     │    │
+│  │  → Read secrets from Secrets Manager             │    │
+│  └─────────────────────────────────────────────────┘    │
+│                                                         │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │  Task Role (your app's permissions)             │    │
+│  │  Used by: your container code                   │    │
+│  │                                                 │    │
+│  │  → Read/write S3                                │    │
+│  │  → Query DynamoDB                               │    │
+│  │  → Send messages to SQS                         │    │
+│  │  → (whatever your app needs)                    │    │
+│  └─────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────┘
 ```
 
-Think of it as: **Execution Role = infrastructure plumbing** (get the container running). **Task Role = your app's permissions** (what the container does once running).
+**Execution Role = get the container running.** **Task Role = what the container does once running.**
 
 **Exam triggers:**
 - *"container can't pull image from ECR"* → Task Execution Role is missing or wrong
@@ -927,13 +949,94 @@ Queue drains            → CloudWatch Alarm → ECS Service scales in tasks
 
 **Fargate Auto Scaling** is easier — you just set the scaling policy. No capacity providers to manage.
 
-**ECS on EC2 — two layers of scaling:**
+**ECS on EC2 — two layers of scaling (why you need EC2 ASG with ECS):**
 
-With EC2 launch type, you need to scale **both** tasks and the underlying EC2 instances:
-- ECS scales tasks → but if there's no EC2 capacity, new tasks can't be placed
-- **Capacity Providers** handle this — automatically add/remove EC2 instances to match task demand
+With EC2 launch type, you scale **tasks** and **instances** separately. ECS already places tasks on the instance with the most available resources — but if **all** instances are full, there's nowhere to place new tasks.
 
-Fargate doesn't have this problem — AWS manages the compute.
+```
+Layer 1 — ECS Service Auto Scaling (tasks):
+"I need more containers running"
+
+Layer 2 — EC2 ASG Auto Scaling (instances):
+"I need more machines to put containers on"
+```
+
+The problem without both layers:
+
+```
+ECS: "Scale to 20 tasks"
+EC2 cluster: only has capacity for 12 tasks
+8 tasks stuck in PENDING ❌
+
+EC2 ASG adds 2 more instances → now capacity for 20 tasks ✅
+```
+
+**Capacity Providers** link ECS and ASG together — when ECS needs more task capacity, the ASG automatically adds instances. When tasks scale in, empty instances get terminated. Without Capacity Providers, you'd have to manage the two scaling layers independently.
+
+**This is why Fargate is simpler** — there are no instances. AWS handles the compute. You just scale tasks and never think about the underlying machines.
+
+### ECS Task Placement (EC2 only)
+
+When running ECS on EC2, ECS needs to decide **which instance** to place a task on. Not relevant for Fargate — AWS handles placement.
+
+**Placement strategies:**
+
+| Strategy | How it works | Use case |
+| -------- | ------------ | -------- |
+| binpack | Pack tasks onto fewest instances (fill up one before using the next) | Cost — minimise running instances |
+| spread | Spread tasks across AZs or instances evenly | Availability — survive instance/AZ failure |
+| random | Random placement | Testing |
+
+You can **combine strategies** — e.g. spread across AZs first, then binpack by memory within each AZ. This gives you HA (spread across AZs) while minimising cost (fewest instances per AZ).
+
+**Placement constraints:**
+
+- `distinctInstance` — each task on a different instance (no two tasks on the same host)
+- `memberOf` — place on instances matching an expression (e.g. only `t3.large` instances, or only instances in a specific AZ)
+
+**Exam triggers:**
+- *"reduce EC2 costs for ECS"* → binpack (fewer instances running)
+- *"maximise availability for ECS tasks"* → spread across AZs
+- *"each task must run on a different instance"* → distinctInstance constraint
+
+### ECS Capacity Providers
+
+Capacity Providers tell ECS **where and how to run tasks** — the link between your service and the underlying compute.
+
+**Three types:**
+
+| Capacity Provider | What it manages |
+| ----------------- | --------------- |
+| FARGATE | Serverless — AWS provisions compute per task |
+| FARGATE_SPOT | Same but on spare capacity — up to 70% cheaper, can be interrupted |
+| Auto Scaling Group | Your EC2 instances — scales them up/down based on task demand |
+
+**Capacity Provider Strategy — mixing compute types:**
+
+Run a single service across multiple providers with weights:
+
+```
+Service "web-api":
+  - FARGATE:      weight 1 (base: 2)  → always keep 2 Fargate tasks (guaranteed)
+  - FARGATE_SPOT: weight 3            → scale additional tasks on Spot (cheaper)
+```
+
+`base` = minimum tasks on that provider (always running). `weight` = ratio for additional tasks. For every 1 Fargate task added, 3 Spot tasks are added. The base of 2 ensures reliability even if Spot gets reclaimed.
+
+Real-world example: a web API needs at least 2 tasks for reliability but bursts to 20 during peaks. 2 tasks on FARGATE (always running), burst tasks on FARGATE_SPOT (70% cheaper, acceptable if some get interrupted).
+
+**EC2 Capacity Provider — managed scaling:**
+
+Links an ASG to ECS. You set a **target capacity percentage** (e.g. 80%):
+
+- Below 80% utilisation → ASG scales in (remove instances)
+- Above 80% utilisation → ASG scales out (add instances)
+- This is what prevents tasks getting stuck in PENDING
+
+**Exam triggers:**
+- *"reduce Fargate costs for fault-tolerant tasks"* → FARGATE_SPOT
+- *"mix of reliable and cost-effective compute"* → Capacity Provider Strategy (FARGATE + FARGATE_SPOT)
+- *"ECS tasks stuck in PENDING on EC2"* → EC2 Capacity Provider not configured
 
 ### EKS (Elastic Kubernetes Service)
 
