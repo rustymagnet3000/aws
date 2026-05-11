@@ -40,6 +40,7 @@
   - [ECS Task Placement (EC2 only)](#ecs-task-placement-ec2-only)
   - [ECS Capacity Providers](#ecs-capacity-providers)
   - [EKS (Elastic Kubernetes Service)](#eks-elastic-kubernetes-service)
+  - [IRSA (IAM Roles for Service Accounts)](#irsa-iam-roles-for-service-accounts)
   - [AWS App Runner](#aws-app-runner)
 - [RDS (Relational Database Service)](#rds-relational-database-service)
   - [RDS and Aurora Security](#rds-and-aurora-security)
@@ -932,6 +933,30 @@ Each task registers itself with the ALB Target Group on its dynamic port. The AL
 
 ### ECS Auto Scaling
 
+**Does scaling tasks cost money?** Depends on the launch type:
+
+On EC2: if the instance has spare CPU/memory, adding tasks is free — you're already paying for the instance. Like renting an apartment: putting more furniture in doesn't increase your rent until you need a second apartment.
+
+```
+EC2 instance (4 vCPU, 8 GB) — you pay for this regardless
+├── Task A (1 vCPU, 2 GB) — no extra cost
+├── Task B (1 vCPU, 2 GB) — no extra cost
+├── Task C (1 vCPU, 2 GB) — no extra cost
+└── Spare: 1 vCPU, 2 GB   — room for one more
+
+Task D → fits in spare → $0 extra
+Task E → no room → Capacity Provider adds new instance → now you pay more
+```
+
+On Fargate: every task costs money — you pay per vCPU/memory per second. More tasks = more cost, always.
+
+| | ECS on EC2 | ECS on Fargate |
+| - | ---------- | -------------- |
+| More tasks costs more? | Only if you need more instances | Always — pay per task |
+| Spare capacity | Free to use | No concept of spare |
+
+This is why **binpack saves money** on EC2 — fill up existing instances before adding new ones.
+
 ECS scales **tasks** (not EC2 instances). Three scaling strategies:
 
 | Strategy | How it works |
@@ -1027,11 +1052,37 @@ Real-world example: a web API needs at least 2 tasks for reliability but bursts 
 
 **EC2 Capacity Provider — managed scaling:**
 
-Links an ASG to ECS. You set a **target capacity percentage** (e.g. 80%):
+Links an ASG to ECS. The Capacity Provider tracks how much CPU/memory is **reserved** across all instances — not actual usage. Each task reserves capacity when placed:
 
-- Below 80% utilisation → ASG scales in (remove instances)
-- Above 80% utilisation → ASG scales out (add instances)
-- This is what prevents tasks getting stuck in PENDING
+```
+EC2 instance (4 vCPU, 8 GB)
+
+Task A reserves 1 vCPU, 2 GB → 3 vCPU, 6 GB remaining
+Task B reserves 1 vCPU, 2 GB → 2 vCPU, 4 GB remaining
+Task C reserves 1 vCPU, 2 GB → 1 vCPU, 2 GB remaining
+Task D needs    2 vCPU, 4 GB → won't fit → Capacity Provider scales out
+```
+
+It doesn't matter if Task A is actually using 0.1 vCPU — it reserved 1 vCPU, so that capacity is unavailable. This is why right-sizing task definitions matters: over-reserve and you waste capacity, under-reserve and tasks compete for resources.
+
+You set a **target capacity percentage** (e.g. 80%):
+
+- At 100%: instances packed full before scaling — risk of tasks going PENDING
+- At 80%: scale out when 80% reserved — keeps 20% headroom for bursts
+- Below target → ASG scales in (remove instances)
+- Above target → ASG scales out (add instances)
+
+**"Do busy tasks cause EC2 scaling?" — No.** It's new tasks needing placement that triggers it:
+
+```
+App gets busy
+→ ECS Service Auto Scaling: "I need more tasks"
+→ Capacity Provider: "do I have room on existing instances?"
+→ No room → tells ASG to add instances
+→ New instances join → tasks get placed
+```
+
+A single task hammering the CPU doesn't cause EC2 scaling by itself. The EC2 count only changes when ECS needs to **place new tasks** and there's no room. If a task runs hot but ECS hasn't decided to add more tasks, the instance count stays the same.
 
 **Exam triggers:**
 - *"reduce Fargate costs for fault-tolerant tasks"* → FARGATE_SPOT
@@ -1060,11 +1111,93 @@ Managed **Kubernetes** on AWS. Same concept as ECS (run containers) but using th
 
 **When to use ECS:** everything else. Simpler, cheaper, less operational overhead.
 
-**Exam trigger:** *"company already uses Kubernetes on-premises"* → EKS. *"run containers on AWS with minimal complexity"* → ECS/Fargate.
+**ECS to EKS concept mapping:**
 
-### AWS App Runner
+If you know ECS, you already understand EKS — just different names:
+
+| ECS | EKS / Kubernetes | What it is |
+| --- | ---------------- | ---------- |
+| Task Definition | Pod spec / Deployment YAML | Blueprint for your container(s) |
+| Task | Pod | Running instance of the blueprint |
+| Service | Service + Deployment | Keeps desired number of pods running, load balances |
+| Cluster | Cluster | Logical grouping of everything |
+| Task Role | Service Account (IRSA) | Your app's AWS permissions |
+| Task Execution Role | Node IAM Role | Infrastructure plumbing (pull images, write logs) |
+| Capacity Provider | Node Group / Fargate Profile | Where pods run (EC2 instances or Fargate) |
+
+**Don't confuse Task Definition with Task:**
+
+- **Task Definition / Pod spec** = the recipe (image, CPU, memory, ports, env vars)
+- **Task / Pod** = the meal you cooked from that recipe (a running instance)
+
+You can run 10 Tasks from 1 Task Definition, just like Kubernetes runs 10 Pods from 1 Deployment spec.
+
+A Pod can run multiple containers that share the same network and storage (sidecar pattern — e.g. app container + log collector container). ECS tasks can also have multiple containers, but Kubernetes makes this pattern more first-class.
+
+**EKS compute — same choice as ECS:**
+
+EKS needs compute underneath — you choose EC2 or Fargate, just like ECS:
+
+```
+ECS:  Task runs on → EC2 instance or Fargate
+EKS:  Pod runs on  → EC2 node or Fargate
+      (same concept, different names)
+```
+
+| | EKS on EC2 (Node Groups) | EKS on Fargate |
+| - | ------------------------ | -------------- |
+| You manage | EC2 instances (nodes) | Nothing |
+| Scaling | You scale nodes + pods | Just scale pods |
+| Cost | Pay for instances | Pay per pod |
+| Use case | Full control, GPU, cost optimisation | Serverless, minimal ops |
+
+**Fargate Profiles** define which pods run on Fargate based on namespace and labels. Pods that don't match a profile run on EC2 nodes. This lets you mix both in the same cluster — e.g. production pods on Fargate, batch jobs on EC2 Spot nodes.
+
+**AMIs still matter on EC2 launch type (ECS and EKS):**
+
+When using EC2, the nodes boot from an AMI. AWS provides optimised AMIs (Amazon Linux 2 with container runtime pre-installed), but you can also use Bottlerocket (hardened) or custom AMIs (specific software/security tools). On Fargate, AMIs are irrelevant — AWS manages the host.
+
+| | EC2 launch type | Fargate |
+| - | --------------- | ------- |
+| AMI | You choose (AWS-optimised, Bottlerocket, custom) | Not applicable — AWS manages |
+| OS patching | You (via AMI updates, rolling replacements) | AWS |
+
+**Exam triggers:**
+- *"company already uses Kubernetes on-premises"* → EKS
+- *"run containers on AWS with minimal complexity"* → ECS/Fargate
+- *"run Kubernetes pods without managing nodes"* → EKS on Fargate
+- *"need GPU for ML pods on Kubernetes"* → EKS on EC2
+- *"harden the OS on container nodes"* → Bottlerocket AMI
+
+### IRSA (IAM Roles for Service Accounts)
+
+How EKS pods get AWS permissions — the equivalent of ECS Task Roles.
+
+In ECS, you attach a Task Role to a task definition and the container gets AWS credentials automatically. In EKS, the same concept exists but uses Kubernetes-native Service Accounts linked to IAM Roles:
+
+```
+ECS:  Task Definition → Task Role (IAM) → container gets AWS credentials
+EKS:  Pod → Service Account → linked to IAM Role (IRSA) → pod gets AWS credentials
+```
+
+**How it works:**
+
+1. Create an IAM Role with the permissions your pod needs (e.g. S3 read)
+2. Create a Kubernetes Service Account and annotate it with the IAM Role ARN
+3. Assign the Service Account to your pod
+4. The pod automatically gets temporary credentials for that IAM Role
+
+**Why not just use the Node IAM Role?** The node role applies to **every pod** on that instance. IRSA gives each pod its own permissions — pod A can access S3 while pod B on the same node cannot. Least-privilege per pod.
+
+**Exam triggers:**
+- *"EKS pod needs to access S3/DynamoDB"* → IRSA
+- *"least-privilege permissions for Kubernetes pods"* → IRSA (not node role)
+
+### AWS App Runner (being discontinued)
 
 The simplest way to run a container or web app on AWS — even simpler than Fargate. You give it source code or a container image, App Runner handles everything: build, deploy, scale, load balancing, TLS.
+
+**Note:** App Runner stopped accepting new customers April 30, 2026. AWS recommends **ECS Express Mode** as the replacement. May still appear on the current exam.
 
 ```
 Source code (GitHub) → App Runner → running HTTPS app with auto-scaling
