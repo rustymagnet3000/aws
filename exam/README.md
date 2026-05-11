@@ -881,11 +881,31 @@ Two separate roles — this confuses people:
 | Task Role | The container itself | Your app's permissions — access S3, DynamoDB, SQS, etc. |
 
 ```
-ECS Agent uses Execution Role → pull image from ECR, send logs to CloudWatch
-Your app uses Task Role       → read from S3, write to DynamoDB
+┌─────────────────────────────────────────────────────────┐
+│  ECS Task                                               │
+│                                                         │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │  Task Execution Role (infrastructure plumbing)  │    │
+│  │  Used by: ECS Agent                             │    │
+│  │                                                 │    │
+│  │  → Pull image from ECR                          │    │
+│  │  → Write logs to CloudWatch                     │    │
+│  │  → Read secrets from Secrets Manager             │    │
+│  └─────────────────────────────────────────────────┘    │
+│                                                         │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │  Task Role (your app's permissions)             │    │
+│  │  Used by: your container code                   │    │
+│  │                                                 │    │
+│  │  → Read/write S3                                │    │
+│  │  → Query DynamoDB                               │    │
+│  │  → Send messages to SQS                         │    │
+│  │  → (whatever your app needs)                    │    │
+│  └─────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────┘
 ```
 
-Think of it as: **Execution Role = infrastructure plumbing** (get the container running). **Task Role = your app's permissions** (what the container does once running).
+**Execution Role = get the container running.** **Task Role = what the container does once running.**
 
 **Exam triggers:**
 - *"container can't pull image from ECR"* → Task Execution Role is missing or wrong
