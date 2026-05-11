@@ -1133,7 +1133,30 @@ You can run 10 Tasks from 1 Task Definition, just like Kubernetes runs 10 Pods f
 
 A Pod can run multiple containers that share the same network and storage (sidecar pattern — e.g. app container + log collector container). ECS tasks can also have multiple containers, but Kubernetes makes this pattern more first-class.
 
-**Exam trigger:** *"company already uses Kubernetes on-premises"* → EKS. *"run containers on AWS with minimal complexity"* → ECS/Fargate.
+**EKS compute — same choice as ECS:**
+
+EKS needs compute underneath — you choose EC2 or Fargate, just like ECS:
+
+```
+ECS:  Task runs on → EC2 instance or Fargate
+EKS:  Pod runs on  → EC2 node or Fargate
+      (same concept, different names)
+```
+
+| | EKS on EC2 (Node Groups) | EKS on Fargate |
+| - | ------------------------ | -------------- |
+| You manage | EC2 instances (nodes) | Nothing |
+| Scaling | You scale nodes + pods | Just scale pods |
+| Cost | Pay for instances | Pay per pod |
+| Use case | Full control, GPU, cost optimisation | Serverless, minimal ops |
+
+**Fargate Profiles** define which pods run on Fargate based on namespace and labels. Pods that don't match a profile run on EC2 nodes. This lets you mix both in the same cluster — e.g. production pods on Fargate, batch jobs on EC2 Spot nodes.
+
+**Exam triggers:**
+- *"company already uses Kubernetes on-premises"* → EKS
+- *"run containers on AWS with minimal complexity"* → ECS/Fargate
+- *"run Kubernetes pods without managing nodes"* → EKS on Fargate
+- *"need GPU for ML pods on Kubernetes"* → EKS on EC2
 
 ### AWS App Runner
 
