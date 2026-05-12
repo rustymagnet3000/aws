@@ -4083,6 +4083,22 @@ Run code without provisioning servers. Upload your function, define a trigger, A
 - **Concurrency:** up to 1,000 concurrent executions per region (soft limit, can increase)
 - **Pricing:** pay per request + per GB-second of compute. Free tier: 1M requests + 400,000 GB-seconds/month
 
+**Lambda limits (exam favourites):**
+
+| Limit | Value |
+| ----- | ----- |
+| Execution timeout | **15 minutes** max |
+| Memory | 128 MB – 10 GB |
+| Ephemeral storage (`/tmp`) | Up to 10 GB |
+| Deployment package (zipped) | 50 MB |
+| Deployment package (unzipped) | 250 MB |
+| Environment variables | 4 KB total |
+| Concurrency per region | 1,000 (soft limit, can increase) |
+
+The **15-minute timeout** is the most tested limit. If a question describes a process taking longer than 15 minutes, Lambda is the wrong answer — use ECS/Fargate, Step Functions, or AWS Batch instead.
+
+The **deployment package size** matters too — if your function + dependencies exceed 250 MB unzipped, use Lambda Layers to split dependencies out, or use a container image (up to 10 GB).
+
 **Common triggers:**
 
 | Trigger | Use case |
