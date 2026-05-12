@@ -4113,13 +4113,41 @@ The **deployment package size** matters too — if your function + dependencies 
 
 **Lambda concurrency:**
 
-| | Unreserved | Reserved | Provisioned |
-| - | ---------- | -------- | ----------- |
-| How | Shared pool across all functions | Guaranteed concurrency set aside for one function | Pre-warmed instances, always ready |
-| Cold starts? | Yes | Yes | No |
-| Use case | Default | Ensure critical function always has capacity | Latency-sensitive (API backends) |
+Your Lambda function can only run **1,000 copies at the same time** per region (default). All functions **share** this pool.
 
-**Cold starts:** first invocation after idle spins up a new execution environment (~100ms–few seconds). Subsequent invocations reuse the warm environment. Provisioned Concurrency eliminates cold starts by keeping instances warm.
+The problem — one function starves another:
+
+```
+Total pool: 1,000
+Function A (API backend):       uses 900 during a spike
+Function B (image processing):  needs 100 → gets 100 → OK
+Function C (payments):          needs 50 → no capacity left → THROTTLED ❌
+```
+
+The fix — **Reserved Concurrency** guarantees capacity for critical functions:
+
+```
+Function C (payments): 200 reserved → always has 200, nobody can take them
+Remaining pool: 800 → shared by Functions A and B
+```
+
+Function C always works even if A and B go crazy. Trade-off: A and B now share only 800.
+
+**Reserved vs Provisioned — different problems:**
+
+```
+Reserved:    "guarantee me 200 slots" (still has cold starts on first use)
+Provisioned: "keep 200 instances warm at all times" (zero cold starts, costs money)
+```
+
+| | Unreserved (default) | Reserved | Provisioned |
+| - | -------------------- | -------- | ----------- |
+| Problem it solves | Nothing — shared pool | Throttling (one function starving others) | Cold starts (latency on first call) |
+| Cold starts? | Yes | Yes | No |
+| Cost | Free | Free (just reserves slots) | Costs money (instances running idle) |
+| Use case | Default | Critical functions that must not be throttled | Latency-sensitive (API backends) |
+
+**Cold starts:** first invocation after idle spins up a new execution environment (~100ms to a few seconds). Subsequent invocations reuse the warm environment. Provisioned Concurrency eliminates this by keeping instances warm.
 
 **Lambda Layers:**
 
