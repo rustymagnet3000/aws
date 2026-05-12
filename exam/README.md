@@ -1223,7 +1223,10 @@ Container image (ECR) → App Runner → running HTTPS app with auto-scaling
 | ECS | AWS container orchestrator | Run containers with AWS-native tooling |
 | EKS | Managed Kubernetes | Run containers with K8s ecosystem, multi-cloud |
 | Fargate | Serverless compute for ECS/EKS | No instances to manage |
-| App Runner | Simplest container deployment | Quick web apps, minimal config |
+| App Runner | Simplest container deployment (being discontinued) | Quick web apps, minimal config |
+| App2Container (A2C) | Containerisation tool | Migrate existing Java/.NET apps to containers without rewriting code |
+
+**App2Container** analyses an existing app running on-prem or EC2, generates a Dockerfile, builds the image, and creates ECS/EKS task definitions. Exam trigger: *"containerise an existing application without rewriting code"* → App2Container.
 
 ## RDS (Relational Database Service)
 
