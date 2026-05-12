@@ -115,6 +115,13 @@
   - [Loading Data into Redshift](#loading-data-into-redshift)
   - [Redshift vs Athena](#redshift-vs-athena)
   - [Redshift Snapshots](#redshift-snapshots)
+- [Serverless](#serverless-1)
+  - [AWS Lambda](#aws-lambda)
+  - [DynamoDB](#dynamodb)
+  - [API Gateway](#api-gateway)
+  - [Step Functions](#step-functions)
+  - [Amazon Cognito](#amazon-cognito)
+  - [Serverless Quick Reference](#serverless-quick-reference)
 
 <!-- /TOC -->
 
@@ -4058,3 +4065,281 @@ Both query data in S3 with SQL, but for different use cases:
 - *"query S3 data from within Redshift"* → Redshift Spectrum
 - *"OLAP workload"* → Redshift
 - *"OLTP workload"* → RDS/Aurora
+
+## Serverless
+
+Services where you don't manage any infrastructure — no servers, no patching, no capacity planning. You pay for what you use.
+
+### AWS Lambda
+
+Run code without provisioning servers. Upload your function, define a trigger, AWS handles the rest.
+
+**Key properties:**
+
+- **Languages:** Python, Node.js, Java, .NET, Go, Ruby, custom runtimes
+- **Timeout:** max **15 minutes** per invocation — not for long-running jobs
+- **Memory:** 128 MB to 10 GB (CPU scales proportionally with memory)
+- **Ephemeral storage:** `/tmp` directory, up to 10 GB — cleared between invocations
+- **Concurrency:** up to 1,000 concurrent executions per region (soft limit, can increase)
+- **Pricing:** pay per request + per GB-second of compute. Free tier: 1M requests + 400,000 GB-seconds/month
+
+**Common triggers:**
+
+| Trigger | Use case |
+| ------- | -------- |
+| API Gateway | REST/HTTP API endpoint |
+| S3 event | Process file on upload (thumbnail, virus scan) |
+| SQS | Process messages from a queue |
+| SNS | React to notifications |
+| DynamoDB Streams | React to database changes |
+| CloudWatch Events/EventBridge | Scheduled tasks (cron), react to AWS events |
+| Kinesis | Process streaming data |
+
+**Lambda concurrency:**
+
+| | Unreserved | Reserved | Provisioned |
+| - | ---------- | -------- | ----------- |
+| How | Shared pool across all functions | Guaranteed concurrency set aside for one function | Pre-warmed instances, always ready |
+| Cold starts? | Yes | Yes | No |
+| Use case | Default | Ensure critical function always has capacity | Latency-sensitive (API backends) |
+
+**Cold starts:** first invocation after idle spins up a new execution environment (~100ms–few seconds). Subsequent invocations reuse the warm environment. Provisioned Concurrency eliminates cold starts by keeping instances warm.
+
+**Lambda Layers:**
+
+Shared libraries/dependencies packaged separately from your function code. Multiple functions can use the same layer — avoids duplicating dependencies in every deployment package.
+
+**Versions and Aliases:**
+
+- **Version** — an immutable snapshot of your function code + config. `$LATEST` is always the newest.
+- **Alias** — a pointer to a version (e.g. `prod` → version 5, `dev` → `$LATEST`). Can split traffic between two versions for canary deployments (e.g. `prod` sends 90% to v5, 10% to v6).
+
+**Lambda Destinations:**
+
+Route the result of an async invocation to another service — on success or failure:
+
+```
+Lambda invoked async
+├── Success → send result to SQS, SNS, Lambda, or EventBridge
+└── Failure → send error to SQS, SNS, Lambda, or EventBridge (for debugging)
+```
+
+Better than DLQ — destinations work for both success and failure, DLQ only handles failures.
+
+**Exam triggers:**
+- *"run code without managing servers"* → Lambda
+- *"process takes longer than 15 minutes"* → NOT Lambda (use ECS/Fargate, Step Functions, or Batch)
+- *"eliminate cold starts"* → Provisioned Concurrency
+- *"one Lambda function is starving others of concurrency"* → Reserved Concurrency
+- *"canary deployment for a Lambda function"* → Aliases with traffic splitting
+- *"share dependencies across multiple Lambda functions"* → Lambda Layers
+
+### DynamoDB
+
+Fully managed **NoSQL** database — serverless, single-digit millisecond latency at any scale.
+
+**Key concepts:**
+
+- **Table** — a collection of items (like rows)
+- **Item** — a single record (like a row), max 400 KB
+- **Primary key** — uniquely identifies each item. Two types:
+  - **Partition key** — single attribute (e.g. `user_id`)
+  - **Partition key + Sort key** — composite (e.g. `user_id` + `timestamp`) — allows range queries
+
+**Capacity modes:**
+
+| | Provisioned | On-Demand |
+| - | ----------- | --------- |
+| Throughput | You specify RCU/WCU | Auto-scales |
+| Cost | Cheaper at steady load | More expensive, but no planning |
+| Scaling | Auto-scaling available (but you set min/max) | Instant |
+| Use case | Predictable traffic | Unpredictable, spiky traffic |
+
+RCU = Read Capacity Unit (4 KB strongly consistent read/s). WCU = Write Capacity Unit (1 KB write/s).
+
+**Indexes:**
+
+| | Global Secondary Index (GSI) | Local Secondary Index (LSI) |
+| - | ---------------------------- | --------------------------- |
+| When to create | Any time | At table creation only |
+| Key | Different partition key + sort key | Same partition key, different sort key |
+| Reads | Eventually consistent only | Strongly or eventually consistent |
+| Use case | Query by a completely different attribute | Query same partition key with a different sort |
+
+**DynamoDB Streams:**
+
+Captures a time-ordered sequence of item-level changes (insert, update, delete) in a table. Feed changes to Lambda for real-time reactions:
+
+```
+DynamoDB table → Stream → Lambda → send welcome email when new user is created
+                                 → update search index when product is modified
+                                 → replicate data to another table/region
+```
+
+**DynamoDB Accelerator (DAX):**
+
+In-memory cache **specifically for DynamoDB** — sits in front of your table, caches reads. Microsecond response times vs milliseconds.
+
+```
+Without DAX: App → DynamoDB (5ms)
+With DAX:    App → DAX (0.1ms, cache hit) or → DynamoDB (5ms, cache miss)
+```
+
+**DAX vs ElastiCache:** DAX is for DynamoDB only, no code changes needed (same API). ElastiCache is general-purpose caching for any data source but requires code changes.
+
+**DynamoDB Global Tables:**
+
+Multi-region, multi-active replication. Write to any region, changes replicate to all others. Requires DynamoDB Streams enabled.
+
+- Use case: global app where users in any region need low-latency reads AND writes
+- Different from Aurora Global Database — Aurora is active-passive (one writer), DynamoDB Global Tables is active-active (write anywhere)
+
+**Exam triggers:**
+- *"serverless NoSQL database"* → DynamoDB
+- *"single-digit millisecond latency at any scale"* → DynamoDB
+- *"microsecond read latency for DynamoDB"* → DAX
+- *"react to changes in a DynamoDB table"* → DynamoDB Streams + Lambda
+- *"multi-region active-active database"* → DynamoDB Global Tables
+- *"unpredictable traffic on a NoSQL database"* → DynamoDB On-Demand
+- *"schema-less, flexible data model"* → DynamoDB
+- *"need complex joins and relationships"* → NOT DynamoDB, use RDS
+
+### API Gateway
+
+Managed service for creating, publishing, and securing REST/HTTP APIs. The front door for your serverless backend.
+
+```
+Client → API Gateway → Lambda → DynamoDB
+                     → any HTTP endpoint
+                     → any AWS service
+```
+
+**Two types:**
+
+| | REST API | HTTP API |
+| - | -------- | -------- |
+| Features | Full-featured — caching, request validation, WAF, API keys, usage plans | Simpler — fewer features |
+| Cost | More expensive | 70% cheaper |
+| Latency | Higher | Lower |
+| Use case | Enterprise APIs needing all features | Simple APIs, Lambda proxies |
+
+**Key features:**
+
+- **Stages** — deploy different versions (dev, staging, prod) with separate URLs
+- **Throttling** — rate limiting per API or per client (API keys + usage plans)
+- **Caching** — cache responses at the API Gateway level to reduce Lambda invocations
+- **Request/response transformation** — modify payloads without changing Lambda code
+- **CORS** — configure cross-origin access
+- **Authorisation** — IAM, Lambda authoriser (custom auth logic), or Cognito
+
+**API Gateway + Lambda — the serverless pattern:**
+
+API Gateway handles routing, throttling, auth, and caching. Lambda handles business logic. Neither requires servers.
+
+**Exam triggers:**
+- *"create a serverless REST API"* → API Gateway + Lambda
+- *"throttle API requests per client"* → API Gateway usage plans + API keys
+- *"reduce Lambda invocations for repeated requests"* → API Gateway caching
+- *"cheapest API for a simple Lambda proxy"* → HTTP API (not REST API)
+- *"custom authentication logic for an API"* → Lambda authoriser
+
+### Step Functions
+
+Visual **workflow orchestrator** — coordinate multiple Lambda functions (and other AWS services) into a sequence with branching, retries, error handling, and parallelism.
+
+**The problem it solves:** a Lambda function has a 15-minute timeout. Complex workflows (order processing, ETL pipelines, ML training) need multiple steps that together take much longer.
+
+```
+Step Functions workflow:
+  Start → Validate order (Lambda, 5s)
+        → Process payment (Lambda, 10s)
+        → Reserve inventory (Lambda, 3s)
+        ├── Success → Ship order (Lambda, 5s) → Notify customer (SNS)
+        └── Failure → Refund payment (Lambda, 10s) → Notify support (SNS)
+```
+
+**Key features:**
+
+- **Visual workflow** — see the execution flow in the AWS console
+- **Built-in error handling** — retry, catch, timeout per step
+- **Parallel execution** — run steps concurrently
+- **Wait states** — pause for a specified time or until a signal
+- **Human approval** — pause workflow until someone approves
+- **Max execution time:** 1 year (Standard) or 5 minutes (Express)
+
+**Two workflow types:**
+
+| | Standard | Express |
+| - | -------- | ------- |
+| Duration | Up to 1 year | Up to 5 minutes |
+| Execution model | Exactly-once | At-least-once |
+| Cost | Per state transition | Per execution + duration |
+| Use case | Long-running workflows, human approval | High-volume event processing (IoT, streaming) |
+
+**Exam triggers:**
+- *"orchestrate multiple Lambda functions"* → Step Functions
+- *"workflow needs error handling and retries"* → Step Functions
+- *"process takes longer than 15 minutes"* → Step Functions (or ECS/Batch)
+- *"workflow requires human approval"* → Step Functions with wait for callback
+- *"visual workflow designer"* → Step Functions
+
+### Amazon Cognito
+
+Managed **user authentication** — add sign-up, sign-in, and access control to your web/mobile app without building an auth system.
+
+**Two components:**
+
+**User Pools — authentication (who are you?):**
+
+- Managed user directory — sign-up, sign-in, password reset, MFA
+- Supports social login (Google, Facebook, Apple) and SAML/OIDC (corporate identity providers)
+- Returns a **JWT token** after login — your API verifies this token
+- Integrates with API Gateway as an authoriser
+
+```
+User → sign in → Cognito User Pool → JWT token → API Gateway (verifies token) → Lambda
+```
+
+**Identity Pools (Federated Identities) — authorisation (what can you access?):**
+
+- Exchanges a token (from User Pool, Google, Facebook, etc.) for **temporary AWS credentials**
+- Gives users direct access to AWS services (S3, DynamoDB) without going through an API
+- Use case: mobile app uploads photos directly to S3 with temporary credentials
+
+```
+User → Cognito User Pool (JWT) → Identity Pool → temporary AWS credentials → S3 direct upload
+```
+
+**User Pool vs Identity Pool:**
+
+| | User Pool | Identity Pool |
+| - | --------- | ------------- |
+| Purpose | Authentication (sign in) | Authorisation (AWS access) |
+| Returns | JWT token | Temporary AWS credentials (STS) |
+| Use case | "Log in to my app" | "Upload directly to S3 from the browser" |
+
+Often used together: User Pool handles login, Identity Pool grants AWS access.
+
+**Exam triggers:**
+- *"add authentication to a web/mobile app"* → Cognito User Pool
+- *"social login (Google, Facebook)"* → Cognito User Pool
+- *"give users temporary AWS credentials"* → Cognito Identity Pool
+- *"mobile app needs to upload directly to S3"* → Cognito Identity Pool
+- *"authorise API Gateway requests with user tokens"* → Cognito User Pool as API Gateway authoriser
+
+### Serverless Quick Reference
+
+| Service | What it does |
+| ------- | ------------ |
+| Lambda | Run code on demand, pay per invocation |
+| DynamoDB | NoSQL database, single-digit ms latency |
+| API Gateway | Managed REST/HTTP APIs |
+| S3 | Object storage |
+| SNS/SQS | Messaging |
+| Kinesis Data Firehose | Streaming delivery to S3/Redshift |
+| Step Functions | Workflow orchestration |
+| Cognito | User authentication and authorisation |
+| Aurora Serverless | Relational DB that scales to zero |
+| Fargate | Serverless containers |
+
+All of these are serverless — no instances to manage, pay for what you use, auto-scale.
