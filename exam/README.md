@@ -1391,11 +1391,27 @@ With proxy:     100 Lambdas → RDS Proxy (connection pool) → ~10 DB connectio
 
 **Never publicly accessible:** RDS Proxy can only be accessed from within the VPC — there is no public accessibility option. This is by design, unlike RDS itself which *can* be made public. Your app (Lambda, EC2, ECS) must be in the same VPC or connected via VPC peering/PrivateLink.
 
+**RDS Proxy security — no passwords in your code:**
+
+RDS Proxy integrates with **Secrets Manager** to handle database credentials. Your Lambda authenticates to RDS Proxy with IAM — it never touches a database password.
+
+```
+Without RDS Proxy: Lambda stores DB creds in env vars → connects directly to RDS
+With RDS Proxy:    Lambda (IAM role) → RDS Proxy → Secrets Manager (fetches DB creds) → RDS
+                   (Lambda never sees the password)
+```
+
+Three layers of security:
+- **IAM authentication** — Lambda uses its IAM role, no credentials in code
+- **Secrets Manager** — RDS Proxy fetches and rotates DB credentials automatically
+- **VPC only** — not publicly accessible, reduces attack surface
+
 **Exam triggers:**
 - *"Lambda functions timing out connecting to RDS"* → RDS Proxy
 - *"too many database connections"* → RDS Proxy
 - *"reduce database failover time for the application"* → RDS Proxy
 - *"serverless application with a relational database"* → RDS Proxy
+- *"avoid storing database credentials in Lambda code"* → RDS Proxy + IAM auth + Secrets Manager
 
 ### Read Replicas
 
