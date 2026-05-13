@@ -4353,6 +4353,12 @@ Fully managed **NoSQL** database — serverless, single-digit millisecond latenc
 | Scaling | Auto-scaling available (but you set min/max) | Instant |
 | Use case | Predictable traffic | Unpredictable, spiky traffic |
 
+Food business analogy:
+- **Provisioned** = a restaurant with a fixed number of tables. You know the dinner rush needs 50 tables. Cheaper per meal, but you pay for empty tables on quiet nights.
+- **On-Demand** = a food truck. Some days 10 customers, some days 1,000. You don't predict — DynamoDB scales instantly. More expensive per request but you never pay for idle capacity.
+
+Use Provisioned when traffic is predictable (steady web app). Use On-Demand for spiky or new workloads where you can't forecast traffic. You can switch between modes once every 24 hours.
+
 RCU = Read Capacity Unit (4 KB strongly consistent read/s). WCU = Write Capacity Unit (1 KB write/s).
 
 **Indexes:**
