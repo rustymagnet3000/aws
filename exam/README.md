@@ -4359,6 +4359,23 @@ Food business analogy:
 
 Use Provisioned when traffic is predictable (steady web app). Use On-Demand for spiky or new workloads where you can't forecast traffic. You can switch between modes once every 24 hours.
 
+**Provisioned + Auto Scaling — the middle ground:**
+
+With Provisioned mode, you can enable Auto Scaling on RCU and WCU independently. Set a target utilisation (e.g. 70%) and min/max values:
+
+```
+Read:  min 5 RCU, max 100 RCU, target 70% utilisation
+Write: min 10 WCU, max 500 WCU, target 70% utilisation
+```
+
+Cost benefit of Provisioned (cheaper per unit) with some flexibility (scales up during spikes, down when quiet). The catch: Auto Scaling reacts via CloudWatch alarms — **few minutes delay** before it kicks in. A sudden spike can throttle before scaling catches up.
+
+| | Provisioned (fixed) | Provisioned + Auto Scaling | On-Demand |
+| - | ------------------- | -------------------------- | --------- |
+| Cost | Cheapest (if you guess right) | Cheap | Most expensive |
+| Spike handling | Throttled if over-capacity | Few min delay, then scales | Instant |
+| Planning | You set exact RCU/WCU | You set min/max/target | None |
+
 RCU = Read Capacity Unit (4 KB strongly consistent read/s). WCU = Write Capacity Unit (1 KB write/s).
 
 **Indexes:**
