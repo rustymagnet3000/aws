@@ -4344,6 +4344,25 @@ Fully managed **NoSQL** database — serverless, single-digit millisecond latenc
   - **Partition key** — single attribute (e.g. `user_id`)
   - **Partition key + Sort key** — composite (e.g. `user_id` + `timestamp`) — allows range queries
 
+**Flexible attributes (schema-less) — why items can have different fields:**
+
+Unlike SQL where every row has the same columns, DynamoDB items can have different attributes. In practice, 90% of items often look similar — the flexibility is most useful in three scenarios:
+
+Single-table design (the DynamoDB best practice) — different entity types in one table:
+
+```
+PK          | SK        | name    | price | email        | orderDate
+PRODUCT#123 | METADATA  | Widget  | 9.99  |              |
+USER#456    | PROFILE   |         |       | bob@test.com |
+USER#456    | ORDER#789 |         |       |              | 2024-01-15
+```
+
+Products have `name`/`price`. Users have `email`. Orders have `orderDate`. Same table, different shapes. In SQL you'd need separate tables with joins.
+
+Optional fields that vary — a product catalog where a t-shirt has `colour`/`size`, a light bulb has `wattage`, a book has `author`. Attributes simply don't exist on items that don't need them — no NULLs, no wasted storage.
+
+Evolving schema — add a new feature with a `loyalty_tier` attribute. New items include it, old items don't. No `ALTER TABLE`, no backfill needed.
+
 **Capacity modes:**
 
 | | Provisioned | On-Demand |
