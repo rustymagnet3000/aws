@@ -4260,6 +4260,49 @@ Once Lambda is in your VPC, it loses internet access. To reach the internet or p
 - *"Lambda in VPC can't reach the internet"* → needs NAT Gateway
 - *"Lambda in VPC can't reach S3"* → add a VPC Gateway Endpoint (free)
 
+**Synchronous vs Asynchronous invocation:**
+
+| | Synchronous | Asynchronous |
+| - | ----------- | ------------ |
+| Caller | Waits for response | Gets 202 immediately, doesn't wait |
+| Retries on failure | None — caller handles it | 2 automatic retries |
+| Error handling | Response returned to caller | Destinations or DLQ |
+| Triggered by | API Gateway, ALB, SDK `Invoke` | S3, SNS, EventBridge, CloudWatch Events |
+
+Async invocations go to an **internal queue** — Lambda processes them when ready. If all retries fail, the event goes to a Destination (success/failure) or DLQ.
+
+**Event Source Mapping (SQS, Kinesis, DynamoDB Streams):**
+
+For queue/stream sources, Lambda **polls** in batches — it's neither sync nor async, it's a third model:
+
+```
+SQS queue → Lambda polls → pulls batch of 10 messages → processes → deletes on success
+Kinesis stream → Lambda polls → pulls batch of records per shard → processes
+```
+
+Key gotcha with **Kinesis/DynamoDB Streams**: if a batch fails, the **entire shard is blocked** — Lambda retries the same batch until it succeeds. No other records from that shard are processed. Fixes:
+- **Bisect on error** — split the failed batch in half, retry each half (isolate the bad record)
+- **Maximum retry attempts** — give up after N retries, send to a DLQ
+- **Skip old records** — discard records older than a threshold
+
+SQS is more forgiving — failed messages return to the queue individually and eventually go to the DLQ.
+
+**Recursive loop protection:**
+
+A common architecture mistake — Lambda triggers itself in an infinite loop:
+
+```
+Lambda writes to S3 → S3 event triggers Lambda → Lambda writes to S3 → ...infinite loop ❌
+Lambda sends to SQS → SQS triggers Lambda → Lambda sends to SQS → ...infinite loop ❌
+```
+
+AWS detects recursive loops between Lambda, SQS, and SNS and **stops them automatically** after ~16 invocations. But S3 → Lambda → S3 loops can still rack up charges before detection. Prevention: use a different bucket or prefix for output than input, or check for a flag before processing.
+
+**Exam triggers:**
+- *"S3 event triggers Lambda but events are being retried"* → async invocation retries (2 retries default)
+- *"Kinesis shard is stuck, no records processing"* → batch failure blocking the shard — enable bisect on error
+- *"Lambda costs spiralling unexpectedly"* → check for recursive loop
+
 **Lambda Layers:**
 
 Shared libraries/dependencies packaged separately from your function code. Multiple functions can use the same layer — avoids duplicating dependencies in every deployment package.
