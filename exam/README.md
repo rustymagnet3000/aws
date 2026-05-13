@@ -4200,6 +4200,43 @@ Supported runtimes: **Java** (11+), **Python** (3.12+), **.NET** (8+).
 
 **Exam trigger:** *"reduce Lambda cold start times"* → SnapStart (cheaper) or Provisioned Concurrency (fastest).
 
+**Lambda + RDS/Cache real-world examples:**
+
+Lambda calling RDS:
+- **E-commerce checkout** — API Gateway → Lambda → RDS Proxy → RDS. Validates cart, calculates total, creates order in PostgreSQL.
+- **User signup** — Cognito triggers Lambda → writes user profile to RDS
+- **Report generation** — CloudWatch scheduled event → Lambda → queries RDS for daily sales → writes PDF to S3
+
+Lambda calling ElastiCache:
+- **Product catalog API** — Lambda checks Redis first. Cache hit → return instantly. Cache miss → query RDS → store in cache → return.
+- **Rate limiting** — Lambda increments a counter in Redis per user/IP. Exceeds threshold → reject. Redis TTL auto-expires the counter.
+- **Session validation** — Lambda checks Redis for session token → valid? proceed. Expired? return 401.
+
+```
+Product API:
+Client → API Gateway → Lambda → ElastiCache (hit? return)
+                               → RDS (miss → query → cache → return)
+```
+
+**RDS invoking Lambda (the reverse direction):**
+
+RDS can call a Lambda function directly **from within the database** using stored procedures or triggers. The database event triggers the Lambda — no polling, no middleware.
+
+```
+New row inserted into RDS → DB trigger → invokes Lambda → send welcome email
+                                                        → update search index
+                                                        → push notification
+```
+
+Supported on **Aurora MySQL** and **Aurora PostgreSQL**. The RDS instance needs a Lambda execution IAM role and network access to the Lambda service (NAT Gateway or VPC endpoint).
+
+Real-world examples:
+- Insert a new customer row → Lambda sends a welcome email via SES
+- Update a product price → Lambda invalidates the CloudFront cache
+- Delete a user → Lambda cleans up related S3 files and Cognito account
+
+This is different from **DynamoDB Streams + Lambda** where changes are captured in a stream. With RDS, the database directly invokes Lambda — no stream in between.
+
 **Lambda and VPC:**
 
 By default, Lambda runs in an AWS-managed network **outside your VPC**. It can access the internet and public AWS services, but cannot reach private resources (RDS, ElastiCache).
