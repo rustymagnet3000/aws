@@ -4184,6 +4184,29 @@ Supported runtimes: **Java** (11+), **Python** (3.12+), **.NET** (8+).
 
 **Exam trigger:** *"reduce Lambda cold start times"* → SnapStart (cheaper) or Provisioned Concurrency (fastest).
 
+**Lambda and VPC:**
+
+By default, Lambda runs in an AWS-managed network **outside your VPC**. It can access the internet and public AWS services, but cannot reach private resources (RDS, ElastiCache).
+
+```
+Default (no VPC):  Lambda → internet ✅ → AWS services ✅ → your VPC ❌
+In your VPC:       Lambda → your VPC ✅ → RDS/ElastiCache ✅ → internet ❌ (unless NAT)
+```
+
+Once Lambda is in your VPC, it loses internet access. To reach the internet or public AWS services:
+- **NAT Gateway** — for internet access (costs money)
+- **VPC Endpoints** — for AWS services like S3/DynamoDB without NAT (cheaper)
+
+| Put Lambda in VPC? | When |
+| ------------------- | ---- |
+| Yes | Lambda needs to access RDS, ElastiCache, or other private resources |
+| No | Lambda only calls public AWS services (S3, DynamoDB, SQS) — simpler and faster |
+
+**Exam triggers:**
+- *"Lambda can't connect to RDS in a private subnet"* → Lambda not configured in VPC
+- *"Lambda in VPC can't reach the internet"* → needs NAT Gateway
+- *"Lambda in VPC can't reach S3"* → add a VPC Gateway Endpoint (free)
+
 **Lambda Layers:**
 
 Shared libraries/dependencies packaged separately from your function code. Multiple functions can use the same layer — avoids duplicating dependencies in every deployment package.
