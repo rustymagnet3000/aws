@@ -3540,11 +3540,25 @@ Run code at edge locations — transform requests/responses without going back t
 - Simple A/B testing (rewrite URL based on a cookie)
 
 **Lambda@Edge — full power at the edge:**
-- Authentication and authorization (check JWT before reaching origin)
+- Authentication and authorization (check JWT against JWKS endpoint or revocation list)
 - Dynamic content generation (SSR at the edge)
 - A/B testing with external config (call DynamoDB to get experiment config)
 - Image transformation based on User-Agent (serve WebP to Chrome, JPEG to Safari)
 - Bot detection with external lookups
+
+**Rule of thumb:** if it's pure string manipulation (rewrite URL, add header, check cookie) → CloudFront Function. If it needs to call anything external → Lambda@Edge.
+
+**JWT validation — which one?**
+
+| Scenario | Where | Why |
+| -------- | ----- | --- |
+| Check if auth header/cookie exists | CloudFront Function | Simple string check |
+| Decode JWT, verify with a static key | CloudFront Function (if logic fits in 10 KB) | No network needed |
+| Validate JWT against a JWKS endpoint | Lambda@Edge | Needs network call |
+| Check token revocation list | Lambda@Edge | Needs external lookup |
+| Full auth against Cognito/DynamoDB | Lambda@Edge | Needs AWS service access |
+
+CloudFront Functions **cannot make network calls** — that's the deciding factor. If validation is self-contained (static key), it can work. If it needs to reach out to anything, Lambda@Edge.
 
 **Cloudflare equivalent (for context, not for the exam):**
 
