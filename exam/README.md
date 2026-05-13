@@ -4149,6 +4149,27 @@ Provisioned: "keep 200 instances warm at all times" (zero cold starts, costs mon
 
 **Cold starts:** first invocation after idle spins up a new execution environment (~100ms to a few seconds). Subsequent invocations reuse the warm environment. Provisioned Concurrency eliminates this by keeping instances warm.
 
+**Lambda SnapStart:**
+
+Eliminates cold starts by taking a **snapshot of the initialised execution environment** (memory + disk) and restoring from it instead of initialising from scratch.
+
+```
+Without SnapStart: Cold start → boot runtime → load dependencies → init framework → seconds
+With SnapStart:    Restore cached snapshot → sub-second
+```
+
+Supported runtimes: **Java** (11+), **Python** (3.12+), **.NET** (8+).
+
+| | SnapStart | Provisioned Concurrency |
+| - | --------- | ----------------------- |
+| Languages | Java, Python, .NET | All |
+| How | Restores cached snapshot | Keeps instances warm |
+| Cold start | Sub-second (snapshot restore) | Zero (already running) |
+| Cost | Free for Java; caching + restoration cost for Python/.NET | Costs money (idle instances) |
+| Use case | Most cold-start-sensitive functions | Strictest latency requirements, all languages |
+
+**Exam trigger:** *"reduce Lambda cold start times"* → SnapStart (cheaper) or Provisioned Concurrency (fastest).
+
 **Lambda Layers:**
 
 Shared libraries/dependencies packaged separately from your function code. Multiple functions can use the same layer — avoids duplicating dependencies in every deployment package.
