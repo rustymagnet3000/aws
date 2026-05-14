@@ -4416,6 +4416,20 @@ DynamoDB table → Stream → Lambda → send welcome email when new user is cre
                                  → replicate data to another table/region
 ```
 
+Streams is not unique to DynamoDB — the "database change triggers an action" pattern exists everywhere:
+
+| Service | Change capture mechanism |
+| ------- | ----------------------- |
+| DynamoDB | DynamoDB Streams |
+| Aurora/RDS | Invoke Lambda from DB trigger (Aurora only) |
+| Kinesis | Kinesis Data Streams |
+| S3 | S3 Event Notifications |
+| MongoDB | Change Streams |
+| PostgreSQL | Logical replication / WAL |
+| Kafka | Topics |
+
+DynamoDB Streams' advantage on AWS: tight Lambda integration — change in the table automatically invokes Lambda with the old and new item image. Zero polling code.
+
 **DynamoDB Accelerator (DAX):**
 
 In-memory cache **specifically for DynamoDB** — sits in front of your table, caches reads. Microsecond response times vs milliseconds.
