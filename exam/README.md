@@ -4516,11 +4516,31 @@ Use case: financial transactions, inventory management, anything where partial w
 
 Write only if a condition is met — prevents race conditions without transactions.
 
+The problem without conditional writes — race condition:
+
 ```
-Update item SET stock = stock - 1 WHERE stock > 0
+User A reads stock = 1
+User B reads stock = 1
+User A writes stock = 0 (bought last item)
+User B writes stock = -1 ❌ (oversold — B didn't know A already bought it)
 ```
 
-If stock is already 0, the write is rejected. No read-then-write race condition. Cheaper than transactions when you only need to protect a single item.
+With conditional writes:
+
+```
+User A: Update stock = stock - 1 WHERE stock > 0 → succeeds (stock was 1, now 0) ✅
+User B: Update stock = stock - 1 WHERE stock > 0 → rejected (stock is 0) ✅ no oversell
+```
+
+The condition is evaluated **atomically** on the server — no gap between read and write. DynamoDB checks and writes in one operation.
+
+Real-world examples:
+- **Inventory:** decrement stock only if stock > 0 (prevent overselling)
+- **Booking:** assign a seat only if `booked = false` (prevent double booking)
+- **Idempotency:** create an order only if `order_id` doesn't already exist (prevent duplicate processing)
+- **Optimistic locking:** update only if `version = 3` (prevent stale writes from overwriting newer data)
+
+Cheaper than transactions when you only need to protect a **single item**. Transactions are for multi-item all-or-nothing operations.
 
 **DynamoDB Export to S3:**
 
@@ -4542,6 +4562,20 @@ Use case: run analytics on DynamoDB data without impacting the live table. Expor
 - *"prevent overselling inventory"* → Conditional Writes
 - *"analyse DynamoDB data without impacting the table"* → Export to S3 + Athena
 - *"calculate RCU/WCU"* → remember: eventually consistent reads are half the cost
+
+**DynamoDB vs RDS — feature differentiators:**
+
+What makes DynamoDB special compared to RDS — the exam tests these:
+
+| DynamoDB feature | RDS equivalent | Why DynamoDB wins |
+| ---------------- | -------------- | ----------------- |
+| TTL | No native equivalent — you write a cron job | Auto-delete at zero cost, no WCU consumed |
+| Export to S3 | `mysqldump` or DMS — consumes DB resources | Zero RCU impact, runs against backups |
+| DAX | ElastiCache (separate service, code changes) | Same API, drop-in cache, no code changes |
+| Global Tables | Aurora Global DB (one writer, active-passive) | Active-active, write in any region |
+| On-Demand | No equivalent — you provision instance size | Instant scaling, zero capacity planning |
+| Streams | Aurora triggers Lambda (limited engines) | Built-in CDC on every table |
+| Conditional writes | SQL `UPDATE WHERE` (needs transaction isolation) | Native atomic check-and-write |
 
 ### API Gateway
 
