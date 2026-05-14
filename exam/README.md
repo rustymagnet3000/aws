@@ -4344,6 +4344,25 @@ Fully managed **NoSQL** database — serverless, single-digit millisecond latenc
   - **Partition key** — single attribute (e.g. `user_id`)
   - **Partition key + Sort key** — composite (e.g. `user_id` + `timestamp`) — allows range queries
 
+**Flexible attributes (schema-less) — why items can have different fields:**
+
+Unlike SQL where every row has the same columns, DynamoDB items can have different attributes. In practice, 90% of items often look similar — the flexibility is most useful in three scenarios:
+
+Single-table design (the DynamoDB best practice) — different entity types in one table:
+
+```
+PK          | SK        | name    | price | email        | orderDate
+PRODUCT#123 | METADATA  | Widget  | 9.99  |              |
+USER#456    | PROFILE   |         |       | bob@test.com |
+USER#456    | ORDER#789 |         |       |              | 2024-01-15
+```
+
+Products have `name`/`price`. Users have `email`. Orders have `orderDate`. Same table, different shapes. In SQL you'd need separate tables with joins.
+
+Optional fields that vary — a product catalog where a t-shirt has `colour`/`size`, a light bulb has `wattage`, a book has `author`. Attributes simply don't exist on items that don't need them — no NULLs, no wasted storage.
+
+Evolving schema — add a new feature with a `loyalty_tier` attribute. New items include it, old items don't. No `ALTER TABLE`, no backfill needed.
+
 **Capacity modes:**
 
 | | Provisioned | On-Demand |
@@ -4352,6 +4371,29 @@ Fully managed **NoSQL** database — serverless, single-digit millisecond latenc
 | Cost | Cheaper at steady load | More expensive, but no planning |
 | Scaling | Auto-scaling available (but you set min/max) | Instant |
 | Use case | Predictable traffic | Unpredictable, spiky traffic |
+
+Food business analogy:
+- **Provisioned** = a restaurant with a fixed number of tables. You know the dinner rush needs 50 tables. Cheaper per meal, but you pay for empty tables on quiet nights.
+- **On-Demand** = a food truck. Some days 10 customers, some days 1,000. You don't predict — DynamoDB scales instantly. More expensive per request but you never pay for idle capacity.
+
+Use Provisioned when traffic is predictable (steady web app). Use On-Demand for spiky or new workloads where you can't forecast traffic. You can switch between modes once every 24 hours.
+
+**Provisioned + Auto Scaling — the middle ground:**
+
+With Provisioned mode, you can enable Auto Scaling on RCU and WCU independently. Set a target utilisation (e.g. 70%) and min/max values:
+
+```
+Read:  min 5 RCU, max 100 RCU, target 70% utilisation
+Write: min 10 WCU, max 500 WCU, target 70% utilisation
+```
+
+Cost benefit of Provisioned (cheaper per unit) with some flexibility (scales up during spikes, down when quiet). The catch: Auto Scaling reacts via CloudWatch alarms — **few minutes delay** before it kicks in. A sudden spike can throttle before scaling catches up.
+
+| | Provisioned (fixed) | Provisioned + Auto Scaling | On-Demand |
+| - | ------------------- | -------------------------- | --------- |
+| Cost | Cheapest (if you guess right) | Cheap | Most expensive |
+| Spike handling | Throttled if over-capacity | Few min delay, then scales | Instant |
+| Planning | You set exact RCU/WCU | You set min/max/target | None |
 
 RCU = Read Capacity Unit (4 KB strongly consistent read/s). WCU = Write Capacity Unit (1 KB write/s).
 
@@ -4374,6 +4416,20 @@ DynamoDB table → Stream → Lambda → send welcome email when new user is cre
                                  → replicate data to another table/region
 ```
 
+Streams is not unique to DynamoDB — the "database change triggers an action" pattern exists everywhere:
+
+| Service | Change capture mechanism |
+| ------- | ----------------------- |
+| DynamoDB | DynamoDB Streams |
+| Aurora/RDS | Invoke Lambda from DB trigger (Aurora only) |
+| Kinesis | Kinesis Data Streams |
+| S3 | S3 Event Notifications |
+| MongoDB | Change Streams |
+| PostgreSQL | Logical replication / WAL |
+| Kafka | Topics |
+
+DynamoDB Streams' advantage on AWS: tight Lambda integration — change in the table automatically invokes Lambda with the old and new item image. Zero polling code.
+
 **DynamoDB Accelerator (DAX):**
 
 In-memory cache **specifically for DynamoDB** — sits in front of your table, caches reads. Microsecond response times vs milliseconds.
@@ -4392,6 +4448,106 @@ Multi-region, multi-active replication. Write to any region, changes replicate t
 - Use case: global app where users in any region need low-latency reads AND writes
 - Different from Aurora Global Database — Aurora is active-passive (one writer), DynamoDB Global Tables is active-active (write anywhere)
 
+**WCU and RCU calculations (exam favourite):**
+
+| Unit | What it means |
+| ---- | ------------- |
+| 1 WCU | 1 write/second for an item up to 1 KB |
+| 1 RCU | 1 strongly consistent read/second for an item up to 4 KB |
+| 1 RCU | 2 eventually consistent reads/second for an item up to 4 KB |
+
+Examples:
+- Write 10 items/second, each 2 KB → 10 × 2 = **20 WCU** (each item rounds up to 2 KB)
+- Write 6 items/second, each 4.5 KB → 6 × 5 = **30 WCU** (4.5 rounds up to 5 KB)
+- Read 10 items/second, each 4 KB, strongly consistent → 10 × 1 = **10 RCU**
+- Read 10 items/second, each 4 KB, eventually consistent → 10 × 0.5 = **5 RCU** (half the cost)
+
+**The formula:**
+
+```
+WCU = (items/sec) × CEILING(item_size_KB / 1)
+RCU (strong)     = (items/sec) × CEILING(item_size_KB / 4)
+RCU (eventually) = (items/sec) × CEILING(item_size_KB / 4) / 2
+```
+
+Eventually consistent reads are **half the cost** — use them unless your app needs the latest data.
+
+**Partition key design — hot partitions:**
+
+Same problem as Kinesis hot shards. DynamoDB distributes data across partitions by hashing the partition key. If one key gets disproportionate traffic, that partition is overwhelmed.
+
+```
+partition_key = "date" → every item today hits the same partition → throttled ❌
+partition_key = "user_id" → millions of unique values → even distribution ✅
+```
+
+Fix: choose a partition key with **high cardinality** (many unique values). If you must use a low-cardinality key (e.g. date), add a random suffix: `2024-01-15#3` to spread writes across partitions.
+
+**DynamoDB TTL (Time to Live):**
+
+Automatically delete expired items at no cost — no WCU consumed for TTL deletions.
+
+You define a TTL attribute (e.g. `expires_at`) with a Unix epoch timestamp. DynamoDB deletes items after the timestamp passes (usually within 48 hours — not instant).
+
+Real-world examples:
+- Session tokens — expire after 24 hours, auto-deleted
+- Shopping carts — abandon after 7 days, auto-cleaned
+- Temporary tokens (OTP, password reset) — expire after 15 minutes
+
+Deleted items can be captured by DynamoDB Streams → Lambda for post-deletion actions (audit log, cleanup).
+
+**DynamoDB Transactions:**
+
+All-or-nothing operations across multiple items/tables. Either everything succeeds or everything rolls back.
+
+```
+Transfer money:
+  1. Debit account A: -$100  ┐
+  2. Credit account B: +$100 ┘ → both succeed or both fail (transaction)
+```
+
+- **TransactWriteItems** — up to 100 write actions in one transaction
+- **TransactGetItems** — up to 100 read actions (consistent snapshot)
+- Costs **2x WCU/RCU** — DynamoDB does a prepare + commit under the hood
+
+Use case: financial transactions, inventory management, anything where partial writes corrupt data.
+
+**Conditional Writes:**
+
+Write only if a condition is met — prevents race conditions without transactions.
+
+The problem without conditional writes — race condition:
+
+```
+User A reads stock = 1
+User B reads stock = 1
+User A writes stock = 0 (bought last item)
+User B writes stock = -1 ❌ (oversold — B didn't know A already bought it)
+```
+
+With conditional writes:
+
+```
+User A: Update stock = stock - 1 WHERE stock > 0 → succeeds (stock was 1, now 0) ✅
+User B: Update stock = stock - 1 WHERE stock > 0 → rejected (stock is 0) ✅ no oversell
+```
+
+The condition is evaluated **atomically** on the server — no gap between read and write. DynamoDB checks and writes in one operation.
+
+Real-world examples:
+- **Inventory:** decrement stock only if stock > 0 (prevent overselling)
+- **Booking:** assign a seat only if `booked = false` (prevent double booking)
+- **Idempotency:** create an order only if `order_id` doesn't already exist (prevent duplicate processing)
+- **Optimistic locking:** update only if `version = 3` (prevent stale writes from overwriting newer data)
+
+Cheaper than transactions when you only need to protect a **single item**. Transactions are for multi-item all-or-nothing operations.
+
+**DynamoDB Export to S3:**
+
+Export your entire table to S3 as JSON or Apache Ion format — without consuming any RCU. Runs against the continuous backups (Point-in-Time Recovery must be enabled).
+
+Use case: run analytics on DynamoDB data without impacting the live table. Export to S3 → query with Athena or load into Redshift.
+
 **Exam triggers:**
 - *"serverless NoSQL database"* → DynamoDB
 - *"single-digit millisecond latency at any scale"* → DynamoDB
@@ -4401,6 +4557,25 @@ Multi-region, multi-active replication. Write to any region, changes replicate t
 - *"unpredictable traffic on a NoSQL database"* → DynamoDB On-Demand
 - *"schema-less, flexible data model"* → DynamoDB
 - *"need complex joins and relationships"* → NOT DynamoDB, use RDS
+- *"automatically delete expired data"* → DynamoDB TTL
+- *"all-or-nothing writes across multiple items"* → DynamoDB Transactions
+- *"prevent overselling inventory"* → Conditional Writes
+- *"analyse DynamoDB data without impacting the table"* → Export to S3 + Athena
+- *"calculate RCU/WCU"* → remember: eventually consistent reads are half the cost
+
+**DynamoDB vs RDS — feature differentiators:**
+
+What makes DynamoDB special compared to RDS — the exam tests these:
+
+| DynamoDB feature | RDS equivalent | Why DynamoDB wins |
+| ---------------- | -------------- | ----------------- |
+| TTL | No native equivalent — you write a cron job | Auto-delete at zero cost, no WCU consumed |
+| Export to S3 | `mysqldump` or DMS — consumes DB resources | Zero RCU impact, runs against backups |
+| DAX | ElastiCache (separate service, code changes) | Same API, drop-in cache, no code changes |
+| Global Tables | Aurora Global DB (one writer, active-passive) | Active-active, write in any region |
+| On-Demand | No equivalent — you provision instance size | Instant scaling, zero capacity planning |
+| Streams | Aurora triggers Lambda (limited engines) | Built-in CDC on every table |
+| Conditional writes | SQL `UPDATE WHERE` (needs transaction isolation) | Native atomic check-and-write |
 
 ### API Gateway
 
