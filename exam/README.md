@@ -4587,27 +4587,107 @@ Client → API Gateway → Lambda → DynamoDB
                      → any AWS service
 ```
 
-**Two types:**
+**Three API types:**
 
-| | REST API | HTTP API |
-| - | -------- | -------- |
-| Features | Full-featured — caching, request validation, WAF, API keys, usage plans | Simpler — fewer features |
-| Cost | More expensive | 70% cheaper |
-| Latency | Higher | Lower |
-| Use case | Enterprise APIs needing all features | Simple APIs, Lambda proxies |
+| | REST API | HTTP API | WebSocket API |
+| - | -------- | -------- | ------------- |
+| Protocol | HTTP (request/response) | HTTP (request/response) | WebSocket (persistent two-way connection) |
+| Features | Full — caching, WAF, API keys, usage plans, request validation | Simpler — fewer features | Real-time two-way messaging |
+| Cost | Most expensive | 70% cheaper than REST | Pay per message + connection minutes |
+| Latency | Higher | Lower | Persistent connection |
+| Use case | Enterprise APIs needing all features | Simple APIs, Lambda proxies | Chat, gaming, live dashboards, IoT |
 
-**Key features:**
+**WebSocket API** maintains a persistent connection — the server can push data to the client without the client asking. Use case: chat apps, live sports scores, real-time dashboards. REST/HTTP APIs are request-response only (client must poll for updates).
 
-- **Stages** — deploy different versions (dev, staging, prod) with separate URLs
-- **Throttling** — rate limiting per API or per client (API keys + usage plans)
-- **Caching** — cache responses at the API Gateway level to reduce Lambda invocations
-- **Request/response transformation** — modify payloads without changing Lambda code
-- **CORS** — configure cross-origin access
-- **Authorisation** — IAM, Lambda authoriser (custom auth logic), or Cognito
+**Endpoint types:**
 
-**API Gateway + Lambda — the serverless pattern:**
+| Type | How it works | Use case |
+| ---- | ------------ | -------- |
+| Edge-optimised (default) | Requests routed through CloudFront edge locations | Global clients |
+| Regional | No CloudFront, clients in the same region | Same-region clients, or you manage your own CloudFront |
+| Private | Only accessible from within your VPC via VPC Endpoint | Internal microservice APIs |
 
-API Gateway handles routing, throttling, auth, and caching. Lambda handles business logic. Neither requires servers.
+**Stages and canary deployments:**
+
+Stages are named deployments (dev, staging, prod) — each gets its own URL. Within a stage, you can run a **canary deployment** — route a percentage of traffic to a new version:
+
+```
+prod stage:
+├── 90% traffic → current version (stable)
+└── 10% traffic → canary (new version being tested)
+```
+
+If the canary is healthy, promote it to 100%. If it fails, roll back — only 10% of users were affected.
+
+**Usage plans + API keys — rate limiting per client:**
+
+API keys identify the client. Usage plans define limits per key:
+
+```
+API Key: "partner-acme"  → Usage Plan: 1,000 requests/day, 10 requests/second
+API Key: "partner-corp"  → Usage Plan: 10,000 requests/day, 50 requests/second
+API Key: "internal-app"  → Usage Plan: unlimited
+```
+
+Use case: monetise your API (free tier vs paid tier), or limit third-party partners to prevent abuse. REST API only — HTTP API doesn't support usage plans.
+
+**Throttling:**
+
+- **Account-level:** 10,000 requests/second across all APIs (soft limit)
+- **Stage/method-level:** configure per stage or per endpoint
+- Exceeded → **429 Too Many Requests** returned to the client
+
+**Caching:**
+
+Cache responses at the API Gateway level — subsequent identical requests return the cached response without invoking Lambda:
+
+```
+First request:  Client → API Gateway → Lambda → response → cached
+Next request:   Client → API Gateway → cached response (Lambda not invoked) ✅
+```
+
+- Cache TTL: 0–3600 seconds (default 300s)
+- Cache size: 0.5 GB to 237 GB
+- Per-stage setting — different TTL for dev vs prod
+- REST API only — HTTP API doesn't support caching
+
+**Request/response mapping templates:**
+
+Transform the payload between client and backend without changing Lambda code. Written in Velocity Template Language (VTL):
+
+- Rename fields (`userName` → `user_name`)
+- Add/remove fields
+- Change data format (XML → JSON)
+- REST API only
+
+**Authorisation — three options:**
+
+| Method | How it works | Use case |
+| ------ | ------------ | -------- |
+| IAM | Caller signs request with AWS credentials (SigV4) | AWS-to-AWS calls, internal services |
+| Cognito User Pool | Client sends JWT, API Gateway validates it | Web/mobile app users |
+| Lambda authoriser | Custom Lambda checks token/headers, returns an IAM policy | Third-party tokens, custom auth logic |
+
+**Cognito integration flow:**
+
+```
+User → sign in → Cognito User Pool → JWT token
+User → API request with JWT → API Gateway → validates token with Cognito
+                             → authorised → Lambda → response
+```
+
+No custom code needed — API Gateway validates the JWT natively.
+
+**Lambda authoriser flow:**
+
+```
+User → API request with token → API Gateway → Lambda authoriser
+                               → authoriser checks token (against your DB, third-party, etc.)
+                               → returns IAM policy (allow/deny)
+                               → authorised → Lambda → response
+```
+
+The authoriser result is **cached** (default 300s) — subsequent requests with the same token skip the authoriser Lambda.
 
 **Exam triggers:**
 - *"create a serverless REST API"* → API Gateway + Lambda
@@ -4615,6 +4695,11 @@ API Gateway handles routing, throttling, auth, and caching. Lambda handles busin
 - *"reduce Lambda invocations for repeated requests"* → API Gateway caching
 - *"cheapest API for a simple Lambda proxy"* → HTTP API (not REST API)
 - *"custom authentication logic for an API"* → Lambda authoriser
+- *"real-time two-way communication"* → WebSocket API
+- *"API accessible only from within the VPC"* → Private endpoint type
+- *"test a new API version with a small % of traffic"* → canary deployment
+- *"monetise an API with different rate limits per customer"* → usage plans + API keys
+- *"authenticate API with Cognito user tokens"* → Cognito User Pool authoriser
 
 ### Step Functions
 
