@@ -4634,6 +4634,22 @@ Client → API Gateway → Lambda → DynamoDB
 | Regional | No CloudFront, clients in the same region | Same-region clients, or you manage your own CloudFront |
 | Private | Only accessible from within your VPC via VPC Endpoint | Internal microservice APIs |
 
+**Exam trap — Edge-Optimised does NOT distribute your API globally:**
+
+Your API Gateway still lives in **one region**. Edge-Optimised just puts CloudFront in front of it for faster routing. The edge locations don't run your API — they provide a faster network path to the single-region API Gateway.
+
+```
+Edge-Optimised:
+User in Tokyo → CloudFront edge (Tokyo) → routes to API Gateway (us-east-1)
+                                          (API Gateway is still in one region)
+
+Regional:
+User in Tokyo → directly to API Gateway (us-east-1)
+                (no CloudFront in between)
+```
+
+Your Lambda functions, authorisers, and integrations all run in the one region. Only the CloudFront routing layer is distributed globally.
+
 **Stages and canary deployments:**
 
 Stages are named deployments (dev, staging, prod) — each gets its own URL. Within a stage, you can run a **canary deployment** — route a percentage of traffic to a new version:
