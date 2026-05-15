@@ -4742,7 +4742,32 @@ API Gateway is specifically for when you need an HTTP endpoint. Most Lambda trig
 
 Visual **workflow orchestrator** — coordinate multiple Lambda functions (and other AWS services) into a sequence with branching, retries, error handling, and parallelism.
 
-**The problem it solves:** a Lambda function has a 15-minute timeout. Complex workflows (order processing, ETL pipelines, ML training) need multiple steps that together take much longer.
+**The problem it solves — why not just chain Lambdas?**
+
+Without Step Functions, you'd have Lambda A invoke Lambda B invoke Lambda C directly:
+
+```
+Without Step Functions (Lambda chaining — bad):
+Lambda A → invokes Lambda B → invokes Lambda C → invokes Lambda D
+  ├── If B fails? A doesn't know. No retry. No visibility.
+  ├── If C times out? B is stuck waiting. You pay for idle time.
+  └── Where did it fail? Check CloudWatch logs for each Lambda individually.
+```
+
+This is messy — no central visibility, no built-in retries, hard to debug, tightly coupled. Each Lambda needs to know about the next one.
+
+```
+With Step Functions (orchestration — good):
+Step Functions manages the flow:
+  A → B → C → D
+  ├── B fails? Step Functions retries it 3 times automatically
+  ├── C times out? Step Functions catches the error, runs a fallback
+  └── Visual console shows exactly where it failed, with input/output at each step
+```
+
+Step Functions decouples the workflow from the functions. Each Lambda does one thing and doesn't know about the others. Step Functions handles the flow, retries, branching, and error handling.
+
+A Lambda function also has a 15-minute timeout. Complex workflows (order processing, ETL pipelines, ML training) need multiple steps that together take much longer.
 
 ```
 Step Functions workflow:
@@ -4771,12 +4796,23 @@ Step Functions workflow:
 | Cost | Per state transition | Per execution + duration |
 | Use case | Long-running workflows, human approval | High-volume event processing (IoT, streaming) |
 
+**Real-world examples:**
+
+- **Order processing** — validate → charge payment → reserve stock → ship → notify customer. If payment fails, skip to refund. Each step is a separate Lambda.
+- **ETL pipeline** — extract CSV from S3 → Lambda transforms data → load into Redshift → on failure, send to DLQ and notify ops
+- **ML workflow** — prepare data → train model → evaluate accuracy → if accuracy > 90% deploy model, else retrain with different parameters
+- **Human approval** — employee submits expense → Step Functions pauses → manager gets email → approves/rejects → payment processed or denied
+- **Video processing** — upload triggers workflow → extract audio (Lambda) → transcribe (Amazon Transcribe) → translate (Amazon Translate) → generate subtitles → all in parallel where possible
+
+**Not just Lambda — Step Functions integrates with 200+ AWS services directly:** S3, DynamoDB, SQS, SNS, ECS, Batch, Glue, SageMaker, and more. Many steps don't even need a Lambda function — Step Functions can call the AWS API directly (e.g. put an item in DynamoDB without a Lambda wrapper).
+
 **Exam triggers:**
 - *"orchestrate multiple Lambda functions"* → Step Functions
 - *"workflow needs error handling and retries"* → Step Functions
 - *"process takes longer than 15 minutes"* → Step Functions (or ECS/Batch)
 - *"workflow requires human approval"* → Step Functions with wait for callback
 - *"visual workflow designer"* → Step Functions
+- *"chaining Lambda functions is getting complex"* → Step Functions (decouple the orchestration)
 
 ### Amazon Cognito
 
