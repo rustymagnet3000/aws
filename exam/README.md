@@ -4701,6 +4701,30 @@ The authoriser result is **cached** (default 300s) — subsequent requests with 
 - *"monetise an API with different rate limits per customer"* → usage plans + API keys
 - *"authenticate API with Cognito user tokens"* → Cognito User Pool authoriser
 
+**Do you always need API Gateway with Lambda? No.**
+
+API Gateway is specifically for when you need an HTTP endpoint. Most Lambda triggers don't need it:
+
+| Trigger | API Gateway needed? |
+| ------- | ------------------- |
+| S3 event (file uploaded) | No — S3 invokes Lambda directly |
+| SQS message | No — Lambda polls the queue |
+| DynamoDB Stream | No — Lambda polls the stream |
+| CloudWatch / EventBridge schedule | No — invokes Lambda directly |
+| SNS notification | No — SNS invokes Lambda directly |
+| Another Lambda | No — invoke via SDK |
+| ALB | No — ALB can invoke Lambda as a target |
+
+**ALB vs API Gateway for HTTP endpoints:**
+
+| | API Gateway | ALB |
+| - | ----------- | --- |
+| Cost | Per request ($3.50/million) | Per hour + per LCU (~$16/month min) |
+| Features | Throttling, caching, API keys, usage plans, WebSocket | Basic routing, health checks |
+| Best for | Feature-rich APIs, low/spiky traffic | High-volume, simple routing, already have an ALB |
+
+**Exam shortcut:** "invoke Lambda on a schedule" or "invoke Lambda from S3" → no API Gateway. "REST API" or "HTTP endpoint" → API Gateway (or ALB for simpler cases).
+
 ### Step Functions
 
 Visual **workflow orchestrator** — coordinate multiple Lambda functions (and other AWS services) into a sequence with branching, retries, error handling, and parallelism.
