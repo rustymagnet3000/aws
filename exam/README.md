@@ -4445,14 +4445,28 @@ DynamoDB Streams' advantage on AWS: tight Lambda integration — change in the t
 
 **DynamoDB Accelerator (DAX):**
 
-In-memory cache **specifically for DynamoDB** — sits in front of your table, caches reads. Microsecond response times vs milliseconds.
+A read cache that sits in front of DynamoDB and uses the **exact same API**. Your app doesn't change a single line of code — just change the endpoint.
+
+The problem: your app reads the same item 1,000 times per second. Each read costs RCU and takes ~5ms. With DAX, the first read goes to DynamoDB. The next 999 come from DAX's in-memory cache at 0.1ms. You save 999 RCUs.
 
 ```
-Without DAX: App → DynamoDB (5ms)
-With DAX:    App → DAX (0.1ms, cache hit) or → DynamoDB (5ms, cache miss)
+Without DAX: App → DynamoDB (5ms, costs RCU every time)
+With DAX:    App → DAX (0.1ms, cache hit) → only cache misses hit DynamoDB
 ```
 
-**DAX vs ElastiCache:** DAX is for DynamoDB only, no code changes needed (same API). ElastiCache is general-purpose caching for any data source but requires code changes.
+**DAX vs ElastiCache:**
+
+| | DAX | ElastiCache |
+| - | --- | ----------- |
+| Code changes | None — same DynamoDB API | Yes — you write cache logic |
+| Works with | DynamoDB only | Anything (RDS, APIs, any data) |
+| Cache logic | Automatic (read-through/write-through) | You build it (lazy loading, TTL) |
+
+DAX is the lazy option — drop it in, change the endpoint, done. ElastiCache gives more control but you write the caching logic yourself.
+
+**When DAX helps:** read-heavy workloads where the same items are read repeatedly (leaderboards, product catalogs, user profiles).
+
+**When DAX doesn't help:** write-heavy workloads (DAX caches reads, not writes), queries that always return different results (cache misses every time), or caching data from multiple sources (use ElastiCache).
 
 **DynamoDB Global Tables:**
 
