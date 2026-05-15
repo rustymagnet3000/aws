@@ -4851,12 +4851,77 @@ User → Cognito User Pool (JWT) → Identity Pool → temporary AWS credentials
 
 Often used together: User Pool handles login, Identity Pool grants AWS access.
 
+**Why Cognito User Pool instead of building your own auth?**
+
+Rolling your own means: user database, password hashing, email verification, password reset flow, MFA, JWT signing/validation, social login OAuth flows, brute-force protection, compliance (GDPR). Cognito gives you all of this out of the box.
+
+| | Build your own | Cognito User Pool |
+| - | -------------- | ----------------- |
+| User database | You manage (RDS/DynamoDB) | Managed by Cognito |
+| Password hashing | You implement (bcrypt, argon2) | Built-in |
+| MFA | You integrate (Authy, SMS API) | Built-in (SMS, TOTP) |
+| Social login | You implement each OAuth flow | Toggle on Google/Facebook/Apple |
+| Email verification | You build (SES + Lambda) | Built-in |
+| Brute-force protection | You build rate limiting | Built-in (adaptive auth) |
+| Hosted login page | You build from scratch | Built-in (customisable) |
+
+**Hosted UI:**
+
+Cognito provides a pre-built login/sign-up page you can use immediately. Customise the logo, CSS, and domain. Your app redirects to the Hosted UI, user logs in, Cognito redirects back with a JWT. No login page code to write or maintain.
+
+```
+Your app → redirect to Cognito Hosted UI → user signs in → redirect back with JWT
+```
+
+Use case: you want auth working in minutes, not days. Customise later.
+
+**CUP + ALB — authenticate at the load balancer:**
+
+Cognito User Pool can authenticate directly at the ALB — not just API Gateway. The ALB verifies the JWT before the request reaches your backend:
+
+```
+User → ALB (verifies Cognito JWT) → EC2/ECS/Lambda
+       ├── Valid token → forward request ✅
+       └── Invalid/missing → redirect to Cognito Hosted UI for login
+```
+
+This means your backend code **never handles authentication** — the ALB rejects unauthenticated requests before they arrive. Works with EC2, ECS, and Lambda targets.
+
+**CUP Lambda Triggers — customise the auth flow:**
+
+Lambda functions that run at specific points during sign-up and sign-in:
+
+| Trigger | When it runs | Use case |
+| ------- | ------------ | -------- |
+| Pre sign-up | Before creating user | Validate email domain (only allow @company.com) |
+| Post confirmation | After email verification | Send welcome email, create user profile in DynamoDB |
+| Pre authentication | Before sign-in | Check if user is banned, log sign-in attempt |
+| Post authentication | After successful sign-in | Add custom claims to token, sync user data |
+| Pre token generation | Before JWT is issued | Add custom attributes to the JWT (role, permissions) |
+| Custom message | When sending verification/MFA code | Customise email/SMS template |
+| User migration | When user signs in for first time | Migrate users from old auth system on-demand |
+
+Real-world example — migrating from an old auth system:
+
+```
+User signs in → Cognito: "user not found"
+             → User Migration trigger → Lambda checks old database
+             → User exists in old DB? → create in Cognito, return success
+             → User doesn't exist? → reject sign-in
+```
+
+Users are migrated one-by-one as they sign in — no big-bang migration needed.
+
 **Exam triggers:**
 - *"add authentication to a web/mobile app"* → Cognito User Pool
 - *"social login (Google, Facebook)"* → Cognito User Pool
 - *"give users temporary AWS credentials"* → Cognito Identity Pool
 - *"mobile app needs to upload directly to S3"* → Cognito Identity Pool
 - *"authorise API Gateway requests with user tokens"* → Cognito User Pool as API Gateway authoriser
+- *"authenticate users at the ALB"* → Cognito User Pool + ALB integration
+- *"pre-built login page with minimal effort"* → Cognito Hosted UI
+- *"run custom logic during sign-up (validate email domain)"* → CUP Lambda trigger (Pre sign-up)
+- *"migrate users from an existing auth system"* → CUP User Migration Lambda trigger
 
 ### Serverless Quick Reference
 
