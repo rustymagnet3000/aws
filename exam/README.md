@@ -4835,11 +4835,29 @@ User → sign in → Cognito User Pool → JWT token → API Gateway (verifies t
 
 - Exchanges a token (from User Pool, Google, Facebook, etc.) for **temporary AWS credentials**
 - Gives users direct access to AWS services (S3, DynamoDB) without going through an API
-- Use case: mobile app uploads photos directly to S3 with temporary credentials
+
+**Why Identity Pools exist — the photo upload example:**
+
+Without Identity Pool: every photo goes through your backend. You pay for API Gateway + Lambda. At scale (millions of photos), your backend is a bottleneck and expensive.
 
 ```
-User → Cognito User Pool (JWT) → Identity Pool → temporary AWS credentials → S3 direct upload
+Without: Mobile app → API Gateway → Lambda → uploads to S3 (slow, expensive at scale)
+With:    Mobile app → Identity Pool → temporary credentials → uploads directly to S3 (fast, cheap)
 ```
+
+**Why temporary credentials, not permanent API keys?** You can't embed permanent AWS access keys in a mobile app — anyone can decompile and steal them. Identity Pool gives temporary credentials (expire in 1 hour) scoped to exactly what that user can do:
+
+```
+User "bob" gets temporary credentials that ONLY allow:
+  s3:PutObject to s3://my-bucket/users/bob/*
+
+Bob can upload to his own folder. Can't read other users' files.
+Credentials expire in 1 hour. If stolen, limited damage.
+```
+
+Other examples: mobile app reads user-specific DynamoDB data directly, IoT device writes sensor data to Kinesis, browser downloads private S3 files.
+
+**When NOT to use:** when your backend should control all access. Most web apps go through API Gateway → Lambda → S3. Identity Pool is for cutting out the middleman (mobile, IoT, high-volume uploads).
 
 **User Pool vs Identity Pool:**
 
