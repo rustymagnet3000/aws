@@ -1091,6 +1091,19 @@ App gets busy
 
 A single task hammering the CPU doesn't cause EC2 scaling by itself. The EC2 count only changes when ECS needs to **place new tasks** and there's no room. If a task runs hot but ECS hasn't decided to add more tasks, the instance count stays the same.
 
+**The complete ECS on EC2 scaling chain:**
+
+```
+1. CloudWatch detects high CPU across tasks → fires alarm
+2. ECS Service Auto Scaling reacts → "add more tasks"
+3. ECS tries to place new tasks on existing instances
+4. No room → Capacity Provider instructs ASG to add instances
+5. ASG launches new EC2 instances → join ECS cluster
+6. New tasks placed on new instances ✅
+```
+
+Important: CPUs don't trigger task scaling directly — **CloudWatch** watches CPU, fires an alarm, and the scaling policy reacts. And the ASG doesn't decide to scale on its own — it receives instructions from the **Capacity Provider**.
+
 **Exam triggers:**
 - *"reduce Fargate costs for fault-tolerant tasks"* → FARGATE_SPOT
 - *"mix of reliable and cost-effective compute"* → Capacity Provider Strategy (FARGATE + FARGATE_SPOT)
