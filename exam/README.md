@@ -2550,6 +2550,55 @@ Users → Route 53
 - Relational data that needs complex joins → use RDS instead of DynamoDB
 - Consistent high-throughput workloads → EC2 is cheaper at steady load
 
+**Full-stack serverless architecture:**
+
+Everything serverless — frontend, auth, API, database, caching, file storage:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Frontend                                                       │
+│  S3 (static React/Vue app) → CloudFront (CDN, HTTPS)           │
+│  Route 53 (app.example.com → CloudFront Alias)                 │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ HTTPS API calls
+┌──────────────────────────▼──────────────────────────────────────┐
+│  Auth                                                           │
+│  Cognito User Pool (sign-up, sign-in, JWT)                     │
+│  Cognito Identity Pool (direct S3 uploads from browser)        │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ JWT token
+┌──────────────────────────▼──────────────────────────────────────┐
+│  API                                                            │
+│  API Gateway (validates JWT, throttling, caching)               │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────────┐
+│  Business Logic                                                 │
+│  Lambda functions                                               │
+└───────┬──────────────┬──────────────┬───────────────────────────┘
+        │              │              │
+┌───────▼──────┐ ┌─────▼──────┐ ┌────▼──────┐
+│  DynamoDB    │ │  DAX       │ │  S3       │
+│  (database)  │ │  (cache)   │ │  (files)  │
+└──────────────┘ └────────────┘ └───────────┘
+```
+
+**How the pieces fit:**
+
+| Layer | Service | What it does |
+| ----- | ------- | ------------ |
+| Frontend | S3 + CloudFront | Static app served globally, HTTPS |
+| DNS | Route 53 | `app.example.com` → CloudFront, `api.example.com` → API Gateway |
+| Auth | Cognito User Pool | Sign-up, sign-in, JWT tokens, social login |
+| Direct upload | Cognito Identity Pool | Browser uploads photos directly to S3 (no Lambda) |
+| API | API Gateway | Validates JWT, throttles, caches responses |
+| Logic | Lambda | Business logic, scales per request |
+| Database | DynamoDB | NoSQL, auto-scales |
+| Cache | DAX | Microsecond reads, same DynamoDB API |
+| Files | S3 | User uploads, generated files |
+
+**Cost at zero traffic: ~$0.** Everything scales to zero. You only pay when users arrive. This is why serverless is popular for startups and side projects.
+
 ### Static Website with CloudFront
 
 Cheapest and fastest way to host a static website (HTML, CSS, JS, images).
