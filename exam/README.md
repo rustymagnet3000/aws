@@ -121,6 +121,7 @@
   - [API Gateway](#api-gateway)
   - [Step Functions](#step-functions)
   - [Amazon Cognito](#amazon-cognito)
+  - [Microservices](#microservices)
   - [Serverless Quick Reference](#serverless-quick-reference)
 
 <!-- /TOC -->
@@ -5019,6 +5020,103 @@ Users are migrated one-by-one as they sign in — no big-bang migration needed.
 - *"pre-built login page with minimal effort"* → Cognito Hosted UI
 - *"run custom logic during sign-up (validate email domain)"* → CUP Lambda trigger (Pre sign-up)
 - *"migrate users from an existing auth system"* → CUP User Migration Lambda trigger
+
+### Microservices
+
+A microservices architecture splits an application into small, independently deployable services that each own one capability (orders, payments, inventory, notifications). Each service has its own database, its own scaling, and its own deploy pipeline.
+
+On AWS, a microservice is usually one of: a Lambda function, an ECS/Fargate service, or an EKS pod — fronted by API Gateway or an ALB. The hard part isn't the compute, it's **how services talk to each other**.
+
+**Synchronous vs Asynchronous — the core decision:**
+
+| | Synchronous | Asynchronous |
+| - | ----------- | ------------ |
+| Pattern | Service A calls Service B and waits for the response | Service A drops a message, B processes it later |
+| Coupling | Tight — A is broken if B is down | Loose — A doesn't care if B is down |
+| Latency | Caller pays B's full latency | Caller returns immediately (fire-and-forget) |
+| Failure mode | Cascading — B down → A times out → A's caller times out | Isolated — messages queue up until B recovers |
+| AWS services | API Gateway → Lambda, ALB → ECS, service-to-service HTTP | SQS, SNS, EventBridge, Kinesis, Step Functions |
+| Use when | Caller needs the result *now* (checkout total, login) | Work can happen later (send email, resize image, update search index) |
+
+**Synchronous example — order checkout:**
+
+```
+Browser → API Gateway → Order Service (Lambda)
+                          ├── calls Payment Service (sync) — must succeed before order is confirmed
+                          └── calls Inventory Service (sync) — must reserve stock before order is confirmed
+                        ← returns 200 with order ID
+```
+
+Every hop adds latency, and any failure breaks the whole chain. Right pattern here — the user is waiting for a yes/no on their order.
+
+**Asynchronous example — order fulfilment:**
+
+```
+Order Service → publishes "OrderPlaced" event to SNS
+                ├── SQS → Email Service (send confirmation)
+                ├── SQS → Warehouse Service (pick & pack)
+                ├── SQS → Analytics Service (update dashboards)
+                └── SQS → Loyalty Service (award points)
+```
+
+Order Service doesn't know or care who consumes the event. Add a new subscriber tomorrow without touching the Order Service. If the Email Service is down, messages queue up in SQS — nothing is lost.
+
+**Choosing the right AWS integration pattern:**
+
+| Pattern | Service | When |
+| ------- | ------- | ---- |
+| Point-to-point queue (one consumer) | **SQS** | Decouple producer from one consumer, smooth out spikes, retry on failure |
+| Fan-out (many consumers, all get the message) | **SNS + SQS** | One event, multiple independent reactions (the order example above) |
+| Event bus with filtering/routing | **EventBridge** | Many event sources and destinations, route by content, integrate with SaaS |
+| Streaming (ordered, replayable) | **Kinesis** | Process the same stream multiple ways, replay history, analytics |
+| Workflow orchestration | **Step Functions** | Long multi-step business process with retries, branching, human approval |
+| Sync HTTP API | **API Gateway / ALB** | Browser or mobile client needs a response |
+| Sync service-to-service | **Service Discovery + ALB** or **App Mesh** | Internal HTTP calls between containers |
+
+**SNS vs EventBridge** — both are pub/sub but with different sweet spots. SNS is simpler and faster (sub-100ms), best for fan-out to SQS/Lambda. EventBridge supports **content-based filtering**, schema registry, and 100+ SaaS sources (Datadog, Zendesk, etc.) — use it when routing logic is non-trivial or events come from outside AWS.
+
+**Orchestration vs Choreography:**
+
+```
+Orchestration (Step Functions):       Choreography (SNS/EventBridge):
+  Workflow ─→ Service A                  Service A ──event──→ Service B
+           ─→ Service B                                   ──→ Service C
+           ─→ Service C                  No central controller — each service
+  Central controller knows the steps     reacts to events from others
+```
+
+- **Orchestration** — easier to reason about, visualise, and debug. Central point of failure (mitigated by Step Functions being managed). Use for ordered multi-step workflows where you care about the overall outcome.
+- **Choreography** — looser coupling, easier to add new services. Harder to trace end-to-end ("why didn't the email send?"). Use for event-driven flows where each service independently reacts.
+
+**The Saga pattern** — for distributed transactions across microservices (no 2-phase commit available). Each step has a compensating action. Implement with Step Functions: if step 3 fails, run compensating actions for steps 1 and 2.
+
+```
+Book flight → Book hotel → Charge card
+   ↓ fails              ↓ fails           ↓ fails
+   nothing to undo      cancel flight     cancel flight + cancel hotel
+```
+
+**Sync wrapped around async — Request/Reply over a queue:**
+
+If the caller really needs a response but you still want queue-based decoupling, use a reply queue with a correlation ID. Rare on the exam — sync HTTP is almost always the right answer when you need a response.
+
+**Common microservices anti-patterns (exam wrong answers):**
+
+- **Shared database** — two microservices reading/writing the same RDS table. Defeats the point — they're now coupled at the schema. Each service owns its own data store.
+- **Distributed monolith** — services that must be deployed together because they call each other synchronously in a chain. Hides monolith complexity behind a network. Async events break the coupling.
+- **Sync chain for non-blocking work** — calling an email service synchronously during checkout. Email failure shouldn't fail the order — publish an event instead.
+
+**Exam triggers:**
+
+- *"decouple microservices"* → **SQS** (one consumer) or **SNS** (fan-out)
+- *"one event, multiple services need to react independently"* → **SNS + SQS fan-out** or **EventBridge**
+- *"route events based on content / from SaaS sources"* → **EventBridge**
+- *"orchestrate a multi-step workflow with retries and branching"* → **Step Functions**
+- *"distributed transaction across microservices"* → **Saga pattern with Step Functions**
+- *"service A is failing because service B is down"* → tight sync coupling → introduce a queue (async)
+- *"need response immediately"* → synchronous (API Gateway/ALB)
+- *"work can happen later, smooth out traffic spikes"* → asynchronous (SQS)
+- *"two microservices share an RDS table"* → anti-pattern, each service should own its data
 
 ### Serverless Quick Reference
 
