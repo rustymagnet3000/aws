@@ -14,6 +14,24 @@
   - [Snapshots](#snapshots)
   - [EC2 Pricing Models](#ec2-pricing-models)
   - [AMI](#ami)
+- [VPC and Networking](#vpc-and-networking)
+  - [VPC Fundamentals](#vpc-fundamentals)
+  - [Subnets](#subnets)
+  - [Internet Gateway (IGW)](#internet-gateway-igw)
+  - [NAT Gateway vs NAT Instance](#nat-gateway-vs-nat-instance)
+  - [Route Tables](#route-tables)
+  - [Security Groups](#security-groups)
+  - [NACLs (Network ACLs)](#nacls-network-acls)
+  - [Security Groups vs NACLs](#security-groups-vs-nacls)
+  - [VPC Endpoints](#vpc-endpoints)
+  - [ENI-backed vs Public Endpoint Services](#eni-backed-vs-public-endpoint-services)
+  - [VPC Peering](#vpc-peering)
+  - [Transit Gateway](#transit-gateway)
+  - [PrivateLink](#privatelink)
+  - [VPC Flow Logs](#vpc-flow-logs)
+  - [Direct Connect and Site-to-Site VPN](#direct-connect-and-site-to-site-vpn)
+  - [VPC Anti-patterns (exam wrong answers)](#vpc-anti-patterns-exam-wrong-answers)
+  - [VPC Exam Triggers](#vpc-exam-triggers)
 - [EFS](#efs)
 - [Scaling and ELB](#scaling-and-elb)
   - [Elastic Load Balancer (ELB)](#elastic-load-balancer-elb)
@@ -448,6 +466,251 @@ An EBS snapshot is a point-in-time backup of an EBS volume, stored incrementally
 - AMIs are locked to a region — always copy before launching in a different region
 - Recycle Bin can also protect AMIs from accidental deletion (same rules as snapshots)
 - Pre-baking software into an AMI = faster launch times vs. using user data scripts to install at boot
+
+## VPC and Networking
+
+A **VPC (Virtual Private Cloud)** is your own isolated network inside an AWS region. You define the IP address range, carve it into subnets, control routing, and decide what can talk to what. Almost every AWS service either lives **inside** a VPC (EC2, RDS, ALB) or is a **public API** you call from a VPC (S3, DynamoDB, SQS, SNS).
+
+Understanding which is which is the single biggest source of "why doesn't this work?" on the exam.
+
+### VPC Fundamentals
+
+- **Regional** — a VPC lives in one AWS region. To span regions, peer VPCs together or use Transit Gateway.
+- **CIDR block** — define the IP range (e.g. `10.0.0.0/16`). Allowed sizes: `/16` (65k IPs) down to `/28` (16 IPs).
+- **Default VPC** — every region has one pre-created, with public subnets in each AZ. Fine for experiments, not for production.
+- **AWS reserves 5 IPs per subnet** — `.0` (network), `.1` (VPC router), `.2` (DNS), `.3` (future use), `.255` (broadcast). A `/28` subnet has 16 IPs but only 11 are usable.
+
+### Subnets
+
+A subnet is a slice of the VPC's CIDR, **scoped to one Availability Zone**.
+
+```
+VPC: 10.0.0.0/16 (region: eu-west-1)
+├── 10.0.1.0/24 → eu-west-1a (public)
+├── 10.0.2.0/24 → eu-west-1b (public)
+├── 10.0.10.0/24 → eu-west-1a (private)
+└── 10.0.11.0/24 → eu-west-1b (private)
+```
+
+**Public vs private is defined by the route table, not by name:**
+
+| | Public subnet | Private subnet |
+| - | ------------- | -------------- |
+| Route table has `0.0.0.0/0 → IGW` | ✅ | ❌ |
+| Resources can have public IPs | ✅ | ❌ (mostly) |
+| Can reach internet | ✅ (directly) | Only via NAT Gateway |
+| Internet can reach in | ✅ (if SG allows) | ❌ |
+| Use for | ALB, NAT Gateway, bastion | RDS, ElastiCache, app servers |
+
+A subnet with **no `0.0.0.0/0` route at all** is **isolated** — no internet in or out. Used for highly sensitive workloads (e.g. databases that should never reach the internet).
+
+### Internet Gateway (IGW)
+
+The IGW is the door between your VPC and the internet. Exactly **one per VPC**, attached to the VPC itself (not a subnet).
+
+```
+Public subnet route table:
+  10.0.0.0/16  → local      (intra-VPC, always present)
+  0.0.0.0/0    → igw-abc123 (this makes it "public")
+```
+
+An instance also needs a **public IP** or **Elastic IP** to be reachable from the internet — the IGW alone isn't enough.
+
+### NAT Gateway vs NAT Instance
+
+Private subnets need a way to reach the internet for outbound traffic (package updates, third-party APIs) **without** being reachable inbound. A NAT does the translation.
+
+| | NAT Gateway | NAT Instance |
+| - | ----------- | ------------ |
+| What it is | Managed AWS service | Regular EC2 instance you manage |
+| Scaling | Up to 45 Gbps, automatic | Limited by instance size, manual |
+| Patching/HA | AWS handles it | You handle it |
+| Cost | ~$0.045/hour + ~$0.045/GB processed | EC2 hourly + data |
+| AZ scope | Single AZ — needs one per AZ for HA | Single AZ |
+| Use | Default choice | Legacy, cost-optimisation in dev |
+
+**The HA trap:** a NAT Gateway lives in **one AZ**. If you put all private subnets through a single NAT Gateway in `eu-west-1a` and that AZ fails, private subnets in `eu-west-1b` also lose internet (they were routing through the dead NAT). **Fix:** one NAT Gateway per AZ, each private subnet routes to its own AZ's NAT.
+
+```
+Multi-AZ NAT setup:
+  Private subnet in 1a → NAT GW in 1a → IGW
+  Private subnet in 1b → NAT GW in 1b → IGW   ← independent failure domains
+```
+
+### Route Tables
+
+Each subnet is associated with **one route table**. Routes are evaluated **most-specific first**.
+
+```
+Destination       Target
+10.0.0.0/16    →  local        ← automatic, can't remove (intra-VPC traffic)
+172.16.0.0/16  →  pcx-abc      ← VPC peering
+0.0.0.0/0      →  nat-xyz      ← default route to NAT (private subnet)
+```
+
+The `local` route to the VPC CIDR is automatic and immutable — that's why subnets in the same VPC can always reach each other.
+
+### Security Groups
+
+- **Stateful** — if you allow inbound, the return traffic is **automatically allowed** out (and vice versa). You don't need a matching outbound rule.
+- **Attached to ENIs** — so to EC2 instances, RDS, ElastiCache, ALB/NLB, Lambda-in-VPC, ECS tasks, EFS mount targets, VPC interface endpoints. Anything with a network interface in your VPC.
+- **Allow rules only** — there's no "deny" rule. If no rule matches, traffic is dropped.
+- **Can reference other SGs by ID** — `allow inbound 3306 from sg-app` means "from anything wearing the app SG", regardless of IP. Cleaner than maintaining IP lists.
+- **Default behaviour** — new SGs deny all inbound, allow all outbound.
+- **Limits** — up to 5 SGs per ENI; up to 60 inbound + 60 outbound rules per SG (soft).
+
+### NACLs (Network ACLs)
+
+- **Stateless** — you must allow inbound **and** outbound separately. If you only allow inbound on port 443, the response packet (on an ephemeral port) is dropped on the way out unless you also allow that.
+- **Attached to subnets** (not ENIs) — every resource in the subnet shares the NACL.
+- **Allow AND deny rules** — useful for explicit blocks (e.g. block a known-bad IP range).
+- **Rules evaluated in order** — lowest rule number first; first match wins.
+- **Default NACL** allows all traffic. **Custom NACLs** start denying everything.
+
+### Security Groups vs NACLs
+
+| | Security Group | NACL |
+| - | -------------- | ---- |
+| Attached to | ENI (instance) | Subnet |
+| Stateful? | Yes — return traffic auto-allowed | No — must allow both directions |
+| Rule types | Allow only | Allow + Deny |
+| Rule evaluation | All rules evaluated (any allow → permitted) | Ordered, first match wins |
+| Reference other SGs | Yes (by SG ID) | No (CIDR only) |
+| Default for new | Deny all inbound, allow all outbound | Custom: deny all. Default: allow all |
+| Use case | Day-to-day "who can talk to this resource" | Subnet-wide block/allow, deny lists |
+
+**The exam shortcut:** SG is the default tool. NACL is for when you specifically need a **deny** (e.g. block a malicious IP range) or a subnet-wide rule that's independent of per-instance config.
+
+### VPC Endpoints
+
+A VPC Endpoint lets resources in your VPC reach AWS services **without going over the public internet** (no NAT Gateway, no IGW). Two types:
+
+| | Gateway Endpoint | Interface Endpoint |
+| - | ---------------- | ------------------ |
+| Services | **S3 and DynamoDB only** | Almost every other AWS service (SQS, SNS, Kinesis, Secrets Manager, KMS, etc.) |
+| How | Adds a route to your route table | Creates an ENI in your subnet with a private IP |
+| Cost | **Free** | ~$0.01/hour per endpoint per AZ + per-GB data |
+| DNS | Service uses public DNS, traffic stays private | Endpoint gets a regional DNS name (or enables private DNS to override the public one) |
+| Security control | Endpoint policy | Endpoint policy + **security group** (on the ENI) |
+| Powered by | Custom routing | PrivateLink |
+
+**Exam shortcut:** "S3 or DynamoDB without going through NAT" → **Gateway endpoint** (free). Anything else → **Interface endpoint**.
+
+### ENI-backed vs Public Endpoint Services
+
+This is the concept that explains "why can't I attach a security group to SQS?" — and the source of many exam traps.
+
+| Service category | Examples | Has ENI in your VPC? | Controlled by |
+| ---------------- | -------- | -------------------- | ------------- |
+| **ENI-backed** | EC2, RDS, ElastiCache, ALB/NLB, EFS, Lambda-in-VPC, ECS task, VPC interface endpoint | ✅ | **Security groups** + IAM |
+| **Public AWS API** | S3, DynamoDB, SQS, SNS, Lambda (default), Kinesis, EventBridge, Step Functions, API Gateway, CloudWatch | ❌ | **IAM + resource policy** — no security groups |
+
+To control network access to a public-API service from your VPC, you don't use a security group on the service — you use a **VPC endpoint** in your VPC, and the SG attaches to the **endpoint**, not the service.
+
+**Anti-patterns:**
+
+- *"Attach a security group to my SQS queue / S3 bucket / SNS topic"* — not possible. These have no ENI. Use IAM + resource policy.
+- *"Public IP + tight security group = secure"* — partly true, but the public IP still attracts internet noise (scanners, port-knocking). Putting the resource in a private subnet behind an ALB is stronger.
+- *"Use a security group to block a malicious IP"* — SGs are allow-only. Use a NACL or AWS WAF for explicit denies.
+
+### VPC Peering
+
+A 1:1 connection between two VPCs — they can route to each other as if they were one network.
+
+- **CIDRs must not overlap** (no NAT in peering)
+- **Cross-region and cross-account** allowed
+- **No transitive routing** — if A peered with B, and B peered with C, A **cannot** reach C through B. You'd need a direct A↔C peering.
+- Both VPCs must update their **route tables** to point at the peering connection for the other's CIDR.
+
+The transitive routing limit is why peering doesn't scale past a handful of VPCs — N VPCs need N² peerings.
+
+### Transit Gateway
+
+A hub-and-spoke router for many VPCs (and on-prem networks). Solves the N² peering problem.
+
+```
+        VPC A ─┐
+        VPC B ─┼─→ Transit Gateway ←─→ on-prem (via DX or VPN)
+        VPC C ─┘
+```
+
+- **Transitive routing** — any spoke can reach any other spoke (if route tables allow).
+- **Centralised** — one place to manage routes, security, attachments.
+- **Cross-region** peering supported (between two Transit Gateways).
+- **Cost** — per-hour attachment fee + per-GB data processed. Expensive at scale, but cheaper than maintaining dozens of peerings.
+
+**Exam shortcut:** "connect many VPCs and on-prem" → Transit Gateway. "Two VPCs" → VPC Peering (cheaper).
+
+### PrivateLink
+
+Expose a service running in **your** VPC to **other** VPCs (or accounts) without peering, without overlapping CIDR concerns, without internet.
+
+```
+Provider VPC:    [Your service behind an NLB] → "VPC Endpoint Service"
+                                                       ↓
+Consumer VPC:    [Interface Endpoint] → reaches your service via private IPs
+```
+
+- Provider puts an **NLB** in front of their service and creates a **VPC Endpoint Service**.
+- Consumer creates an **Interface Endpoint** that targets the provider's service.
+- Traffic stays on the AWS backbone — never traverses the public internet.
+- The two VPCs **can have overlapping CIDRs** — PrivateLink doesn't route between them, it just exposes the service.
+
+Use case: SaaS providers exposing their product to customers' VPCs (Snowflake, Datadog, etc. all use PrivateLink).
+
+### VPC Flow Logs
+
+Capture metadata about IP traffic in your VPC. Useful for security forensics, troubleshooting connectivity ("why is this blocked?"), and traffic analysis.
+
+- **Granularity:** VPC, subnet, or ENI
+- **Captures:** source/dest IP and port, protocol, bytes, ACCEPT/REJECT
+- **Does NOT capture:** packet contents (use a packet mirror for that)
+- **Destinations:** CloudWatch Logs, S3, or Kinesis Data Firehose
+- **Cost-conscious tip:** ship to S3 with Parquet format and query with Athena — much cheaper than CloudWatch Logs for large volumes.
+
+**Exam triggers:**
+- *"why is traffic being blocked between two instances"* → enable VPC Flow Logs, look for REJECT entries
+- *"audit which IPs accessed our database"* → VPC Flow Logs on the RDS ENI
+
+### Direct Connect and Site-to-Site VPN
+
+Two ways to connect on-prem to AWS:
+
+| | Site-to-Site VPN | Direct Connect |
+| - | ---------------- | -------------- |
+| Path | Encrypted tunnel over the **public internet** | **Dedicated physical line** from your data centre to an AWS Direct Connect location |
+| Setup time | Minutes | Weeks to months (physical install) |
+| Bandwidth | 1.25 Gbps per tunnel | 1, 10, 100 Gbps options |
+| Latency | Variable (internet) | Low and consistent |
+| Cost | Cheap | Expensive (port fee + data) |
+| Encryption | Built in (IPsec) | None by default — add VPN over DX or MACsec for encryption |
+
+**Hybrid pattern:** Direct Connect for production traffic, VPN as a backup if the DX link fails.
+
+### VPC Anti-patterns (exam wrong answers)
+
+- **Attaching security groups to SQS/SNS/S3/DynamoDB** — these don't have ENIs. Use IAM + resource policy, plus VPC endpoints if you need the traffic to stay private.
+- **Single NAT Gateway for multi-AZ private subnets** — if that AZ dies, all private subnets lose internet. One NAT per AZ.
+- **Interface endpoint for S3** — works but Gateway endpoint is free. Prefer Gateway unless you specifically need PrivateLink behaviour (e.g. on-prem reaching S3 through DX).
+- **VPC Peering for 10+ VPCs** — N² problem. Use Transit Gateway.
+- **Relying on a tight SG with a public IP** — public IPs still attract noise; private subnet + ALB is stronger.
+- **Trying to use NACL deny rules for application-level access control** — too brittle and far from the app. Use SG + IAM + WAF closer to the resource.
+- **Putting Lambda in a VPC by default** — only do it if Lambda needs to reach private resources (RDS, ElastiCache). VPC attachment loses internet access (unless NAT) and adds cold-start cost.
+
+### VPC Exam Triggers
+
+- *"keep S3 traffic off the public internet"* → S3 Gateway VPC endpoint (free)
+- *"keep traffic to other AWS services off the public internet"* → Interface VPC endpoint
+- *"why can't I attach a security group to SQS / SNS / S3"* → no ENI; use IAM + resource policy
+- *"private subnet instances need internet for package updates"* → NAT Gateway
+- *"NAT Gateway is a single point of failure"* → one NAT per AZ
+- *"connect 20 VPCs and on-prem"* → Transit Gateway
+- *"connect two VPCs with non-overlapping CIDRs"* → VPC Peering
+- *"why is traffic blocked between two instances"* → VPC Flow Logs (look for REJECT)
+- *"on-prem to AWS with consistent low latency"* → Direct Connect
+- *"on-prem to AWS, fast to set up, encrypted"* → Site-to-Site VPN
+- *"expose my VPC-hosted SaaS to customer VPCs"* → PrivateLink (NLB + VPC Endpoint Service)
+- *"block a malicious IP range across the whole subnet"* → NACL deny rule (SGs are allow-only)
 
 ## EFS
 
@@ -3842,6 +4105,27 @@ CloudWatch Alarm: "ApproximateNumberOfMessagesVisible > 1000" → scale out
 
 This is a common exam pattern — scale the number of consumers based on how many messages are waiting.
 
+**SQS access control:**
+
+SQS is a public AWS API — it has **no ENI in your VPC**, so you **cannot attach a security group to a queue**. (See the [VPC and Networking](#vpc-and-networking) section on ENI-backed vs public-endpoint services.) Control access through these layers instead:
+
+| Layer | Purpose |
+| ----- | ------- |
+| **IAM identity policy** | Which principal can call SQS APIs at all (`sqs:SendMessage`, `sqs:ReceiveMessage`, `sqs:DeleteMessage`) |
+| **Queue policy** (resource-based) | Who can act on this specific queue. Used for **cross-account** access — name the external principal directly |
+| **KMS key policy** | If the queue uses SSE-KMS, the producer/consumer also needs `kms:GenerateDataKey` / `kms:Decrypt` on the key |
+| **VPC interface endpoint** | Keeps SQS traffic off the public internet. SG attaches to the **endpoint**, not the queue |
+| **VPC endpoint policy** | On the endpoint, restrict which queues are reachable through it |
+| **Encryption** | TLS in transit (enforced); SSE-SQS or SSE-KMS at rest |
+
+**Common access-control gotcha:** consumer has `sqs:ReceiveMessage` but gets `AccessDenied` anyway → it's missing `kms:Decrypt` on the queue's KMS key. The IAM permission to *read the queue* is separate from the permission to *decrypt the message*.
+
+**Anti-patterns:**
+
+- *"Attach a security group to the queue to restrict access"* — impossible. IAM + queue policy is the answer.
+- *"Use the queue policy alone for everything"* — works, but for AWS principals in the same account, IAM is usually cleaner and more auditable. Save queue policy for cross-account.
+- *"Forgot the KMS key policy"* — most common cause of AccessDenied on SSE-KMS queues.
+
 **Exam triggers:**
 - *"decouple application components"* → SQS
 - *"buffer writes to a database"* → SQS (see below)
@@ -3849,6 +4133,10 @@ This is a common exam pattern — scale the number of consumers based on how man
 - *"messages being processed twice"* → increase visibility timeout or switch to FIFO
 - *"scale consumers based on workload"* → SQS + CloudWatch Alarm + ASG
 - *"debug failed messages"* → Dead Letter Queue
+- *"restrict cross-account access to a queue"* → queue policy (resource-based)
+- *"keep SQS traffic off the public internet"* → VPC interface endpoint for SQS
+- *"consumer has SQS IAM permission but still gets AccessDenied"* → missing `kms:Decrypt` on the KMS key
+- *"attach a security group to an SQS queue"* → not possible; SQS has no ENI
 
 **SQS as a database write buffer:**
 
@@ -4520,10 +4808,62 @@ DAX is the lazy option — drop it in, change the endpoint, done. ElastiCache gi
 
 **DynamoDB Global Tables:**
 
-Multi-region, multi-active replication. Write to any region, changes replicate to all others. Requires DynamoDB Streams enabled.
+Multi-region, **active-active** replication. Write to any region, changes replicate to all others in typically under a second. A "global table" is really N identical tables (same name, same schema) in different regions, glued together by replication.
 
-- Use case: global app where users in any region need low-latency reads AND writes
-- Different from Aurora Global Database — Aurora is active-passive (one writer), DynamoDB Global Tables is active-active (write anywhere)
+```
+Write in eu-west-1 → local table → eu-west-1 stream
+                                       ↓
+                  replication service reads the stream
+                                       ↓
+                  applies the change to us-east-1, ap-south-1, ...
+```
+
+**Requirements (and why):**
+
+| Requirement | Why |
+| ----------- | --- |
+| **DynamoDB Streams enabled** with view type `NEW_AND_OLD_IMAGES` | The stream **is** the replication transport. DynamoDB doesn't have a separate replication daemon — without streams, there's nothing to replicate from. `OLD_IMAGES` is needed for conflict detection, `NEW_IMAGES` for applying the change. |
+| **Same table name in every region** | The replicator matches by name. Different names = different tables, not a global table. |
+| **Same capacity mode in every region** | On-Demand everywhere, or Provisioned + auto-scaling everywhere. Can't mix — replication rates would diverge. |
+| **Service-linked IAM role** | `AWSServiceRoleForDynamoDBReplication` lets the replication service write into peer regions on your behalf. |
+| **v1 only: empty table when adding a region** | v2 (`2019.11.21`, the current version) lets you promote an existing table to global. Assume v2 on the exam unless v1 is specified. |
+
+**Conflict resolution — last-writer-wins:**
+
+If two regions write the same item at nearly the same moment, the one with the later timestamp wins. The loser's write is **silently dropped**, not merged. Design partition keys so a given item is usually written from one region (e.g. shard users by home region).
+
+**Consistency model:**
+
+- **Within a region** — strongly consistent reads work as normal.
+- **Across regions** — eventually consistent only. Replication is fast (<1s typical) but you cannot read-after-write across regions and assume freshness.
+
+**Cost — replicated Write Capacity Units (rWCU):**
+
+A write is billed in every region it lands in. A 1 KB write replicated to 3 regions ≈ 3 rWCU. Reads are billed normally in whichever region serves them — Global Tables make reads *cheaper* (closer to users) but writes *more expensive* (multiplied by region count).
+
+**Global Tables vs Aurora Global Database (exam trap):**
+
+| | DynamoDB Global Tables | Aurora Global Database |
+| - | ---------------------- | ---------------------- |
+| Topology | Active-active — write in any region | Active-passive — one primary, others read-only |
+| Conflict handling | Last-writer-wins | No conflicts possible (single writer) |
+| Failover | None needed — every region is already writable | Promote a secondary region (~1 min RTO) |
+| Use case | Global write-heavy apps (gaming, IoT, social) | Global read scale + DR for a relational app |
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Using Global Tables for read-only DR** — overkill and expensive (you pay rWCU for writes you don't need replicated). A single-region table + cross-region backup or on-demand replication is cheaper.
+- **Assuming strong consistency across regions** — only eventual. Cross-region read-after-write will see stale data.
+- **Two regions writing the same item, expecting a merge** — last-writer-wins drops one. If you need merge semantics, use conditional writes + version numbers in application code.
+- **Picking Global Tables when only reads need to be global** — DynamoDB DAX or CloudFront-cached reads may be cheaper. Global Tables shine when *writes* must be low-latency from multiple regions.
+
+**Exam triggers:**
+
+- *"multi-region active-active database with low-latency writes everywhere"* → DynamoDB Global Tables
+- *"global table replication isn't working"* → DynamoDB Streams not enabled (or wrong view type)
+- *"global database with one writer and read replicas in other regions"* → Aurora Global Database, **not** DynamoDB Global Tables
+- *"two regions wrote the same item, one update disappeared"* → last-writer-wins, by design
+- *"replication latency across regions"* → typically under 1 second, eventually consistent
 
 **WCU and RCU calculations (exam favourite):**
 
@@ -4739,10 +5079,64 @@ First request:  Client → API Gateway → Lambda → response → cached
 Next request:   Client → API Gateway → cached response (Lambda not invoked) ✅
 ```
 
-- Cache TTL: 0–3600 seconds (default 300s)
-- Cache size: 0.5 GB to 237 GB
-- Per-stage setting — different TTL for dev vs prod
-- REST API only — HTTP API doesn't support caching
+- **Cache TTL:** 0–3600 seconds (default 300s). 0 effectively disables.
+- **Cache size:** 0.5 GB to 237 GB, per stage
+- **Per-stage** setting (dev vs prod) with **per-method overrides** (cache `GET /products` but not `POST /orders`)
+- **REST API only** — HTTP API does not support caching
+- **Encryption at rest** is optional
+
+**Cache key — what makes two requests "the same":**
+
+By default the cache key is the **full path + query string**. You can promote specific query params or headers to be part of the key so different values cache separately:
+
+```
+Default key:  GET /products?category=shoes
+              GET /products?category=hats     ← cached separately if `category` is in the key
+
+If `category` is NOT in the key, both share one cache entry → second request returns the wrong response ❌
+```
+
+Rule of thumb: anything that changes the response **must** be part of the cache key (user ID header, locale, currency, query params).
+
+**Cache invalidation:**
+
+Clients can force a cache bypass by sending `Cache-Control: max-age=0` on the request:
+
+- Caller needs the `InvalidateCache` IAM permission, otherwise API Gateway returns **403** (or silently ignores, depending on stage setting)
+- Useful for "refresh now" actions after a write
+- You can also flush the entire stage cache from the console/API — disruptive, all keys cleared
+
+**Cost trap (exam favourite):**
+
+API Gateway cache is **not free** — you pay per hour for the provisioned cache size, whether it's hit or idle. Halving Lambda invocations does not automatically save money once the cache bill is added in.
+
+| Scenario | Cache helps? |
+| -------- | ------------ |
+| High-traffic read endpoint, slow/expensive backend | ✅ Yes — fewer Lambda invocations + lower latency |
+| Low-traffic API | ❌ No — cache idle cost outweighs Lambda savings |
+| Per-user personalised responses with no repetition | ❌ No — every request is a miss |
+| Mostly writes (POST/PUT) | ❌ No — writes aren't cached |
+
+**Don't confuse with the Lambda authoriser cache:**
+
+Two unrelated caches live in API Gateway — knowing the difference is an exam trap:
+
+| | Response cache | Lambda authoriser cache |
+| - | -------------- | ----------------------- |
+| Caches | The backend response body | The *authorisation decision* (allow/deny + policy) |
+| Keyed by | URL path + query + configured params/headers | The token (or token + identity sources) |
+| Default TTL | 300s | 300s |
+| Saves on | Backend Lambda invocations | Authoriser Lambda invocations |
+| API types | REST only | REST and HTTP |
+
+**Edge caching is different again** — API Gateway's cache is **regional**. For true edge caching, put **CloudFront** in front of a regional API. Edge-optimised API Gateway uses CloudFront for TLS termination but does **not** cache responses at the edge.
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Caching POST responses** — POST/PUT/DELETE are not cached. If "reduce backend load on writes" is the goal, the answer is a queue (SQS), not a cache.
+- **Cache key missing the variable that changes the response** — e.g. caching `/profile` without including the `Authorization` header → every user sees the first user's profile. Add the identifying header/param to the cache key.
+- **Caching a low-traffic API to save money** — the hourly cache fee will exceed the Lambda savings. Either remove the cache or move it to CloudFront (only pays when cached).
+- **Using API Gateway response cache when you actually want edge caching** — regional cache doesn't help users on the other side of the world. CloudFront in front is the right answer.
 
 **Request/response mapping templates:**
 
@@ -4786,6 +5180,9 @@ The authoriser result is **cached** (default 300s) — subsequent requests with 
 - *"create a serverless REST API"* → API Gateway + Lambda
 - *"throttle API requests per client"* → API Gateway usage plans + API keys
 - *"reduce Lambda invocations for repeated requests"* → API Gateway caching
+- *"different users seeing each other's cached responses"* → cache key missing the user identifier (header/query param)
+- *"force-refresh a cached API response"* → `Cache-Control: max-age=0` header + `InvalidateCache` IAM permission
+- *"edge cache for an API serving global users"* → CloudFront in front of API Gateway (regional cache isn't edge)
 - *"cheapest API for a simple Lambda proxy"* → HTTP API (not REST API)
 - *"custom authentication logic for an API"* → Lambda authoriser
 - *"real-time two-way communication"* → WebSocket API
