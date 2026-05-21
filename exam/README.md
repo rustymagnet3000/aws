@@ -5530,6 +5530,25 @@ OpenSearch indexes documents on **every field**, builds an **inverted index** fo
 | **Security analytics / SIEM** | OpenSearch has a security analytics module; correlate VPC Flow Logs + CloudTrail + WAF logs |
 | **Clickstream / behavioural analytics** | Aggregate millions of events per second, query in seconds |
 
+**The canonical OpenSearch logging pipeline (memorise this — exam-favourite):**
+
+```
+App logs / CloudWatch Logs / VPC Flow Logs
+       │
+       ▼
+Kinesis Data Firehose
+       │
+       ├── (optional) Lambda transform (parse, enrich, redact PII)
+       │
+       ▼
+OpenSearch Service
+       │
+       ▼
+OpenSearch Dashboards (the Kibana fork — search + visualise)
+```
+
+If a question describes "stream logs from many sources into a searchable analytics store with rich dashboards," this is the architecture.
+
 ### OpenSearch vs CloudWatch Logs Insights
 
 Both can search logs in AWS. The trade-off:
@@ -5560,6 +5579,8 @@ Both can search logs in AWS. The trade-off:
 - *"ingest logs from many sources for search and analytics"* → **Kinesis Firehose → OpenSearch**
 - *"occasional log search, minimise cost"* → **CloudWatch Logs Insights** (not OpenSearch)
 - *"OpenSearch without managing a cluster"* → **OpenSearch Serverless**
+
+**The 80/20:** *managed Elasticsearch + Kibana fork; two superpowers — full-text search and log analytics with dashboards; the pipeline is Firehose → OpenSearch; it's an **index**, not a database; CloudWatch Logs Insights is the cheap alternative for infrequent log search.*
 
 ## Serverless
 
