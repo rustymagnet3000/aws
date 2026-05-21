@@ -149,8 +149,10 @@
   - [Kinesis](#kinesis)
   - [SQS vs SNS vs Kinesis](#sqs-vs-sns-vs-kinesis)
 - [Amazon Redshift](#amazon-redshift)
+  - [When People Reach for Redshift](#when-people-reach-for-redshift)
   - [OLTP vs OLAP](#oltp-vs-olap)
   - [Why Not RDS for Analytics?](#why-not-rds-for-analytics)
+  - [Why Load into Redshift Instead of Querying S3?](#why-load-into-redshift-instead-of-querying-s3)
   - [Redshift Key Properties](#redshift-key-properties)
   - [Loading Data into Redshift](#loading-data-into-redshift)
   - [Redshift vs Athena](#redshift-vs-athena)
@@ -5222,6 +5224,29 @@ Amazon MQ runs on a provisioned instance (not serverless), supports Multi-AZ for
 
 AWS's **data warehouse** — designed for running analytics queries across massive datasets (petabytes). Not a transactional database like RDS — it's for **OLAP** (Online Analytical Processing), not OLTP.
 
+### When People Reach for Redshift
+
+You move data **out** of operational systems (RDS, DynamoDB, application logs, third-party feeds) **into** Redshift specifically for analytics. The trigger is one of these three:
+
+1. **BI dashboards on big data** — Tableau / QuickSight / PowerBI hitting the same dataset many times per minute. Always-on cluster + result cache + materialised views = fast repeated queries.
+2. **Petabyte-scale analytical queries** — complex joins and aggregations across billions of rows that would crush RDS.
+3. **Central data warehouse** — consolidate data from many sources into one place so analysts can query without touching production.
+
+**Concrete real-world scenarios:**
+
+- *"5 years of order history, want to slice by region/product/time for the exec dashboard"*
+- *"Daily ETL job pulls yesterday's orders from production RDS into Redshift so analysts don't hit the OLTP DB"*
+- *"Marketing wants to combine web clickstream (S3), CRM (RDS), and ad spend (third-party) — one warehouse, one SQL"*
+- *"Finance runs monthly close reports across the entire transaction history"*
+
+**Rule of thumb:**
+
+- Live transactional workload → **RDS / Aurora / DynamoDB**
+- Ad-hoc, infrequent SQL on S3 → **Athena**
+- **Repeated, complex analytics on big data feeding dashboards** → **Redshift**
+
+If you wouldn't use the word *"warehouse"* or *"BI"* to describe the workload, Redshift is probably the wrong answer.
+
 ### OLTP vs OLAP
 
 | | OLTP (RDS/Aurora) | OLAP (Redshift) |
@@ -5239,6 +5264,46 @@ RDS stores data in **rows**. To answer "total sales by region," it reads every c
 RDS (row storage):      reads entire rows → slow for "give me one column across 1 billion rows"
 Redshift (columnar):    reads only the columns needed → fast for analytics queries
 ```
+
+### Why Load into Redshift Instead of Querying S3?
+
+Given Athena and Redshift Spectrum can query S3 in place, why pay to load? The short answer: **speed, predictable cost, and warehouse features**.
+
+| Reason | Why loading into Redshift wins |
+| ------ | ------------------------------ |
+| **Performance** | Loaded data is distributed across cluster nodes using **distribution keys** + sorted using **sort keys**. A star-schema join on a 10-billion-row fact table is sub-second in Redshift, minutes in Athena |
+| **Cost flips at volume** | Athena = $5 per TB **scanned, per query**. A dashboard scanning 100 GB hit 1,000 times/day = $500/day. A Redshift cluster running 24/7 for the same workload might be $50/day |
+| **Result cache + warm cluster** | Repeated queries hit Redshift's cache in milliseconds. Athena has seconds of startup overhead per query |
+| **Materialised views** | Pre-compute aggregations (`SELECT region, SUM(sales) GROUP BY region`) and refresh on a schedule. Athena can't do this — every query re-aggregates from raw data |
+| **Concurrency** | Concurrency Scaling spins up extra clusters for spikes. Athena has lower default concurrency limits |
+| **Workload management (WLM)** | Queue management — give finance queries priority over marketing, prevent runaway queries from starving everyone else |
+| **Joins across big fact + dimension tables** | Co-locating joined rows via the distribution key is **Redshift's superpower**. Athena moves data across nodes during the join — slow |
+| **ELT pipeline** | `COPY` from S3 into a staging table, transform with SQL, load into a fact table |
+
+**The mental model:**
+
+```
+Raw events  →  S3 (cheap, durable, source of truth for raw data)
+                  │
+                  ├── Ad-hoc / infrequent query  →  Athena (query in place)
+                  │
+                  └── ETL/ELT into Redshift      →  fast repeated queries, BI dashboards,
+                                                    materialised views, complex joins
+```
+
+S3 stays the **source of truth for raw data**. Redshift becomes the **source of truth for analytical queries**. Both coexist in most architectures.
+
+**When NOT to copy in:**
+
+- Queries run rarely (weekly report, ad-hoc exploration) → **Athena**
+- Petabyte-scale data with only a small slice queried at a time → **Redshift Spectrum** (cluster for hot data, S3 for cold)
+- Cost-sensitive project, slower queries acceptable → **Athena**
+
+**The simple rule:**
+
+- *"Will I run this query many times per day?"* → **load into Redshift**
+- *"Will I run this query a few times per month?"* → **leave in S3, use Athena**
+- *"Some of both?"* → **Redshift Spectrum** (hot data loaded, cold data in S3)
 
 ### Redshift Key Properties
 
@@ -5354,6 +5419,54 @@ Both let you SQL-query S3. The difference is **where the query engine lives**:
 | Cost | Per query (bytes scanned) | Cluster cost + Spectrum charges |
 
 If you already have Redshift → Spectrum is the natural fit. If you don't and only need occasional SQL on S3 → Athena.
+
+### Federated Queries
+
+Standard Athena queries S3. **Federated queries** extend Athena to query *non-S3* sources — RDS, DynamoDB, Redshift, DocumentDB, ElastiCache, Neptune, Timestream, CloudWatch Logs, on-prem databases — and **join across sources** in one SQL statement.
+
+```
+Athena query
+   ├── SELECT from s3.logs          (native S3 scan)
+   ├── JOIN  rds.orders ON ...      (Lambda connector → RDS → results back)
+   └── JOIN  dynamodb.users ON ...  (Lambda connector → DynamoDB → results back)
+```
+
+**How it works:**
+
+- Each non-S3 source has a **Lambda connector** that runs in your account and talks to the source on Athena's behalf
+- AWS provides connectors for ~25 sources (RDS, DynamoDB, Redshift, DocumentDB, Neptune, ElastiCache, Timestream, CloudWatch, Snowflake, SAP HANA, on-prem MySQL/Postgres via JDBC…)
+- Build custom connectors with the **Athena Query Federation SDK**
+- Connectors live in your account — they reach private sources (RDS in a VPC) using Lambda VPC config
+
+**Key properties:**
+
+- Cost = **Lambda execution** (connector) **+ Athena bytes-scanned**
+- **Pushdown depends on the connector** — good ones push filters/projections to the source; poor ones fetch everything and let Athena filter (expensive)
+- One AWS region per query — federated query doesn't cross regions
+- Source credentials stored in **Secrets Manager**, referenced by the connector
+
+**Use cases:**
+
+- Ad-hoc reporting that touches multiple stores without building a warehouse
+- One-off audits joining live RDS with S3 archives
+- Investigation across logs (S3), state (DynamoDB), and metadata (RDS)
+- Avoiding ETL for queries that run rarely
+
+**Common anti-patterns:**
+
+- **Federated queries for high-volume production reporting** — Lambda cost + per-query latency add up. Use **DMS** to replicate into Redshift, or **Glue ETL** to land everything in S3 as Parquet.
+- **Federated query with a non-pushdown connector on a huge table** — the connector pulls every row and Athena filters in memory. Pre-aggregate at source or copy first.
+- **Federated query for a single source you'll use heavily** — if you only need DynamoDB, use **PartiQL** on DynamoDB directly. If you only need RDS, just query RDS.
+
+**Exam triggers:**
+
+- *"ad-hoc SQL across multiple data sources without ETL"* → **Athena federated queries**
+- *"join S3 data with live RDS data without copying it"* → **Athena federated queries**
+- *"query a non-S3 source with Athena"* → **federated query + Lambda connector**
+- *"build a custom data source for Athena"* → **Athena Query Federation SDK**
+- *"production high-volume reporting across sources"* → **NOT federated** — replicate to a warehouse via DMS or Glue ETL
+
+**Mental model:** federated queries are **ad-hoc cross-source SQL**, not a substitute for a warehouse. Cheap and convenient for occasional use; wrong answer when the query runs every minute.
 
 ### Common Anti-patterns (exam wrong answers)
 
