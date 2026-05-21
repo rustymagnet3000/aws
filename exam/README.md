@@ -74,6 +74,27 @@
 - [ElastiCache](#elasticache)
   - [ElastiCache Security](#elasticache-security)
   - [ElastiCache Redis Replication](#elasticache-redis-replication)
+  - [Caching Strategies](#caching-strategies)
+  - [Redis vs DynamoDB](#redis-vs-dynamodb)
+- [DocumentDB and Neptune](#documentdb-and-neptune)
+  - [DocumentDB — anchored in Redis](#documentdb--anchored-in-redis)
+  - [Neptune — anchored in Redis](#neptune--anchored-in-redis)
+  - [Comparison — Redis vs DocumentDB vs Neptune](#comparison--redis-vs-documentdb-vs-neptune)
+  - [Picking between RDS, Aurora, DynamoDB, DocumentDB, Neptune](#picking-between-rds-aurora-dynamodb-documentdb-neptune)
+  - [Common anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers)
+  - [Exam triggers](#exam-triggers)
+- [Other Managed Databases](#other-managed-databases)
+  - [Amazon Keyspaces (Cassandra-compatible)](#amazon-keyspaces-cassandra-compatible)
+  - [Amazon MemoryDB for Redis](#amazon-memorydb-for-redis)
+  - [Amazon Timestream](#amazon-timestream)
+- [AWS Database Migration Service (DMS) and Schema Conversion Tool (SCT)](#aws-database-migration-service-dms-and-schema-conversion-tool-sct)
+  - [What DMS Does](#what-dms-does)
+  - [Homogeneous vs Heterogeneous Migrations](#homogeneous-vs-heterogeneous-migrations)
+  - [AWS Schema Conversion Tool (SCT)](#aws-schema-conversion-tool-sct)
+  - [Replication Instance Sizing](#replication-instance-sizing)
+  - [When DMS Is Not the Answer](#when-dms-is-not-the-answer)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers)
+  - [Exam Triggers](#exam-triggers)
 - [Route 53](#route-53)
   - [Authoritative vs Non-Authoritative DNS](#authoritative-vs-non-authoritative-dns)
   - [DNS Record Types](#dns-record-types)
@@ -106,6 +127,7 @@
   - [S3 Select and S3 Object Lambda](#s3-select-and-s3-object-lambda)
   - [S3 Replication](#s3-replication)
   - [S3 Storage Lens](#s3-storage-lens)
+  - [When Not to Use S3](#when-not-to-use-s3)
 - [AWS Snow Family](#aws-snow-family)
 - [AWS DataSync](#aws-datasync)
 - [AWS Transfer Family](#aws-transfer-family)
@@ -133,6 +155,19 @@
   - [Loading Data into Redshift](#loading-data-into-redshift)
   - [Redshift vs Athena](#redshift-vs-athena)
   - [Redshift Snapshots](#redshift-snapshots)
+- [Amazon Athena](#amazon-athena)
+  - [Key Properties](#key-properties)
+  - [The Cost Model — Why File Format Matters](#the-cost-model--why-file-format-matters)
+  - [Athena vs Redshift Spectrum (close cousins)](#athena-vs-redshift-spectrum-close-cousins)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-1)
+  - [Exam Triggers](#exam-triggers-1)
+- [Amazon OpenSearch Service](#amazon-opensearch-service)
+  - [When OpenSearch, Anchored in What You Know](#when-opensearch-anchored-in-what-you-know)
+  - [Key Properties](#key-properties-1)
+  - [Classic Use Cases](#classic-use-cases)
+  - [OpenSearch vs CloudWatch Logs Insights](#opensearch-vs-cloudwatch-logs-insights)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-2)
+  - [Exam Triggers](#exam-triggers-2)
 - [Serverless](#serverless-1)
   - [AWS Lambda](#aws-lambda)
   - [DynamoDB](#dynamodb)
@@ -1573,6 +1608,68 @@ Oracle and SQL Server have their own enterprise authentication ecosystems, so AW
 - *"integrate database authentication with Active Directory"* → Kerberos
 - *"audit all queries run against the database"* → CloudWatch Logs / Aurora Advanced Auditing
 
+**IAM database authentication — the details:**
+
+Instead of storing a database password, the application asks AWS STS for a **short-lived token** and uses it as the password.
+
+```
+App (IAM role)  ──→  aws rds generate-db-auth-token ──→  token (valid 15 min)
+                ──→  connect to RDS using user + token as password
+```
+
+- Token is **valid for 15 minutes** — rotates automatically every call
+- Auth uses **AWS Signature V4** under the hood (your IAM credentials sign the request)
+- **TLS is enforced** — IAM auth cannot be used over an unencrypted connection
+- Throughput limit: ~200 connections/sec per instance with IAM auth — fine for Lambda spawning many short connections, can be a bottleneck for heavy concurrent connection workloads (use RDS Proxy in front to pool connections)
+
+**Use cases:**
+- **Lambda → RDS** — Lambda's IAM role generates the token; no secret to ship in the code
+- **Apps running on EC2/ECS** with an instance/task role
+- **Anywhere you'd rather not store a database password**
+
+**Anti-pattern:** generating a fresh token on every query → throttling. Cache the token for its 15-minute lifetime.
+
+**Secrets Manager rotation for RDS / Aurora:**
+
+Store the database credentials in **AWS Secrets Manager**, and have it **automatically rotate** them on a schedule (e.g. every 30 days). Rotation is performed by an AWS-managed Lambda function for RDS/Aurora — you don't write the rotation code.
+
+```
+App  →  GetSecretValue (Secrets Manager)  →  current password
+        Secrets Manager (every 30 days)   →  triggers Lambda
+                                          →  Lambda generates new password
+                                          →  updates RDS user
+                                          →  updates the secret
+                                          →  app picks up the new value next call
+```
+
+**Two rotation strategies (the exam-relevant nuance):**
+
+| Strategy | How | Use when |
+| -------- | --- | -------- |
+| **Single-user rotation** | One DB user; rotation changes its password. Brief moment where old/new password coexist | Simple, default |
+| **Alternating users rotation** (recommended for production) | Two DB users (`app_user` + `app_user_clone`); each rotation flips between them. Old password remains valid until next rotation — zero connection breakage | Production where any password-change race must be avoided |
+
+| | Parameter Store (SSM) | Secrets Manager |
+| - | --------------------- | --------------- |
+| Stores secrets | Yes (SecureString) | Yes |
+| Automatic rotation | No (you build it) | **Yes — built-in for RDS/Aurora/Redshift/DocumentDB** |
+| Cost | Cheaper (free for Standard) | More expensive (~$0.40/secret/month) |
+| Use case | Static config, infrequently rotated secrets | RDS credentials, anything needing scheduled rotation |
+
+**Anti-patterns:**
+
+- **Storing the DB password in env vars or code** — use Secrets Manager (or IAM auth for short-lived apps).
+- **Storing RDS credentials in Parameter Store and expecting auto-rotation** — Parameter Store doesn't rotate. Use Secrets Manager for credentials, Parameter Store for static config.
+- **Using IAM auth for a long-lived high-concurrency connection workload without RDS Proxy** — token generation rate limit can bite. Put Proxy in front.
+
+**Exam triggers:**
+- *"automatically rotate RDS credentials every N days"* → **Secrets Manager** (built-in rotation Lambda)
+- *"rotate the database password without any downtime"* → Secrets Manager with **alternating users** strategy
+- *"app should authenticate to RDS without a stored password"* → **IAM database authentication**
+- *"Lambda connecting to RDS, want short-lived credentials"* → IAM database authentication
+- *"cheaper way to store database connection string that doesn't need rotation"* → Parameter Store
+- *"credential rotation breaking app connections"* → switch from single-user to alternating-users rotation
+
 ### RDS Backups
 
 **Automated backups:**
@@ -1829,16 +1926,26 @@ This shared storage is why Aurora's other features work:
 - **Faster failover** — typically under 30 seconds vs 1–2 minutes for standard RDS Multi-AZ
 - **Up to 15 read replicas** (vs 5 for standard RDS) with sub-10ms replica lag
 
-**Aurora Serverless:**
+**Aurora Serverless v1 vs v2:**
 
-Aurora Serverless scales compute capacity up and down automatically — including scaling to zero when idle. You pay per ACU-second (Aurora Capacity Unit) instead of provisioning a fixed instance size.
+Aurora Serverless auto-scales compute (ACU = Aurora Capacity Unit ≈ 2 GB RAM + matching CPU). Two generations exist; **v1 is deprecated** (end of life announced) — assume **v2** unless a question specifically references v1.
 
-| | Aurora Provisioned | Aurora Serverless |
-| - | ------------------ | ----------------- |
-| Compute | Fixed instance size you choose | Auto-scales based on demand |
-| Scale to zero | No | Yes (v2 scales to minimum, v1 can fully pause) |
-| Cost model | Pay for instance 24/7 | Pay for what you use |
-| Use case | Steady, predictable workloads | Intermittent, unpredictable, or dev/test |
+| | Aurora Provisioned | Aurora Serverless v1 (deprecated) | **Aurora Serverless v2** |
+| - | ------------------ | --------------------------------- | ------------------------ |
+| Compute | Fixed instance size | Auto-scales in big steps | Auto-scales in **0.5 ACU increments**, sub-second |
+| Scale to zero | No | Yes — fully pauses | Scales to a configurable minimum (0.5 ACU); can scale to zero on supported engines |
+| Cold-start latency on resume | N/A | Seconds — measurable cold start | Near-instant (always-on minimum) |
+| Mixing with provisioned in same cluster | No | No | **Yes** — v2 readers alongside provisioned writers |
+| Read replicas | Limited | Limited | Up to 15 |
+| Global Database support | No | No | **Yes** |
+| Cost model | Pay for instance 24/7 | Pay per ACU-second + per-request | Pay per ACU-second |
+| Use case | Steady, predictable workloads | Legacy only | **Default for variable workloads** |
+
+**Exam triggers:**
+- *"Aurora with auto-scaling compute for unpredictable workloads"* → Aurora Serverless v2
+- *"Aurora Serverless that supports Global Database"* → v2 only (v1 doesn't)
+- *"sub-second scaling response, no cold starts"* → Aurora Serverless v2
+- *"dev/test database that should pause when idle"* → Aurora Serverless v2 (or v1 for full pause)
 
 **Writer topology:**
 
@@ -1952,6 +2059,62 @@ A clone is a **live running database** — it costs compute, and it's not a back
 - *"centralized backup policy across multiple databases"* → **AWS Backup**
 - *"quick copy for testing"* → Aurora clone
 - *"retain backups beyond 35 days"* → manual snapshots (automated backups max out at 35 days)
+
+**Aurora Backtrack (Aurora MySQL only):**
+
+**Rewind the database in-place** to a point in the past — no restore from snapshot, no new instance. Aurora keeps a change log of writes; Backtrack replays the log backward.
+
+```
+12:00  Application is healthy
+12:30  Engineer runs UPDATE without a WHERE clause — corrupts table
+12:35  Run Backtrack to 12:29 → table is restored, cluster keeps running
+```
+
+| | Snapshot restore | Aurora Clone | **Backtrack** |
+| - | ---------------- | ------------ | ------------- |
+| What happens | New instance created from snapshot | New live instance, copy-on-write | **Same instance**, rewound in place |
+| Speed | Minutes to hours | Seconds | Seconds |
+| Loses data after the target time | No (snapshot is older) | No | **Yes** — all writes after the target are gone |
+| Available on | All RDS engines | Aurora MySQL + PostgreSQL | **Aurora MySQL only** |
+| Use case | Disaster recovery, cross-region | Dev/test copy | Undo a recent operator mistake |
+
+**Window:** up to **72 hours** of backtrack history (configurable). Storage cost scales with the change-log size.
+
+**Exam triggers:**
+- *"undo a recent destructive operation without creating a new instance"* → Aurora Backtrack
+- *"rewind the database to a point in time, same instance"* → Aurora Backtrack
+- *"point-in-time recovery, Aurora PostgreSQL"* → restore from snapshot (Backtrack is MySQL only)
+
+**Babelfish for Aurora PostgreSQL:**
+
+A translation layer that lets **SQL Server clients (T-SQL, TDS wire protocol)** talk to Aurora PostgreSQL **without changing application code**. The app thinks it's connecting to SQL Server; Babelfish translates T-SQL to PostgreSQL and SQL Server tabular results back.
+
+```
+Existing SQL Server app  ─── T-SQL + TDS ──→  Babelfish  ─── PostgreSQL ──→  Aurora Postgres
+(unchanged)                                    (translator)                   (real engine)
+```
+
+Use case: migrating SQL Server workloads off expensive licenses without rewriting application code. Caveat: not 100% T-SQL compatible — some advanced SQL Server features (CLR procedures, certain XML functions, MERGE quirks) don't translate.
+
+**Exam triggers:**
+- *"migrate SQL Server workload to Aurora without rewriting the application"* → Babelfish for Aurora PostgreSQL
+- *"reduce SQL Server licensing costs while keeping the app unchanged"* → Babelfish
+- *"open-source database that speaks the SQL Server wire protocol"* → Babelfish
+
+**Aurora I/O-Optimized storage:**
+
+Aurora bills I/O **per request** by default — fine for low-traffic apps, expensive for I/O-heavy workloads. **I/O-Optimized** is a storage class where you pay more per GB but **I/O is free**.
+
+| | Aurora Standard (default) | Aurora I/O-Optimized |
+| - | ------------------------- | -------------------- |
+| Storage cost | Lower per GB | ~125% higher per GB |
+| I/O cost | Per request | **Free** |
+| Break-even | I/O bill is < 25% of total | I/O bill is > 25% of total |
+| Use case | Most workloads | I/O-heavy, predictable cost |
+
+Switch with one setting. AWS recommends I/O-Optimized when I/O accounts for more than 25% of your Aurora bill — typical for write-heavy or large-scan workloads.
+
+**Exam trigger:** *"reduce Aurora costs for an I/O-heavy workload with predictable monthly billing"* → Aurora I/O-Optimized.
 
 **When to use standard RDS over Aurora:**
 
@@ -2171,6 +2334,629 @@ Shard 3: Primary → Replica
 - *"scale Redis read throughput"* → add read replicas
 - *"Redis dataset is too large for a single node"* → Cluster Mode Enabled (sharding)
 - *"scale Redis write throughput"* → Cluster Mode Enabled (writes distributed across shards)
+
+### Caching Strategies
+
+Picking *the right cache* is only half the problem — picking *the right strategy for talking to it* determines whether you actually get faster, cheaper, or staler results. Four patterns show up on the exam.
+
+**Lazy Loading (Cache-Aside) — the default:**
+
+The app talks to both the cache and the database. On miss, it populates the cache.
+
+```
+Read:
+  1. App → Cache: GET user:42
+  2. Cache miss → App → DB: SELECT * FROM users WHERE id=42
+  3. App → Cache: SET user:42 = {...} with TTL
+  4. Return to caller
+Write:
+  App → DB only. Cache is not updated on write.
+```
+
+- **Pros:** only cache what's actually requested (cheap); cache failure doesn't break writes; survives stale data via TTL
+- **Cons:** **3 round trips on a miss**; stale data is possible if you write to the DB without invalidating
+- **Use when:** read-heavy, miss rate acceptable, stale data tolerable for the TTL window
+
+**Write-Through — write goes to cache + DB together:**
+
+Every write updates the cache and the database in the same operation.
+
+```
+Write:
+  1. App → Cache: SET user:42 = {...}
+  2. App → DB:    UPDATE users SET ... WHERE id=42
+Read:
+  1. App → Cache: GET user:42 (always populated)
+```
+
+- **Pros:** cache is always fresh; reads are always a hit (for keys that have been written)
+- **Cons:** **writes are slower** (two writes); cache holds data that may never be read (wasted memory); on cache cold-start, no data unless you pre-warm
+- **Use when:** writes are infrequent vs reads, freshness matters, you can afford the write latency
+
+**Write-Behind / Write-Back — async DB write:**
+
+The app writes only to the cache; the cache asynchronously batches writes to the database.
+
+```
+Write:
+  1. App → Cache: SET order:abc = {...}
+  2. Cache → DB (later, in batches): INSERT INTO orders ...
+```
+
+- **Pros:** very fast writes; DB sees batched, smoothed traffic
+- **Cons:** **risk of data loss** if the cache fails before flushing; consistency window between cache and DB; complex to implement
+- **Use when:** ingest spikes where DB can't keep up *and* losing some recent writes is acceptable; rarely the right exam answer
+
+**Read-Through — cache handles the miss for you:**
+
+The application only ever talks to the cache. The cache itself fetches from the DB on a miss. (Conceptually similar to lazy loading but the cache, not the app, does the DB call.)
+
+```
+App → Cache: GET user:42
+  ├── hit  → return value
+  └── miss → cache calls DB, stores result, returns to app
+```
+
+- **Pros:** simpler app code (one client); cache loader is centralised
+- **Cons:** initial miss still slow; needs a cache that supports it (e.g. DAX is read-through for DynamoDB; Redis isn't natively read-through but libraries can add it)
+- **DAX is the canonical AWS read-through cache** — drop-in for the DynamoDB SDK
+
+**Side-by-side:**
+
+| | Lazy Loading | Write-Through | Write-Behind | Read-Through |
+| - | ------------ | ------------- | ------------ | ------------ |
+| Cache miss path | App → DB → cache | N/A (always populated) | N/A | Cache → DB → cache |
+| Write path | DB only | Cache + DB synchronously | Cache only (DB async) | DB only |
+| Freshness | Stale until TTL | Always fresh | Eventually consistent | Stale until TTL |
+| Risk of data loss | None | None | **Yes** (cache fails before flush) | None |
+| Write latency | Fast (DB only) | Slow (cache + DB) | Fastest | Fast |
+| Wasted cache memory | Low (demand-driven) | High (writes-rarely-read) | Moderate | Low |
+| Typical exam answer | "default cache pattern" | "data must always be fresh in cache" | rarely correct | "DynamoDB cache with no code changes" → DAX |
+
+**TTL strategy — the often-missed trade-off:**
+
+- **Short TTL** (seconds–minutes) — fresh data but more cache misses, more DB load
+- **Long TTL** (hours–days) — fewer misses but staler data
+- **No TTL** — only safe with explicit invalidation on writes (write-through pattern)
+- **Per-key TTL** — different freshness for different data: user profile (1h), product price (5min), session (30min)
+
+**Cache invalidation patterns:**
+
+- **TTL-based** — simplest, accept staleness up to TTL
+- **Write-through** — cache is updated on every write, never stale
+- **Explicit invalidation** — on write, `DEL` the cache key (lazy loading + explicit invalidation is a common middle ground)
+- **Event-driven invalidation** — DynamoDB Stream / RDS event → Lambda → invalidate Redis key
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Lazy loading with no TTL or invalidation** — data drifts stale forever. Always set a TTL.
+- **Write-through with a cache that doesn't survive failures** — if the cache loses data, the DB still has it (write-through doesn't lose data) but cold start is brutal. Use Redis with replicas, or accept the cold-start cost.
+- **Write-behind for critical writes** — order placements, payments, audit logs. If the cache fails mid-flush, data is gone. Use write-through or write directly to DB with cache invalidation.
+- **Picking Redis when the question describes "no code changes to cache DynamoDB"** → DAX (read-through, drop-in).
+- **Caching for write-heavy workloads** — caches accelerate reads, not writes. If writes dominate, focus on database write capacity (Aurora write throughput, DynamoDB on-demand) instead.
+
+**Exam triggers:**
+
+- *"default caching pattern, app reads from cache, falls back to DB"* → **Lazy loading**
+- *"cache must always reflect the latest data"* → **Write-through**
+- *"cache fresh writes without slowing the write path, can lose data"* → **Write-behind**
+- *"cache for DynamoDB with no code changes"* → **DAX** (read-through)
+- *"prevent stale data with minimal effort"* → short TTL
+- *"reduce DB load for repeated reads"* → lazy loading with reasonable TTL
+
+### Redis vs DynamoDB
+
+Both are key/value-ish, both single-digit ms latency, both managed by AWS — but they solve fundamentally different problems. Redis is a **cache** (with extras); DynamoDB is a **durable system of record**.
+
+| | ElastiCache Redis | DynamoDB |
+| - | ----------------- | -------- |
+| What it is | In-memory data store | Disk-backed (SSD) NoSQL database |
+| Primary role | Cache + specialised data structures | Durable storage |
+| Latency | Sub-millisecond | 1–10 ms (sub-ms with DAX) |
+| Durability | Optional (RDB snapshots, AOF) — treat as volatile by default | Durable by default, 3-AZ replication |
+| Capacity | Limited by **RAM** | Effectively unlimited storage |
+| Scaling | Vertical + sharding via cluster mode | Horizontal, auto-sharded, invisible |
+| Serverless? | Provisioned by default (Redis Serverless exists) | Serverless by default (on-demand or provisioned) |
+| Data model | Strings, lists, sets, **sorted sets**, hashes, streams, geo, pub/sub | Key/value or document items up to 400 KB |
+| Multi-region | Global Datastore (one-way, primary region) | Global Tables (active-active) |
+| Auth | AUTH token, Redis ACLs, security groups | **IAM only** (no SGs — public API) |
+| Pricing | Per node-hour | Per RCU/WCU or per request + storage |
+
+**Use Redis when:**
+
+- **Caching** — read-through / write-through in front of RDS or DynamoDB
+- **Session store** — fast, losing a session is acceptable
+- **Leaderboards / top-N** — sorted sets do this in O(log N); DynamoDB can't
+- **Real-time counters** — atomic `INCR` is built in
+- **Rate limiting** — counter + TTL per user/IP
+- **Distributed locks** — Redlock pattern
+- **Pub/sub** between app processes (for AWS-native fan-out use SNS)
+- Working set comfortably fits in RAM
+
+**Use DynamoDB when:**
+
+- **System of record** — durable storage for orders, users, events
+- **Massive scale** — terabytes+ with no capacity planning
+- **Serverless app** — pay-per-request, no nodes to size
+- **Multi-region active-active** — Global Tables
+- **Predictable single-digit-ms latency at any scale**
+- **Streams + Lambda** for change capture
+- **TTL auto-expiry** of items
+
+**Use both together — the common pattern:**
+
+```
+Read path:  App → Redis (hit? return)
+                → DynamoDB (miss → query → write to Redis → return)
+Write path: App → DynamoDB (always) → optionally invalidate Redis key
+```
+
+If you're caching DynamoDB *specifically*, **DAX** is usually a better fit than Redis — microsecond reads, no client code changes, write-through automatic. Redis is more flexible (any data structure, any data source) but you manage cache invalidation.
+
+**DAX vs Redis as a DynamoDB cache:**
+
+| | DAX | ElastiCache Redis |
+| - | --- | ----------------- |
+| What it caches | DynamoDB only | Anything (you control it) |
+| Code changes | None — DAX client drops in for the DynamoDB SDK | Yes — explicit GET/SET around DDB calls |
+| Cache invalidation | Automatic on write | You manage it |
+| Data structures | Item cache + query cache | Sorted sets, lists, pub/sub, etc. |
+| Use when | Caching DynamoDB reads with minimal effort | Need sorted sets, multi-source cache, or pub/sub |
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Redis as the durable system of record for critical data** — it's a cache. If the node fails before a snapshot, data is gone. Use DynamoDB or RDS for durability.
+- **DynamoDB for real-time top-N leaderboards** — Scan/Query won't give you O(log N) ranking. Redis sorted sets do.
+- **Redis with persistence disabled, then surprised when data is missing after a restart** — Redis is volatile by default. Enable RDB/AOF if you need recovery, or accept the loss.
+- **Caching DynamoDB with Redis when DAX would do** — DAX is no-code, write-through. Pick Redis only if you need more than DAX provides.
+- **Attaching a security group to DynamoDB** — public API, no ENI. Use IAM + VPC interface endpoint.
+- **Using DynamoDB as a queue** — possible (TTL + Streams) but SQS is the right answer. Same anti-pattern with Redis lists — use SQS.
+
+**Exam triggers:**
+
+- *"sub-millisecond latency"* → Redis
+- *"real-time leaderboard / top-N"* → Redis sorted sets
+- *"session store, fast"* → ElastiCache Redis
+- *"durable serverless NoSQL with predictable latency"* → DynamoDB
+- *"unlimited storage, single-digit ms"* → DynamoDB
+- *"global active-active database"* → DynamoDB Global Tables
+- *"cache for DynamoDB with minimal code changes"* → DAX
+- *"distributed lock"* → Redis (Redlock)
+- *"pub/sub between app processes"* → Redis pub/sub (or SNS for AWS-native fan-out)
+- *"key/value store, pay-per-use"* → DynamoDB on-demand
+
+## DocumentDB and Neptune
+
+Two AWS-managed databases that are not RDS, not DynamoDB, and not Redis — each built for a specific data shape that the others handle badly.
+
+The easiest way in is to **anchor both in Redis**, which you already know as an in-memory key/value store with a few clever data structures (lists, sorted sets, hashes, pub/sub). Redis is great at sub-ms lookups by key, but the moment you want to *query* by attribute or follow *relationships*, it falls over. DocumentDB and Neptune are what you reach for in those two cases.
+
+### DocumentDB — anchored in Redis
+
+Imagine you store a user profile in Redis as a hash:
+
+```
+HSET user:42 name "Alice" age 30 city "London"
+HGET user:42 name        ← works
+HGETALL user:42           ← works
+"give me all users in London aged 25–35"  ← Redis can't do this
+```
+
+To answer the third query in Redis you'd hand-roll secondary indexes (`SADD city:London 42`), maintain them on every write, intersect sets in your app code, and accept that nothing is queryable except via your hand-built indexes.
+
+**DocumentDB is what you'd want if Redis hashes had:**
+
+- A **query language** (`find({city: "London", age: {$gte: 25, $lte: 35}})`)
+- **Indexes** on any field
+- **Durable disk storage** (not limited by RAM)
+- **Replicas + automatic failover** built in
+- **MongoDB driver compatibility** — existing Mongo app code works unchanged
+
+It's AWS's managed Mongo-compatible service: same wire protocol, same APIs (within a supported version), but AWS handles the cluster, replication, backups, and patching.
+
+**Key properties:**
+
+- **Data model:** JSON documents (BSON), flexible schema
+- **Query API:** MongoDB API — `find`, `aggregate`, indexes on any field
+- **Storage:** durable, 6 copies across 3 AZs, scales automatically up to 64 TB
+- **Cluster:** one writer instance + up to 15 read replicas (Aurora-style storage layer)
+- **Failover:** automatic, typically under 30 seconds
+- **Latency:** single-digit ms
+- **Auth:** native MongoDB auth + IAM database authentication; security groups (ENI-backed, lives in your VPC)
+- **Multi-region:** Global Clusters — one writer region, others are read-only
+- **Pricing:** per instance-hour + I/O + storage; Elastic Clusters offer a more serverless-style model
+
+**Trade-off vs Redis:** latency goes from sub-ms → ms, and per-GB cost is higher. You get a real database in exchange.
+
+**⚠ "Is DocumentDB really MongoDB?" — no, and this matters:**
+
+There are three flavours of "MongoDB on AWS" and the distinction shows up in exam wrong-answer choices:
+
+| Option | Who runs it | Is it the real MongoDB engine? |
+| ------ | ----------- | ------------------------------ |
+| **Amazon DocumentDB (MongoDB compatibility)** | AWS | **No** — AWS-built reimplementation that speaks the MongoDB wire protocol. Existing MongoDB drivers work unchanged |
+| **MongoDB Atlas on AWS** | MongoDB Inc. (the company), available via AWS Marketplace | **Yes** — the real MongoDB engine, sold as SaaS, deployed onto AWS infrastructure |
+| **Self-managed MongoDB on EC2** | You | Yes — but you own all the maintenance pain |
+
+**Why DocumentDB is the default AWS exam answer:**
+
+Questions phrased *"which AWS service"* are looking for an AWS-native service. Atlas is third-party SaaS — it runs *on* AWS, but it isn't *an* AWS service. So:
+
+- *"AWS service for managed MongoDB"* → **DocumentDB**
+- *"any way to run MongoDB on AWS"* → DocumentDB *or* Atlas *or* self-hosted
+
+**Compatibility gaps (occasional exam trap):**
+
+DocumentDB emulates MongoDB API versions 3.6, 4.0, and 5.0 but is **not 100% compatible**. Some features don't work:
+
+- Certain aggregation operators
+- Some index types (text search, parts of geospatial)
+- Cross-document transactions have constraints
+- Change streams behave differently from MongoDB's
+
+If a question says *"team relies on MongoDB feature X that DocumentDB doesn't support"*, the answer is **MongoDB Atlas on AWS Marketplace** or self-managed on EC2 — not DocumentDB.
+
+**Mnemonic:**
+
+- "AWS service" + "MongoDB" + "no code changes" → **DocumentDB**
+- "Real MongoDB" + "feature parity" + "AWS infrastructure" → **MongoDB Atlas (Marketplace)**
+
+### Neptune — anchored in Redis
+
+What if your data is **relationships**? Who follows whom on a social network. Which accounts touched which transactions in a fraud graph. Which products were co-bought by users similar to me.
+
+In Redis you can model edges as sets:
+
+```
+SADD friends:alice bob carol dave
+SADD friends:bob   alice eve frank
+"who are friends of friends of Alice?"  ← N round-trips + app-side joining
+"shortest path from Alice to Zach?"     ← essentially impossible
+```
+
+Every hop is another `SMEMBERS` call and another set intersection in your app. At two hops it's painful. At three or four it's broken.
+
+**Neptune is what you reach for when graph traversal is the question.** One query, optimised by a graph engine:
+
+```gremlin
+g.V().has('user','id','alice')
+     .out('friend').out('friend')           # friends of friends
+     .where(out('bought').has('id','X'))    # who also bought X
+```
+
+**Key properties:**
+
+- **Two graph models** in one engine:
+  - **Property graph** — nodes + edges with properties. Query with **Gremlin** or **openCypher**
+  - **RDF triples** — knowledge-graph style. Query with **SPARQL**
+- **Storage:** durable, 6 copies across 3 AZs, scales automatically up to 64 TB (Aurora-style)
+- **Cluster:** one writer + up to 15 read replicas
+- **Latency:** single-digit ms for typical traversals
+- **Auth:** IAM, security groups (lives in your VPC)
+- **Multi-region:** Global Database — one writer region, others read-only
+- **Serverless:** Neptune Serverless option scales capacity up and down automatically
+- **Pricing:** per instance-hour + I/O + storage
+
+**Classic use cases:**
+
+- **Social networks** — followers, friends-of-friends, mutual connections
+- **Fraud detection** — "is this new account connected to any known-bad accounts within 3 hops?"
+- **Recommendation engines** — "users who bought X also bought Y" expressed as graph traversal
+- **Knowledge graphs** — Wikidata-style entity relationships
+- **Identity resolution** — linking accounts/devices/sessions that belong to the same person
+
+**⚠ OLTP trap — do not pick Neptune for an OLTP question:**
+
+Neptune uses the **same Aurora-style storage layer**: 6 copies across 3 AZs, auto-scaling storage, up to 15 read replicas. That's tempting when an exam question says *"OLTP database with built-in auto-scaling and the maximum number of replicas for its underlying storage."* Two qualifiers match Neptune — but the answer is **Aurora**.
+
+The decisive word is **OLTP**:
+
+| Term | What it means | The right database |
+| ---- | ------------- | ------------------ |
+| **OLTP** — Online *Transaction* Processing | Frequent short atomic relational operations: insert order, update balance | **Aurora** (or RDS) |
+| **OLAP** — analytical queries | Aggregations across millions of rows | **Redshift** |
+| **Graph workload** | Traversal: friends-of-friends, fraud paths | **Neptune** |
+
+"Transactions" in OLTP is industry shorthand for **relational** workload (banking, ordering, inventory). Fraud detection in a graph DB is *not* OLTP, despite involving ACID transactions and "transactional data" in plain English. If a question says OLTP, eliminate Neptune, DynamoDB, DocumentDB, and Redshift before picking the storage-replicas winner from the relational survivors → Aurora.
+
+### Comparison — Redis vs DocumentDB vs Neptune
+
+| | Redis | DocumentDB | Neptune |
+| - | ----- | ---------- | ------- |
+| What it is | In-memory key/value + data structures | Managed MongoDB-compatible document DB | Managed graph database |
+| Data shape | Strings, lists, sets, sorted sets, hashes | JSON documents, flexible schema | Nodes + edges (or RDF triples) |
+| Query | Redis commands (no general query) | MongoDB API (`find`, `aggregate`) | Gremlin / openCypher / SPARQL |
+| Durability | Volatile by default | Durable, 3-AZ | Durable, 3-AZ |
+| Latency | Sub-ms | Single-digit ms | Single-digit ms |
+| Capacity | Limited by RAM | Up to 64 TB | Up to 64 TB |
+| Best at | Caching, leaderboards, counters, pub/sub | Queryable durable JSON at scale | Graph traversal, "friends of friends" |
+| Anchor for the exam | "the cache" | "Redis hashes with queries and durability" | "what Redis edges *can't* do" |
+
+### Picking between RDS, Aurora, DynamoDB, DocumentDB, Neptune
+
+| Question | Use |
+| -------- | --- |
+| Relational tables, joins, transactions, SQL | **RDS** or **Aurora** |
+| Same as above but cloud-native, auto-scale, multi-region read scale | **Aurora** |
+| Key/value or document, serverless, predictable ms latency, massive scale | **DynamoDB** |
+| JSON documents with rich queries, Mongo compatibility | **DocumentDB** |
+| Graph: relationships, traversals, paths | **Neptune** |
+| Sub-ms cache or specialised structures (sorted sets, pub/sub, locks) | **ElastiCache Redis** |
+| Analytics over petabytes of columnar data | **Redshift** |
+
+### Common anti-patterns (exam wrong answers)
+
+- **Using Redis for graph queries** — possible to store edges in sets, but multi-hop traversal becomes N round-trips + app-side joining. Use Neptune.
+- **Using Redis as a primary document store** — fetch by key only, no `find`-style queries. Use DocumentDB if you need querying + durability.
+- **Using DocumentDB as a cache** — durable disk, ms latency, expensive per GB. If volatile + sub-ms is what you want, use Redis.
+- **Using Neptune for tabular data** — wrong shape entirely. Use RDS or Redshift.
+- **Using DocumentDB for relational joins** — Mongo-style document DBs don't do joins well. Use RDS / Aurora.
+- **Using RDS for deep relationship queries with recursive CTEs** — fine for 2 hops, falls over beyond 3–4. Use Neptune.
+- **Picking DocumentDB just because it's "NoSQL"** — DynamoDB is usually a better choice for new AWS-native apps. DocumentDB shines when you have existing Mongo code or need Mongo-style ad-hoc queries on documents.
+- **Picking DocumentDB when the team relies on a MongoDB feature DocumentDB doesn't support** — DocumentDB is API-compatible, not feature-complete. Some aggregation operators, index types, transactions, and change streams differ. If the question hints at a specific Mongo feature, the answer might be **MongoDB Atlas on AWS Marketplace** or self-hosted on EC2.
+- **Picking Neptune just because the data "feels relational"** — Neptune wins only when traversal is the access pattern. A normal foreign-key model belongs in RDS.
+- **Picking Neptune on an OLTP question because it mentions "6 copies across 3 AZs" or "auto-scaling storage"** — Neptune shares the Aurora storage layer, so those qualifiers match, but **OLTP** means relational. The answer is Aurora. Eliminate Neptune the moment you see "OLTP".
+
+### Exam triggers
+
+- *"managed MongoDB-compatible database"* → **DocumentDB**
+- *"migrate an existing MongoDB workload to AWS"* → **DocumentDB**
+- *"JSON document database with flexible schema and queries"* → **DocumentDB**
+- *"graph database"* → **Neptune**
+- *"social network / recommendation engine / fraud detection / identity resolution"* → **Neptune**
+- *"friends-of-friends / shortest path / multi-hop traversal"* → **Neptune**
+- *"knowledge graph / SPARQL / RDF"* → **Neptune**
+- *"Gremlin / openCypher / Cypher"* → **Neptune**
+- *"AWS-managed graph database that supports multiple query languages"* → **Neptune**
+- *"AWS-managed alternative to self-hosting MongoDB on EC2"* → **DocumentDB**
+- *"OLTP database with auto-scaling and the maximum storage replicas"* → **Aurora** (not Neptune — OLTP means relational, eliminate graph DBs first)
+- *"team needs a specific MongoDB feature DocumentDB doesn't support"* → **MongoDB Atlas (AWS Marketplace)** or self-hosted on EC2 (DocumentDB is API-compatible, not feature-complete)
+
+## Other Managed Databases
+
+Three more AWS-managed databases that show up in exam scenarios, each built for a workload the mainstream services handle badly. The pattern is the same as DocumentDB/Neptune: anchor each one in a service you already know, then describe the delta.
+
+### Amazon Keyspaces (Cassandra-compatible)
+
+**Anchored in DynamoDB.** Both are AWS-managed, serverless, wide-column-ish, and target massive scale with single-digit ms latency. The differences:
+
+- **CQL (Cassandra Query Language)** — looks SQL-ish, same as open-source Apache Cassandra. If your team already speaks CQL or your application uses a Cassandra driver, Keyspaces is a near-drop-in.
+- **Clustering columns** — Cassandra's first-class concept for ordered rows within a partition. DynamoDB approximates this with a sort key but the semantics differ.
+- **No native streams + Lambda trigger** — DynamoDB Streams has no direct equivalent. You can use change data capture via integrations but it's not as seamless.
+
+```
+DynamoDB item:    PK=user#42, SK=order#2024-01-15, attrs={...}
+Keyspaces row:    partition_key=user#42, clustering=(order_date), columns=...
+                  (SELECT * FROM orders WHERE user_id = '42' ORDER BY order_date DESC)
+```
+
+**Key properties:**
+
+- Serverless or provisioned (same model as DynamoDB)
+- Multi-AZ by default, durable
+- Single-digit ms reads/writes
+- IAM authentication, KMS encryption, VPC endpoints
+- Multi-Region replication (active-active)
+- Same "public API, no security group" model as DynamoDB
+
+**One-line decision rule:**
+
+| Situation | Pick |
+| --------- | ---- |
+| New AWS-native application | **DynamoDB** (better-integrated, streams, broader feature set) |
+| Migrating an existing Apache Cassandra workload | **Keyspaces** (keep your CQL queries and drivers) |
+| Team already fluent in CQL | **Keyspaces** |
+| Need DynamoDB Streams → Lambda triggers | **DynamoDB** |
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Picking Keyspaces for a greenfield AWS-native app** — DynamoDB is better integrated, has Streams, has DAX, has TTL. Keyspaces shines on migration, not new builds.
+- **Expecting DynamoDB Streams behaviour on Keyspaces** — no native equivalent. If event-driven processing matters, DynamoDB is the answer.
+- **Trying to attach a security group to Keyspaces** — public API, no ENI. IAM + VPC endpoint, same as DynamoDB.
+
+**Exam triggers:**
+
+- *"managed Cassandra-compatible database"* → **Keyspaces**
+- *"migrate existing Cassandra workload to AWS without rewriting CQL"* → **Keyspaces**
+- *"serverless wide-column database with CQL"* → **Keyspaces**
+
+### Amazon MemoryDB for Redis
+
+**Anchored in ElastiCache Redis.** Same Redis API, same data structures. The critical difference: **MemoryDB is durable** — it's a primary database, not a cache.
+
+```
+ElastiCache Redis:  in-memory, optional RDB snapshots, treat as volatile (lose data on failure)
+MemoryDB for Redis: in-memory + Multi-AZ transaction log → durable, survives node failure
+```
+
+The transaction log gives MemoryDB:
+
+- **Microsecond reads, single-digit ms writes**
+- **Durable across multi-AZ failures** — no data loss on node failure
+- **Strong consistency** for reads from the primary
+
+Think of it as "Redis you can trust as a system of record." Same API as ElastiCache Redis (you can use the same client libraries), but you don't need a separate durable database underneath.
+
+**ElastiCache vs MemoryDB:**
+
+| | ElastiCache Redis | MemoryDB for Redis |
+| - | ----------------- | ------------------ |
+| Role | Cache (in front of a real DB) | Primary database |
+| Durability | Volatile by default | Durable (multi-AZ transaction log) |
+| Read latency | Sub-ms | Microseconds |
+| Write latency | Sub-ms | Single-digit ms (transaction log write) |
+| Use when | You have a separate durable store | You want Redis API as the source of truth |
+| Cost | Cheaper | More expensive (durability isn't free) |
+
+**Common anti-patterns:**
+
+- **Using ElastiCache Redis as a primary store for critical data** — volatile by default. If you need Redis API + durability, use MemoryDB.
+- **Using MemoryDB as a cache** — durability costs money. If you have a real database underneath, ElastiCache is cheaper.
+- **Picking MemoryDB when DynamoDB would do** — DynamoDB is cheaper at scale unless you specifically need Redis data structures (sorted sets, streams, pub/sub) as the primary access pattern.
+
+**Exam triggers:**
+
+- *"Redis-compatible database I can use as the primary data store"* → **MemoryDB for Redis**
+- *"durable in-memory database with Redis API"* → **MemoryDB for Redis**
+- *"need Redis sorted sets / streams as a system of record, not a cache"* → **MemoryDB**
+- *"cache in front of RDS / DynamoDB"* → **ElastiCache Redis** (cheaper, durability not needed)
+
+### Amazon Timestream
+
+**Anchored in DynamoDB and CloudWatch.** Time-series data — IoT sensor readings, application metrics, DevOps telemetry — has a specific shape that general-purpose databases handle badly:
+
+```
+Time-series characteristics:
+- Append-only (you don't update past readings)
+- Indexed primarily by timestamp + dimension (sensor_id, region, etc.)
+- Recent data queried often, old data queried rarely (or aggregated)
+- Massive write volume (millions of points per second)
+- Queries are aggregations over time windows ("avg temperature per hour")
+```
+
+Storing this in DynamoDB works for ingestion but kills you on cost and query: aggregations require scans or pre-aggregation jobs. RDS dies on the write volume. CloudWatch metrics is too coarse and storage-limited.
+
+**Timestream solves the shape:**
+
+- **Two storage tiers**, automatic:
+  - **Memory store** — recent data, fast reads, expensive per GB
+  - **Magnetic store** — older data, cheaper, slightly slower reads
+- **Built-in time-series functions** — interpolation, smoothing, derivatives, rate-of-change
+- **SQL-compatible query language**
+- **Scales to trillions of events per day**
+- **Pay per write + storage tier + per query (data scanned)**
+
+```
+SELECT bin(time, 1m) AS minute,
+       avg(temperature) AS avg_temp
+FROM "iot"."readings"
+WHERE sensor_id = 'sensor-42'
+  AND time > ago(1h)
+GROUP BY bin(time, 1m)
+```
+
+**Timestream vs alternatives:**
+
+| Workload | Better than Timestream? |
+| -------- | ----------------------- |
+| AWS infrastructure metrics | **CloudWatch Metrics** — built-in, free for AWS-emitted metrics |
+| Custom app metrics, low volume | **CloudWatch Metrics** custom metrics |
+| Massive IoT or app telemetry, query-heavy | **Timestream** |
+| Time-series + need full SQL joins with other tables | RDS with time-series extensions (TimescaleDB-style), but Timestream's purpose-built tiers will usually win |
+| Time-series at petabyte analytical scale | **Redshift** or **OpenSearch** depending on access pattern |
+
+**Common anti-patterns:**
+
+- **Storing IoT readings in DynamoDB** — works, but aggregations are painful and storage cost scales linearly with no tiering. Timestream tiers data automatically and has time-series functions.
+- **Storing metrics in RDS** — write volume kills it.
+- **Using CloudWatch Metrics for high-cardinality custom dimensions** — expensive at scale ($0.30 per custom metric per month adds up fast). Timestream is cheaper per dimension at high cardinality.
+- **Using Timestream for transactional data that isn't time-series** — wrong shape; use DynamoDB / RDS.
+
+**Exam triggers:**
+
+- *"store and analyse IoT sensor data at scale"* → **Timestream**
+- *"time-series database"* → **Timestream**
+- *"trillions of events per day with time-window aggregations"* → **Timestream**
+- *"application metrics from AWS services"* → **CloudWatch Metrics** (not Timestream)
+- *"queries like average temperature over the last hour grouped by minute"* → **Timestream** (built-in time-series functions)
+
+## AWS Database Migration Service (DMS) and Schema Conversion Tool (SCT)
+
+The single most likely topic to be missing from a database study list. Almost every "migrate from on-prem X to AWS Y" exam question is answered by DMS, sometimes with SCT.
+
+### What DMS Does
+
+A managed service that **replicates data from a source database to a target database**, with the source typically remaining online during the migration. AWS spins up a **replication instance** (an EC2 under the hood, fully managed) that reads from the source and writes to the target.
+
+```
+On-prem Oracle  ──→  Replication Instance (DMS)  ──→  Amazon Aurora PostgreSQL
+                         │
+                         ├── Full load: copy existing rows
+                         └── CDC: stream ongoing changes (zero or near-zero downtime)
+```
+
+**Two migration modes:**
+
+| Mode | What it does |
+| ---- | ------------ |
+| **Full load** | One-time copy of all data from source to target. Downtime = duration of the load |
+| **CDC (Change Data Capture)** | Continuous stream of source changes (inserts/updates/deletes) to the target. Cuts over with minimal downtime |
+| **Full load + CDC** (most common) | Initial copy + ongoing replication. Switch the app to the target when CDC has caught up |
+
+**Sources DMS supports:** Oracle, SQL Server, MySQL, PostgreSQL, MariaDB, MongoDB, Db2, SAP ASE, Azure SQL, S3, plus on-prem self-managed installations of the same.
+
+**Targets DMS supports:** all the above (as RDS or self-managed), plus Aurora, Redshift, DynamoDB, OpenSearch, Kinesis, Kafka, S3, DocumentDB, Neptune.
+
+### Homogeneous vs Heterogeneous Migrations
+
+```
+Homogeneous:    Oracle on-prem  →  RDS for Oracle      (same engine on both sides)
+                MySQL on-prem   →  Aurora MySQL        (compatible engines)
+
+Heterogeneous:  Oracle on-prem  →  Aurora PostgreSQL   (different engines)
+                SQL Server      →  RDS for MySQL       (different engines)
+```
+
+- **Homogeneous** — DMS alone is enough. Schema and SQL syntax are compatible.
+- **Heterogeneous** — DMS moves the **data**; **schema and stored procedures need conversion first**. That's where SCT comes in.
+
+### AWS Schema Conversion Tool (SCT)
+
+A free downloadable tool (runs on your laptop) that **converts schema, stored procedures, views, and code** from one database engine to another.
+
+```
+Source (Oracle PL/SQL)  ──→  SCT  ──→  Target (PostgreSQL PL/pgSQL)
+                              │
+                              ├── Tables, indexes, constraints → auto-converted
+                              ├── Stored procs / functions     → auto-converted where possible
+                              └── Non-convertible items        → flagged for manual rewrite + effort estimate
+```
+
+**Workflow for a heterogeneous migration:**
+
+1. **SCT** converts the schema and code → apply to the target database
+2. **DMS** loads the data + replicates ongoing changes
+3. Cut over the application to the target
+
+**SCT also helps:** migrating data warehouses (Teradata, Netezza, Greenplum, Vertica) to **Redshift** — schema conversion is essential because warehouse DDL/SQL differs significantly.
+
+### Replication Instance Sizing
+
+DMS performance depends on the replication instance size. Right-sizing matters:
+
+- **Small instances** (t3.medium): fine for low-volume migrations, dev/test
+- **Large instances** (c5/r5.xlarge+): high-volume production, parallel table loads
+- **Multi-AZ** option for the replication instance during long-running CDC migrations — survives AZ failures without restarting the migration
+
+### When DMS Is Not the Answer
+
+Common confusions on the exam:
+
+- **Lift-and-shift VM (the whole server, not just the DB)** → **AWS Application Migration Service (MGN)** or **VM Import**, not DMS
+- **Migrate Hadoop / S3 data lake content** → **AWS DataSync** or **Snowball** depending on volume, not DMS
+- **Migrate the OS + database on EC2** → MGN, then point DMS at the new instance if you want to move the DB engine afterward
+- **Continuous data integration between cloud systems forever** → DMS *can* do this but a streaming service (Kinesis, MSK) or change data capture pipeline is often a better long-term answer
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Picking DMS for a homogeneous migration but forgetting CDC** → full-load-only forces downtime equal to the load time. Production cutovers almost always need full load + CDC.
+- **Picking DMS without SCT for heterogeneous migrations** → DMS moves data but doesn't convert schema or stored procedures. Without SCT the target won't have the tables/code to receive the data.
+- **Using DMS for huge initial loads when bandwidth is the bottleneck** → **Snowball Edge** can be the initial-load mechanism, with DMS doing CDC catch-up afterward.
+- **Picking DataSync for database migration** → DataSync is for file storage (S3, EFS, FSx), not databases.
+- **Picking DMS to migrate a VMware VM** → that's MGN's job.
+
+### Exam Triggers
+
+- *"migrate an on-prem database to AWS with minimal downtime"* → **DMS** (full load + CDC)
+- *"migrate Oracle to Aurora PostgreSQL"* → **SCT** (schema conversion) + **DMS** (data)
+- *"migrate SQL Server to RDS for MySQL"* → **SCT** + **DMS**
+- *"migrate Teradata / Netezza data warehouse to Redshift"* → **SCT** + **DMS**
+- *"migrate MongoDB on-prem to DocumentDB"* → **DMS** (DocumentDB is a valid target)
+- *"continuously replicate from production database to analytics database"* → **DMS** with ongoing CDC
+- *"replicate a database across AWS regions"* → Aurora Global Database or DMS CDC
+- *"convert database schema from one engine to another"* → **SCT**
+- *"initial load is too big to stream over the internet"* → **Snowball Edge** for bulk + **DMS** CDC for catch-up
+- *"migrate VMs, not just the database"* → **MGN** (AWS Application Migration Service), not DMS
 
 ## Route 53
 
@@ -3384,6 +4170,61 @@ A dashboard that gives you **visibility across all your S3 buckets** — usage m
 
 **Exam trigger:** *"get visibility into S3 usage and cost optimization across multiple accounts"* → S3 Storage Lens.
 
+### When Not to Use S3
+
+S3 is the right answer for *most* storage questions on the exam — but the trap questions are the ones where S3 looks plausible and is actually wrong. Here's where it breaks down.
+
+| Anti-use case | Why S3 hurts | Better fit |
+| ------------- | ------------ | ---------- |
+| **Millions of tiny objects** (< few KB each) | Per-request charges dominate: PUT ~$5/million, GET ~$0.40/million. List operations slow down. Latency overhead per object | Aggregate into Parquet/ORC/tar/zip; or EFS/FSx for file workloads |
+| **Tiny objects in Glacier / Deep Archive** | Minimum **40 KB** charged per object + ~32 KB metadata overhead. A 1 KB file costs the same as 40 KB | Aggregate before archiving |
+| **Tiny objects in Intelligent-Tiering** | Per-object **monitoring fee** dominates for sub-128 KB objects (which aren't tiered anyway) | S3 Standard, or aggregate |
+| **POSIX filesystem semantics** — locking, partial writes, symlinks, atomic rename | S3 is whole-object PUT, no locks, no append | EFS (Linux) or FSx (Windows / Lustre) |
+| **Append-mostly workloads** (per-event logging) | No append — every event is a new PUT + per-request cost | Kinesis Firehose to batch into S3, or CloudWatch Logs |
+| **Sub-ms or low-latency reads** | First-byte latency typically 100–200 ms | DynamoDB, ElastiCache, EBS |
+| **Random byte-range writes** | S3 PUT is whole-object only (byte-range *GET* is fine) | EBS, EFS |
+| **Concurrent edits to the same object** | Last writer wins, no merge | DynamoDB with conditional writes, or RDS |
+| **High write rate to one prefix** | S3 partitions by prefix; ~3,500 PUT/s and 5,500 GET/s per partitioned prefix | Spread across more prefixes, or use a database |
+| **Primary database** — querying by attributes, joins, transactions | No query engine. Athena/S3 Select read whole objects | DynamoDB / RDS / Redshift |
+| **Strong multi-object transactions** | No cross-object atomicity | DynamoDB `TransactWriteItems` |
+
+**The small-object cost problem made concrete:**
+
+```
+1 GB stored as:
+  1,000,000 × 1 KB objects → $5 to upload + listing overhead + per-request fees on every operation
+                            + Glacier/Intelligent-Tiering economics break completely
+  1 × 1 GB object          → $0.000005 to upload + one cheap GET + clean archive economics
+```
+
+Same storage volume, same storage cost. Every other dimension (upload cost, list cost, request rate, latency, archive economics) is dramatically worse for the tiny-object version.
+
+**Mitigations when you're stuck with small objects:**
+
+- **Aggregate before writing** — Kinesis Firehose buffers events and writes 1–128 MB Parquet files instead of N tiny JSONs
+- **S3 Inventory** to discover the small-object problem in existing buckets
+- **Manifest pattern** — one larger index file pointing at related small ones, when small files must remain separate
+- **S3 Express One Zone** — newer **single-AZ** storage class designed for high-frequency small-object workloads. Much lower per-request cost, ms-scale latency. Trade-off: one AZ (no cross-AZ durability), more expensive per-GB storage. **Exam answer for: "millions of small objects accessed at high rate, low latency, AZ-local is OK"**
+
+**Common anti-patterns (exam wrong answers):**
+
+- **S3 as a database** — pick DynamoDB for key/value, RDS for relational
+- **S3 as a queue / event log** — pick SQS for queueing, Kinesis for streams
+- **S3 as a shared filesystem for EC2** — pick EFS (Linux multi-attach) or FSx (Windows / Lustre)
+- **Millions of small PUTs per day with no aggregation** — pre-batch with Firehose
+- **Glacier for tiny objects** — 40 KB minimum + metadata makes per-byte cost terrible
+
+**Exam triggers:**
+
+- *"millions of small files, cost is high"* → aggregate before writing (Firehose, batch jobs)
+- *"need POSIX filesystem semantics"* → not S3 — EFS / FSx
+- *"need sub-ms latency for a key/value lookup"* → not S3 — DynamoDB
+- *"need to append to a log file in S3"* → not directly — buffer with Firehose
+- *"high write rate to a single S3 prefix is being throttled"* → spread writes across more prefixes
+- *"high-frequency reads of millions of small files in one AZ, low latency"* → **S3 Express One Zone**
+- *"tiny files in Glacier costing more than expected"* → 40 KB per-object minimum + 32 KB metadata
+- *"concurrent edits to the same file"* → not S3 — DynamoDB / RDS
+
 ## AWS Snow Family
 
 AWS's answer to: "how do I move petabytes of data to AWS when the internet is too slow?" AWS ships you a physical device, you load your data onto it, ship it back.
@@ -4447,6 +5288,166 @@ Both query data in S3 with SQL, but for different use cases:
 - *"OLAP workload"* → Redshift
 - *"OLTP workload"* → RDS/Aurora
 
+## Amazon Athena
+
+**Anchored in Redshift.** Both run SQL over large datasets. The difference: Redshift loads data into a cluster you provision; **Athena queries data directly in S3, no cluster, no loading**.
+
+```
+Redshift:  Load CSV/Parquet from S3 → into Redshift cluster → SQL queries
+Athena:    Leave files in S3 → point Athena at them → SQL queries
+```
+
+Built on **Presto/Trino** under the hood. Schema is defined in the **AWS Glue Data Catalog** (or Athena's own catalog), which is metadata only — Athena reads the underlying objects on each query.
+
+**Glue Crawler + Glue Data Catalog (exam pairing with Athena):**
+
+- **Glue Crawler** scans S3 paths, infers schema, and writes the table definition to the **Glue Data Catalog** — no manual `CREATE TABLE` needed.
+- **Glue Data Catalog** is a central metadata store shared by Athena, Redshift Spectrum, and EMR. One table definition, multiple query engines.
+- Typical exam pattern: *"new S3 data lands daily, want to query it with Athena without manually maintaining schema"* → Glue Crawler on a schedule → Glue Data Catalog → Athena.
+
+### Key Properties
+
+- **Serverless** — no infrastructure to manage, no cluster to size
+- **Pay per query** — billed by **bytes scanned from S3** ($5 per TB scanned at standard rate)
+- **Standard SQL** (ANSI), JOINs, window functions, CTEs
+- **Reads many formats** — CSV, JSON, Parquet, ORC, Avro
+- **Federated queries** — query RDS, DynamoDB, on-prem databases via connectors (no need to copy data into S3 first)
+- **Athena for Apache Spark** — same service, Spark notebooks for non-SQL workloads
+- **Integrates with QuickSight** for BI dashboards directly on S3 data
+
+### The Cost Model — Why File Format Matters
+
+```
+Same data, three formats, scanning to answer the same query:
+  CSV (raw):     scan all 100 GB           → $0.50 per query
+  JSON:          scan all 100 GB           → $0.50 per query
+  Parquet:       scan only relevant columns (~5 GB) → $0.025 per query (20× cheaper)
+```
+
+**Athena cost optimisations (exam-tested):**
+
+| Technique | Effect |
+| --------- | ------ |
+| **Convert to Parquet/ORC** (columnar) | Athena reads only the columns you select — 10–100× less data scanned |
+| **Compress** (Snappy, gzip) | Smaller files, less data scanned, same bytes-billed reduction |
+| **Partition** by common filter (date, region) | Athena skips partitions outside the `WHERE` clause |
+| **Larger files** (128 MB – 1 GB) | Fewer S3 GET requests, faster query |
+| **Use `LIMIT` carefully** — *doesn't* reduce scanned bytes for most queries | Don't rely on it as a cost control |
+
+**Partitioning example:**
+
+```
+s3://logs/year=2026/month=05/day=20/events.parquet
+                                                   ↑
+SELECT * FROM logs WHERE year=2026 AND month=05    ← scans only that month
+```
+
+### Athena vs Redshift Spectrum (close cousins)
+
+Both let you SQL-query S3. The difference is **where the query engine lives**:
+
+| | Athena | Redshift Spectrum |
+| - | ------ | ----------------- |
+| Engine | Serverless (Presto-based) | Part of a Redshift cluster |
+| Need a cluster? | No | Yes — Spectrum requires a Redshift cluster |
+| Best for | Ad-hoc queries, infrequent use | Extending an existing Redshift workload to query S3 data without loading |
+| Cost | Per query (bytes scanned) | Cluster cost + Spectrum charges |
+
+If you already have Redshift → Spectrum is the natural fit. If you don't and only need occasional SQL on S3 → Athena.
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Storing data as raw CSV/JSON in S3 and querying it with Athena daily** — high recurring scan cost. Convert to Parquet + partition. AWS Glue ETL can automate this.
+- **Athena for sub-second OLTP-style queries** — Athena has query startup overhead (seconds). For low-latency lookups use DynamoDB or RDS.
+- **Using `SELECT *` on a partitioned columnar table** — defeats the columnar benefit; reads every column. Select only the columns you need.
+- **Forgetting that scanned bytes are billed even on failed queries** — bad SQL still costs money.
+- **Using Athena when the data is constantly being updated row-by-row** — S3 isn't designed for that; the small-object problem will hit you. Use a real database.
+
+### Exam Triggers
+
+- *"query S3 with SQL, no infrastructure"* → **Athena**
+- *"ad-hoc SQL queries, infrequent, low cost when idle"* → **Athena**
+- *"query CloudTrail / VPC Flow Logs / ALB logs / S3 access logs"* → **Athena** (all S3-resident log formats)
+- *"reduce Athena cost"* → **Parquet + partition + compress**
+- *"already have Redshift, want S3 data without loading"* → **Redshift Spectrum**
+- *"discover schema of S3 data automatically"* → **Glue Crawler → Glue Data Catalog → Athena**
+- *"connect QuickSight to S3 data"* → **Athena** (or Spectrum if Redshift is already in play)
+- *"federated SQL across S3 + RDS + DynamoDB"* → **Athena federated queries**
+
+**The 80/20:** *serverless SQL on S3 + cost = bytes scanned + Parquet/partitioning fixes cost + Spectrum is the Redshift-resident version*. Remember those four pieces and most Athena questions fall out.
+
+## Amazon OpenSearch Service
+
+**Anchored in DynamoDB and RDS.** Both serve point lookups by ID well. Neither is good at **full-text search** ("find every product description containing 'waterproof hiking boots'") or **log analytics at scale** ("how many 5xx errors did our ALB return per minute over the last 7 days, broken down by URL path?").
+
+OpenSearch (the AWS-managed fork of Elasticsearch + Kibana, rebranded as OpenSearch + OpenSearch Dashboards in 2021) is the right tool for those two access patterns.
+
+### When OpenSearch, Anchored in What You Know
+
+If your data and queries look like:
+
+```
+"find me orders where the customer notes field contains 'urgent' AND order_date is in the last 7 days"
+"top 10 most-searched product names in the last hour"
+"all log lines from service X with status_code=500 in a specific time window"
+```
+
+…then a key/value store (DynamoDB) can't help — there's no key to look up — and a relational DB (RDS) can do it but slowly (full-text search via `LIKE '%urgent%'` is unindexed and brutal at scale).
+
+OpenSearch indexes documents on **every field**, builds an **inverted index** for full-text search, and adds aggregations on top. Results come back in tens of milliseconds even over billions of documents.
+
+### Key Properties
+
+- **Document store** — JSON documents, schema-flexible (with mapping types)
+- **Full-text search** — tokenisation, stemming, relevance scoring (BM25), fuzzy match
+- **Aggregations** — counts, histograms, percentiles, time-bucketed series
+- **OpenSearch Dashboards** — built-in visualisation tool (the fork of Kibana)
+- **Cluster-based** — master + data nodes + (optional) ingest nodes, scaled by node count and storage
+- **OpenSearch Serverless** — pay-per-OCU (OpenSearch Compute Unit), no cluster management
+- **Auth:** Cognito, IAM, fine-grained access control, security groups (lives in VPC)
+- **Cross-cluster replication** for multi-region
+
+### Classic Use Cases
+
+| Use case | Why OpenSearch wins |
+| -------- | ------------------- |
+| **Application logs / centralised logging** | "ELK / EFK stack" — apps ship logs to Kinesis Firehose → OpenSearch; engineers search and visualise in Dashboards |
+| **Full-text search** for an e-commerce / SaaS product | Search-as-you-type, typo tolerance, relevance ranking — way beyond `LIKE` queries |
+| **Real-time observability dashboards** | Time-series aggregations on operational data (latency P95, error rate per endpoint) |
+| **Security analytics / SIEM** | OpenSearch has a security analytics module; correlate VPC Flow Logs + CloudTrail + WAF logs |
+| **Clickstream / behavioural analytics** | Aggregate millions of events per second, query in seconds |
+
+### OpenSearch vs CloudWatch Logs Insights
+
+Both can search logs in AWS. The trade-off:
+
+| | CloudWatch Logs Insights | OpenSearch Service |
+| - | ------------------------ | ------------------ |
+| Setup | Zero — already where AWS logs go | Provision cluster, ship logs in |
+| Cost | Pay per query (GB scanned) | Cluster running cost + storage |
+| Query language | Insights query (custom) | Lucene / OpenSearch query DSL / SQL |
+| Visualisation | Basic CloudWatch dashboards | OpenSearch Dashboards (richer) |
+| Best for | Occasional searches over CloudWatch-collected logs | Heavy day-to-day log analytics, full-text search, dashboards |
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Using OpenSearch as a primary system of record** — it's a search index, not a durable source-of-truth database. Source data should live in DynamoDB / RDS / S3; OpenSearch holds an *index* of it.
+- **Using OpenSearch for transactional workloads** — no ACID transactions, no joins. Wrong tool.
+- **Building search with RDS `LIKE '%term%'`** — works for tiny datasets, falls over at scale. OpenSearch is the right answer when search relevance and speed matter.
+- **Using OpenSearch when CloudWatch Logs Insights suffices** — OpenSearch has cluster running costs even when idle; CloudWatch Logs Insights is pay-per-query.
+- **Trying to attach a security group directly to "OpenSearch Serverless"** — OpenSearch Serverless uses VPC endpoints; attach the SG to the endpoint, not the service. (Domain-mode OpenSearch *does* live in your VPC with its own ENIs and SGs.)
+
+### Exam Triggers
+
+- *"full-text search across product descriptions / documents"* → **OpenSearch**
+- *"centralised log analytics with rich querying and dashboards"* → **OpenSearch**
+- *"ELK stack / Kibana on AWS"* → **OpenSearch Service** (Dashboards is the Kibana fork)
+- *"search-as-you-type, typo tolerance, relevance ranking"* → **OpenSearch**
+- *"real-time observability dashboards beyond what CloudWatch provides"* → **OpenSearch**
+- *"ingest logs from many sources for search and analytics"* → **Kinesis Firehose → OpenSearch**
+- *"occasional log search, minimise cost"* → **CloudWatch Logs Insights** (not OpenSearch)
+- *"OpenSearch without managing a cluster"* → **OpenSearch Serverless**
+
 ## Serverless
 
 Services where you don't manage any infrastructure — no servers, no patching, no capacity planning. You pay for what you use.
@@ -4748,14 +5749,96 @@ Cost benefit of Provisioned (cheaper per unit) with some flexibility (scales up 
 
 RCU = Read Capacity Unit (4 KB strongly consistent read/s). WCU = Write Capacity Unit (1 KB write/s).
 
-**Indexes:**
+**Indexes — GSI vs LSI:**
+
+By default DynamoDB only lets you query by the **table's** partition key (+ sort key). Want to query by a different attribute? You need a secondary index.
 
 | | Global Secondary Index (GSI) | Local Secondary Index (LSI) |
 | - | ---------------------------- | --------------------------- |
-| When to create | Any time | At table creation only |
-| Key | Different partition key + sort key | Same partition key, different sort key |
-| Reads | Eventually consistent only | Strongly or eventually consistent |
-| Use case | Query by a completely different attribute | Query same partition key with a different sort |
+| When to create | Any time, after table creation | **At table creation only** — can't add later |
+| Limit | 20 GSIs per table (soft limit) | 5 LSIs per table (hard limit) |
+| Partition key | **Different** from the table's | **Same** as the table's |
+| Sort key | Anything (or none) | Different from the table's |
+| Reads | **Eventually consistent only** | Strongly or eventually consistent |
+| Throughput | **Own RCU/WCU**, separate from the table | Shares the table's RCU/WCU |
+| Storage | Separate physical storage | Stored alongside table partitions |
+| Use case | Query by a totally different attribute | Different sort order within the same partition |
+
+**Worked example — orders table:**
+
+```
+Table primary key: PK = customer_id, SK = order_date
+Default queries:   "all orders for customer X" / "customer X's orders in Jan 2026"
+```
+
+- *Want: "find an order by order_id"* → **GSI** with PK = `order_id` (different partition key)
+- *Want: "customer X's orders sorted by total_amount"* → **LSI** with PK = `customer_id`, SK = `total_amount`
+- *Want: "all orders with status PENDING"* → **GSI** with PK = `status` (different partition key)
+
+**Common GSI/LSI gotchas (exam favourites):**
+
+- **GSI reads are eventually consistent only** — if a question says *"strongly consistent reads on a secondary attribute"*, the answer is LSI, not GSI.
+- **LSI must be defined at table creation** — once the table exists you can't add an LSI. GSIs can be added/dropped any time.
+- **GSI has its own throughput** — a GSI can be **throttled independently** of the base table. If the GSI WCU is too low, writes to the base table fail (because DynamoDB has to update the GSI synchronously and runs out of WCU).
+- **Attribute projection** — choose what to copy into the index: `KEYS_ONLY`, `INCLUDE` (specific attributes), or `ALL`. Smaller projection = cheaper but more requests need a follow-up `GetItem` on the base table.
+- **LSI shares the partition** with the base table — a "hot partition" on the base also hits the LSI; a GSI uses separate partitioning and can dodge that.
+
+**Decision rule:**
+
+| Need | Pick |
+| ---- | ---- |
+| Same partition key, different sort order, strongly consistent reads | **LSI** |
+| Different partition key | **GSI** |
+| Added after table already exists | **GSI** (LSI is impossible) |
+| Independent throughput from the base table | **GSI** |
+
+**DynamoDB Transactions (`TransactWriteItems` / `TransactGetItems`):**
+
+Up to **100 items across multiple tables** in one all-or-nothing operation. If any item fails (conditional check, capacity, validation), the whole transaction rolls back.
+
+```
+TransactWriteItems:
+  ├── Put     order:abc into Orders table
+  ├── Update  user:42 in Users table (decrement balance)
+  └── Update  inventory:widget in Stock table (decrement count)
+  All succeed, or none do.
+```
+
+- **2× the WCU/RCU cost** of normal operations (transactions are billed double)
+- **One AWS region only** — no cross-region transactions
+- **Up to 4 MB total** for the whole transaction
+- Supports **idempotency tokens** to safely retry
+
+| | Conditional write | TransactWriteItems |
+| - | ----------------- | ------------------ |
+| Scope | One item | Up to 100 items, multiple tables |
+| Atomicity | Single item | All-or-nothing across all items |
+| Cost | Normal | 2× |
+| Use case | "Update only if version = N" optimistic locking | Banking-style multi-record updates |
+
+**Conditional writes:**
+
+Every `PutItem`, `UpdateItem`, and `DeleteItem` can carry a `ConditionExpression` that must be true for the write to succeed. The check + write is **atomic at the item level**.
+
+```
+UpdateItem on user:42
+  SET balance = balance - 100
+  ConditionExpression: balance >= 100
+  → Succeeds only if the current balance is ≥ 100; otherwise fails with no change
+```
+
+Common patterns:
+- **Optimistic locking** — `attribute_not_exists(id)` to prevent overwrite of an existing item
+- **Compare-and-swap** — `version = :expected_version` to detect concurrent updates
+- **Conditional delete** — only delete if the item is in a specific state
+
+**Exam triggers:**
+- *"all-or-nothing update across multiple DynamoDB items"* → `TransactWriteItems`
+- *"strongly consistent reads on a non-key attribute"* → LSI, not GSI
+- *"add an index on an existing table"* → GSI (LSI can't be added after creation)
+- *"GSI is throttling writes to the base table"* → increase the GSI's WCU
+- *"prevent overwriting an existing item"* → conditional write with `attribute_not_exists`
+- *"optimistic locking on DynamoDB"* → conditional write with a version attribute
 
 **DynamoDB Streams:**
 
