@@ -148,6 +148,11 @@
   - [SNS + SQS Fan-Out](#sns--sqs-fan-out)
   - [Kinesis](#kinesis)
   - [SQS vs SNS vs Kinesis](#sqs-vs-sns-vs-kinesis)
+  - [Amazon MQ](#amazon-mq)
+  - [Amazon MSK (Managed Streaming for Apache Kafka)](#amazon-msk-managed-streaming-for-apache-kafka)
+  - [Amazon Managed Service for Apache Flink](#amazon-managed-service-for-apache-flink)
+  - [How MSK and Flink Fit Together](#how-msk-and-flink-fit-together)
+  - [Kafka vs SNS vs Redis pub/sub](#kafka-vs-sns-vs-redis-pubsub)
 - [Amazon Redshift](#amazon-redshift)
   - [When People Reach for Redshift](#when-people-reach-for-redshift)
   - [OLTP vs OLAP](#oltp-vs-olap)
@@ -157,10 +162,26 @@
   - [Loading Data into Redshift](#loading-data-into-redshift)
   - [Redshift vs Athena](#redshift-vs-athena)
   - [Redshift Snapshots](#redshift-snapshots)
+- [AWS Glue](#aws-glue)
+  - [The Five Pieces of Glue](#the-five-pieces-of-glue)
+  - [Where Glue Sits in the Analytics Stack](#where-glue-sits-in-the-analytics-stack)
+  - [Glue vs EMR — the Key Decision](#glue-vs-emr--the-key-decision)
+  - [Job Bookmarks (exam favourite)](#job-bookmarks-exam-favourite)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-5)
+  - [Exam Triggers](#exam-triggers-5)
+- [AWS Lake Formation](#aws-lake-formation)
+  - [What Lake Formation Adds](#what-lake-formation-adds)
+  - [Who Honours Lake Formation Permissions](#who-honours-lake-formation-permissions)
+  - [The Mental Model](#the-mental-model)
+  - [Classic Use Cases](#classic-use-cases-1)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-6)
+  - [Exam Triggers](#exam-triggers-6)
 - [Amazon Athena](#amazon-athena)
   - [Key Properties](#key-properties)
   - [The Cost Model — Why File Format Matters](#the-cost-model--why-file-format-matters)
   - [Athena vs Redshift Spectrum (close cousins)](#athena-vs-redshift-spectrum-close-cousins)
+  - [Athena vs DynamoDB (the "both are serverless" trap)](#athena-vs-dynamodb-the-both-are-serverless-trap)
+  - [Federated Queries](#federated-queries)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-1)
   - [Exam Triggers](#exam-triggers-1)
 - [Amazon OpenSearch Service](#amazon-opensearch-service)
@@ -170,6 +191,26 @@
   - [OpenSearch vs CloudWatch Logs Insights](#opensearch-vs-cloudwatch-logs-insights)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-2)
   - [Exam Triggers](#exam-triggers-2)
+- [Amazon EMR](#amazon-emr)
+  - [Three Deployment Modes](#three-deployment-modes)
+  - [When EMR Is the Right Answer](#when-emr-is-the-right-answer)
+  - [When EMR Is the WRONG Answer](#when-emr-is-the-wrong-answer)
+  - [The Decision Tree](#the-decision-tree)
+  - [Real-World Scenarios Where EMR Wins](#real-world-scenarios-where-emr-wins)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-3)
+  - [Exam Triggers](#exam-triggers-3)
+- [Amazon QuickSight](#amazon-quicksight)
+  - [The Real AWS-Native Datadog Competitor](#the-real-aws-native-datadog-competitor)
+  - [QuickSight Key Properties](#quicksight-key-properties)
+  - [When You'd Reach for QuickSight](#when-youd-reach-for-quicksight)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-4)
+  - [Exam Triggers](#exam-triggers-4)
+- [Big Data Ingestion Pipelines](#big-data-ingestion-pipelines)
+  - [The Universal Pipeline Skeleton](#the-universal-pipeline-skeleton)
+  - [Five Canonical Pipelines](#five-canonical-pipelines)
+  - [Which Service at Each Stage](#which-service-at-each-stage)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-7)
+  - [Exam Triggers](#exam-triggers-7)
 - [Serverless](#serverless-1)
   - [AWS Lambda](#aws-lambda)
   - [DynamoDB](#dynamodb)
@@ -5220,6 +5261,215 @@ Amazon MQ runs on a provisioned instance (not serverless), supports Multi-AZ for
 
 **Exam trigger:** *"migrate an application using ActiveMQ/RabbitMQ/MQTT to AWS"* → Amazon MQ. Any other messaging scenario → SQS/SNS.
 
+### Amazon MSK (Managed Streaming for Apache Kafka)
+
+**Anchored against Kinesis Data Streams.** Both are AWS-managed streaming services. The split:
+
+- **MSK runs real Apache Kafka** — wire-compatible, existing Kafka producers/consumers/tools (Kafka Connect, Schema Registry, MirrorMaker, kafkactl) work unchanged
+- **Kinesis is AWS-proprietary** — simpler API, deeper AWS integration, no Kafka ecosystem
+
+| | Amazon MSK | Kinesis Data Streams |
+| - | ---------- | -------------------- |
+| Engine | Real Apache Kafka | AWS proprietary |
+| Wire-compatible with | Open-source Kafka | Kinesis SDK only |
+| Lives in VPC? | **Yes** — brokers have ENIs + **security groups** | No — public API endpoint |
+| Deployment | MSK Provisioned (size brokers) or **MSK Serverless** | Always serverless |
+| Retention | Configurable, default 7 days, **unlimited** with tiered storage | 24h default, max 365 days |
+| Best for | Lift-and-shift Kafka, Kafka ecosystem (Connect, KSQL, Streams API) | Greenfield AWS-native streaming |
+| Auth | IAM, SASL/SCRAM, mTLS, ACLs | IAM only |
+
+**When MSK wins:**
+- Existing Apache Kafka workload, want managed
+- Need Kafka Connect, Schema Registry, Streams API ecosystem
+- Multi-cloud / portability concerns — Kafka runs anywhere
+
+**When Kinesis wins:**
+- Greenfield streaming on AWS, no Kafka commitment
+- Tight AWS integration (Kinesis Firehose → S3/Redshift/OpenSearch with no code)
+- Don't want to think about brokers at all
+
+**Exam triggers:**
+- *"managed Apache Kafka on AWS"* → **MSK**
+- *"lift-and-shift Kafka cluster to AWS"* → **MSK**
+- *"Kafka without managing brokers"* → **MSK Serverless**
+- *"existing tools use the Kafka protocol"* → **MSK**
+
+### Amazon Managed Service for Apache Flink
+
+**Anchored against Lambda + Kinesis event source.** Both consume streams. The difference is *state*:
+
+- **Lambda is stateless per-message** — process one record, forget it. State has to live elsewhere (DynamoDB, S3)
+- **Flink is stateful with built-in windowing** — "count events per minute by user", "join two streams within a 10-minute window", "detect a pattern across the last 100 events" — all native, in-memory state with checkpoints to S3
+
+**Formerly known as:** Kinesis Data Analytics for Apache Flink. The older SQL-only "Kinesis Data Analytics" product was deprecated; this is the current Flink offering. Can also run on **EMR with Flink** if cluster control matters.
+
+**What Flink is for:**
+
+| Use case | Why Flink wins |
+| -------- | -------------- |
+| **Windowed aggregations** | "P95 latency per service per minute" — tumbling / sliding / session windows built in |
+| **Stream-to-stream joins** | Join two streams within a time window (clicks + impressions on the same user) |
+| **Complex event processing (CEP)** | "3 failed logins followed by a successful one in 5 minutes" |
+| **Stateful ML feature engineering** | Real-time feature pipelines updating model inputs as events stream |
+| **Exactly-once processing** | Flink checkpointing gives strong guarantees Lambda + Kinesis can't easily match |
+
+**The canonical pipeline:**
+
+```
+Producers (apps, IoT) ──→ MSK or Kinesis Data Streams
+                              │
+                              ▼
+                       Managed Service for Apache Flink
+                       (windows, joins, CEP, stateful)
+                              │
+                              ├──→ OpenSearch (search/dashboards)
+                              ├──→ S3 (data lake)
+                              ├──→ RDS / DynamoDB (aggregated state)
+                              └──→ another Kafka/Kinesis stream
+```
+
+**When to pick Flink vs alternatives:**
+
+| Workload | Pick |
+| -------- | ---- |
+| Per-message transformation, no state needed | **Lambda** (cheaper, simpler) |
+| Buffer + batch-write to S3 | **Kinesis Firehose** |
+| Stateful windowed aggregations / joins / CEP | **Managed Flink** |
+| Spark on streams (existing Spark code) | **EMR with Spark Streaming** |
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Lambda for stateful windowing** — possible but painful; you'd build state in DynamoDB. Flink does it natively.
+- **Kinesis Data Streams alone for analytics** — Streams is the transport; you still need a processor (Flink, Lambda, Spark).
+- **MSK when Kinesis would do** — Kafka complexity for no gain on greenfield AWS apps.
+- **Flink for simple filter/transform** — Lambda is simpler and cheaper.
+- **Confusing "Kinesis Data Analytics SQL" with Flink** — the SQL-only product is gone; **Managed Service for Apache Flink** is the current Flink offering.
+
+**Exam triggers:**
+
+- *"stateful stream processing with windowing"* → **Managed Service for Apache Flink**
+- *"real-time aggregation over sliding / tumbling / session windows"* → **Flink**
+- *"join two streams in real time"* → **Flink**
+- *"complex event processing / pattern detection across events"* → **Flink** (CEP)
+- *"exactly-once stream processing"* → **Flink** with checkpointing
+
+### How MSK and Flink Fit Together
+
+```
+            ┌───────────────────────────────────────────────────┐
+            │                  Producers                         │
+            └───────────────────────────────────────────────────┘
+                                │
+                                ▼
+                    ┌─────────────────────┐
+            Choose: │  MSK    or  Kinesis │      (transport)
+                    └─────────────────────┘
+                                │
+                                ▼
+            ┌───────────────────────────────────────────────────┐
+            │  Lambda  (stateless, per-event)                    │
+            │  Firehose  (batch to S3/Redshift/OpenSearch)       │
+            │  Managed Flink  (stateful, windows, joins, CEP)    │
+            │  EMR Spark Streaming  (Spark on streams)           │
+            └───────────────────────────────────────────────────┘
+                                │
+                                ▼
+                       Sinks (S3, RDS, OpenSearch, another stream)
+```
+
+**The 80/20:**
+- *"managed Kafka"* → **MSK**
+- *"managed Kafka with no brokers to size"* → **MSK Serverless**
+- *"stateful stream processing with windows/joins"* → **Managed Service for Apache Flink**
+- *"simple per-event transform"* → **Lambda** (not Flink)
+- *"buffer stream to S3"* → **Kinesis Firehose** (not Flink)
+
+### Kafka vs SNS vs Redis pub/sub
+
+All three "broadcast a message to multiple consumers" — but they are fundamentally different *shapes*. The cleanest mental model:
+
+| | SNS | Redis pub/sub | Kafka (MSK) |
+| - | --- | ------------- | ----------- |
+| Analogy | **Telegraph** — delivered or lost, no record | **Walkie-talkie** — only people listening *right now* hear it | **Tape recorder** — everything stored, anyone can rewind and replay |
+| Storage | None (transient) | None (transient) | **Durable, retention configurable** (days → forever with tiered storage) |
+| Consumers | Push to subscribers (Lambda, SQS, email, SMS, HTTP) | Only currently-connected subscribers | **Pull-based**; each consumer tracks its own offset |
+| Replay | No | No | **Yes** — rewind, reprocess any time |
+| Multiple independent reader groups | All subscribers share the broadcast; no per-subscriber position | No — one-shot | **Yes** — N consumer groups, each at their own position on the same topic |
+| Ordering | None (Standard); FIFO for one consumer | Best-effort | **Strict within a partition** |
+| Throughput | High, but per-message billed | Limited by single Redis node for pub/sub | **Millions msg/sec** sustained |
+| Schema management | None | None | **Schema Registry** (Glue or Confluent) |
+| Auth / VPC | Public API, IAM (no SGs) | Inside VPC, SGs, AUTH token | Inside VPC, IAM/SASL/mTLS |
+
+**Why Kafka exists alongside SNS / Redis pub/sub — the five reasons:**
+
+1. **Durability + replay** — the headline. Kafka is an **append-only log**, not a message broker. Consumers are independent and can rewind.
+
+   ```
+   SNS:    Publisher → SNS → if a subscriber is down, message is lost
+                            (pair with SQS to durably buffer per subscriber)
+   Redis:  Publisher → Redis → only currently-connected subs receive it
+   Kafka:  Publisher → message persists for days/weeks
+                       → Service B reads now
+                       → Service C reads tomorrow
+                       → Service D (new consumer) replays from offset 0
+   ```
+
+2. **Multiple independent consumer groups on the same stream** — you publish "order events" once; fulfilment, analytics, audit, and search each read at their own pace with their own offset. SNS fans out but each subscriber gets only "now."
+
+3. **Throughput at scale** — Redis pub/sub is capped by a single node. SNS scales but at per-request pricing. Kafka was built for LinkedIn-scale event volumes (millions of messages/sec) and stays cheap per message.
+
+4. **Streaming pipeline backbone** — stateful stream processors (Flink, Spark Streaming, Kafka Streams) need a durable log to checkpoint against. You don't run Flink on top of SNS or Redis pub/sub.
+
+5. **Cross-cloud / portable** — Kafka runs anywhere. SNS and Redis pub/sub (in AWS form) lock you in.
+
+**Direct comparison — Kafka vs SNS fan-out:**
+
+```
+SNS fan-out:
+  Publisher → SNS → SQS (Service A queue) → Service A
+                  → SQS (Service B queue) → Service B
+                  → SQS (Service C queue) → Service C
+  Each subscriber gets a separate queue; no replay; messages drop off after consumption.
+
+Kafka:
+  Publisher → Kafka topic ─→ Service A consumer group (own offset)
+                          ─→ Service B consumer group (own offset)
+                          ─→ Service C consumer group (own offset)
+  All three read the same persistent log. Any can reset offset and replay.
+```
+
+Looks similar from above. Behaves very differently when you need replay, late-joining consumers, or rewind for debugging.
+
+**Pick which:**
+
+| Pattern | Pick |
+| ------- | ---- |
+| Notification fan-out — email user, send SMS, ping a Lambda | **SNS** (with SQS where durability matters) |
+| Real-time UI updates between websocket clients on the same app | **Redis pub/sub** (or AppSync subscriptions) |
+| Ephemeral signalling between app instances (cache invalidation, leader election) | **Redis pub/sub** |
+| Durable event log, multiple downstream consumers, replay, stream processing | **Kafka (MSK)** or **Kinesis Data Streams** |
+| AWS-native event bus with routing/filtering and 100+ SaaS integrations | **EventBridge** |
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Picking SNS for an event log that needs replay or late-joining consumers** — SNS doesn't store. Use Kafka or Kinesis.
+- **Picking Redis pub/sub for anything durable** — volatile, no replay, single-node throughput cap. Use Kafka.
+- **Picking Kafka for a notification scenario** — operational overhead and complexity for no gain. SNS is right.
+- **Picking Kafka greenfield on AWS when Kinesis would do** — same log shape, less ops. Pick MSK only when the Kafka *ecosystem* (Connect, Schema Registry, Streams API) or portability matters.
+- **Using SNS + Lambda for "stream processing"** — fine for per-event reactions, breaks down for windowed/joined/stateful processing. Use Kafka or Kinesis + Flink.
+
+**Exam triggers:**
+
+- *"durable, replayable event log with multiple independent consumers"* → **Kafka (MSK)** or **Kinesis Data Streams**
+- *"broadcast a notification to email/SMS/Lambda subscribers"* → **SNS**
+- *"real-time pub/sub between app processes, ephemeral"* → **Redis pub/sub**
+- *"existing on-prem Kafka workload, migrate to AWS"* → **MSK**
+- *"event-driven architecture with content-based routing and SaaS sources"* → **EventBridge**
+- *"stateful stream processing on top of a Kafka topic"* → **Managed Service for Apache Flink** consuming from **MSK**
+- *"late-joining consumer needs to replay all historical events"* → **Kafka / Kinesis** (not SNS)
+
+**The 80/20:** *SNS is a telegraph (delivered or lost), Redis pub/sub is a walkie-talkie (only people listening now hear it), Kafka is a tape recorder (everything stored, anyone can rewind). Pick Kafka when you need a durable replayable log with multiple independent consumer groups — typical of event-driven architectures and stream-processing pipelines.*
+
 ## Amazon Redshift
 
 AWS's **data warehouse** — designed for running analytics queries across massive datasets (petabytes). Not a transactional database like RDS — it's for **OLAP** (Online Analytical Processing), not OLTP.
@@ -5353,6 +5603,140 @@ Both query data in S3 with SQL, but for different use cases:
 - *"OLAP workload"* → Redshift
 - *"OLTP workload"* → RDS/Aurora
 
+## AWS Glue
+
+Glue is **five things sharing a name**, and the exam tests them as if they're separate services. Anchored in what you know: **Athena uses the Glue Data Catalog** for schema. **EMR is the alternative when you need cluster control**. Glue itself is the serverless ETL + metadata stack.
+
+### The Five Pieces of Glue
+
+| Component | What it is | Why it matters |
+| --------- | ---------- | -------------- |
+| **Glue Data Catalog** | Central metadata repository — table names, columns, types, S3 locations. **Used by Athena, Redshift Spectrum, EMR, Lake Formation** | AWS's central schema registry — one definition, many query engines |
+| **Glue Crawler** | Scans data sources (S3, RDS, DynamoDB, JDBC), **infers schema**, writes table definitions to the Data Catalog | Exam-favourite pairing with Athena: *"new S3 data lands daily, query with Athena without manual schema"* |
+| **Glue ETL Jobs** | Serverless Apache Spark (or Python shell) for transformations. Pay per **DPU-hour** (Data Processing Unit) | Glue = serverless EMR-for-ETL |
+| **Glue Studio** | Visual drag-and-drop ETL builder — generates Spark/PySpark under the hood | "No-code ETL" for engineers |
+| **Glue DataBrew** | Visual **no-code** data prep for analysts; 250+ built-in transformations | "No-code data prep" for non-engineers |
+| **Glue Schema Registry** | Versioned schemas for streaming data (Kafka, Kinesis); producers/consumers validate against it | "Schema validation for streaming" |
+
+### Where Glue Sits in the Analytics Stack
+
+```
+Raw data in S3 / RDS / JDBC sources
+       │
+       ▼
+Glue Crawler ──→ Glue Data Catalog (schema metadata, no actual data)
+       │
+       ▼
+Glue ETL Job (serverless Spark) ──→ transforms, writes Parquet to S3 / Redshift
+       │
+       ▼
+Athena / Redshift Spectrum / EMR / QuickSight all read using the Catalog's schema
+```
+
+### Glue vs EMR — the Key Decision
+
+| | AWS Glue | EMR |
+| - | -------- | --- |
+| Model | **Serverless** — no cluster | You manage the cluster (or use EMR Serverless) |
+| Frameworks | **Spark + Python shell only** | Spark, Hadoop, Hive, HBase, Flink, Presto, etc. |
+| Best for | Standard ETL feeding Athena/Redshift | Frameworks Glue doesn't ship, or cluster control |
+| Built-in | Job bookmarks, workflows, Data Catalog | Frameworks; you wire the rest |
+| Cost | Pay per DPU-hour, no idle cost | Cluster running cost (or EMR Serverless workers) |
+
+**Rule of thumb:** *"Serverless Spark ETL with auto schema discovery feeding Athena/Redshift"* → **Glue**. *"Need Hadoop / Hive / HBase / Flink / Presto, or want cluster control"* → **EMR**.
+
+### Job Bookmarks (exam favourite)
+
+Glue jobs remember which data they've already processed. The next run only handles new files — no reprocessing the same S3 prefix every night.
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Glue for non-Spark frameworks** — Glue only runs Spark + Python shell. Hive / HBase / Flink → EMR.
+- **Glue when Lambda + Step Functions would do** — for small per-event transformations, Lambda is cheaper. Glue is for batch Spark scale.
+- **Crawler when schema is stable** — define the table manually; avoid Crawler costs + risk of schema drift surprises.
+- **DataBrew for engineers** — they want ETL Jobs (more flexible). DataBrew is for analysts.
+- **Glue Studio for highly custom code** — once logic gets complex, write PySpark directly; Studio's generated code becomes unwieldy.
+
+### Exam Triggers
+
+- *"serverless ETL with Apache Spark"* → **AWS Glue** (ETL job)
+- *"central metadata catalog used by Athena / Spectrum / EMR"* → **Glue Data Catalog**
+- *"automatically discover schema of S3 data"* → **Glue Crawler → Glue Data Catalog → Athena**
+- *"no-code data prep for business analysts"* → **Glue DataBrew**
+- *"managed schema registry for Kafka / Kinesis"* → **Glue Schema Registry**
+- *"avoid reprocessing the same data on every Glue job run"* → **Job bookmarks**
+- *"convert raw CSV/JSON in S3 to Parquet for cheaper Athena queries"* → **Glue ETL Job**
+- *"orchestrate multiple Glue jobs with dependencies"* → **Glue Workflows** (or Step Functions)
+- *"need Hadoop/Hive/HBase/Flink instead of Spark"* → **EMR**, NOT Glue
+
+**The 80/20:** *Glue is five things sharing a name — **Data Catalog** (used by Athena/Spectrum/EMR), **Crawler** (auto schema discovery), **ETL Jobs** (serverless Spark), **Studio** (visual ETL for engineers), **DataBrew** (no-code for analysts), **Schema Registry** (streaming validation). Catalog + Crawler + ETL Jobs are the exam-critical trio. Glue is to ETL what Athena is to SQL: serverless. Use EMR when you need frameworks Glue doesn't ship.*
+
+## AWS Lake Formation
+
+**Anchored in Glue + S3 + IAM.** S3 holds the bytes. The **Glue Data Catalog** holds the schema. **IAM and S3 bucket policies** control access — but only at bucket/prefix/table granularity. Lake Formation is the **fine-grained access-control and governance layer** that sits on top, so you can say "user X can read columns A and B but **not** column SSN, and only rows where region = 'EU'."
+
+```
+Without Lake Formation:  "Can user X read the orders table?"  (table-level only)
+With Lake Formation:     "Can user X read columns A, B, C but NOT SSN,
+                          only for rows where region = 'EU'?"  (cell-level)
+```
+
+The headline is security and governance — yes.
+
+### What Lake Formation Adds
+
+| Capability | What it adds |
+| ---------- | ------------ |
+| **Centralised permissions** | Grant/revoke at database, table, column, row, or cell level — *once*, applied across all consumers |
+| **LF-Tags** (Lake Formation tags) | Tag-based access control: tag a column `PII=true`, then grant "no access to anything tagged PII" to a role |
+| **Row-level filters** | `WHERE region = 'EU'` baked into the permission; users see only their slice |
+| **Cross-account sharing** | Share a table from account A to account B **without copying data**; consumer's queries see it natively (uses AWS RAM under the hood) |
+| **Data-lake setup helpers** | Register S3 locations, blueprint workflows to ingest from RDS/Aurora into the lake |
+| **Centralised audit** | Track who queried which columns; pairs with CloudTrail |
+
+### Who Honours Lake Formation Permissions
+
+Lake Formation policies are enforced by the analytics services that integrate with it:
+
+- **Athena**, **Redshift Spectrum**, **EMR**, **Glue**, **QuickSight**
+
+A custom client that hits S3 directly (e.g. a Spark job using S3 URIs without going through Glue Catalog) **bypasses** Lake Formation. The catalog-aware services are the choke point.
+
+### The Mental Model
+
+```
+S3              → where the bytes live
+Glue Catalog    → where the schema (table definitions) live
+Lake Formation  → who can see what — at column/row/cell granularity
+```
+
+### Classic Use Cases
+
+- *"Analysts can query the customer table but must NOT see SSN / email columns"* → Lake Formation **column-level permissions**
+- *"EU team can only see rows where `region = 'EU'`"* → **row-level filters**
+- *"Share a production table with the data science account without copying data"* → **cross-account sharing**
+- *"Centralised data lake governance across many AWS accounts"* → Lake Formation
+- *"GDPR / HIPAA compliance for the data lake"* → column/row controls + centralised audit
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Using S3 bucket policies for column-level data-lake permissions** — impossible at that granularity. Lake Formation is the answer.
+- **Using Lake Formation when simple IAM + table-level access is enough** — overkill for single-account, table-level needs.
+- **Expecting Lake Formation to control tools it doesn't integrate with** — only catalog-aware services (Athena, Spectrum, EMR, Glue, QuickSight) enforce it. Direct S3 readers bypass it.
+- **Confusing Lake Formation with Macie** — **Macie** *discovers* sensitive data (PII detection in S3). Lake Formation *controls access* to known data. They're complementary, not interchangeable.
+
+### Exam Triggers
+
+- *"fine-grained access control on a data lake"* → **Lake Formation**
+- *"column-level / row-level / cell-level permissions on S3 data"* → **Lake Formation**
+- *"share tables across AWS accounts without copying data"* → **Lake Formation cross-account sharing**
+- *"centralised data lake governance"* → **Lake Formation**
+- *"GDPR / PII compliance — hide columns from certain users"* → **Lake Formation column permissions**
+- *"discover and classify sensitive data in S3"* → **Macie** (NOT Lake Formation)
+- *"build and secure a data lake quickly"* → **Lake Formation**
+
+**The 80/20:** *Lake Formation is the access-control + governance layer on top of S3 + Glue Data Catalog. It exists because IAM and S3 bucket policies can't do column/row/cell-level permissions on data lakes. If a question mentions fine-grained data-lake permissions, cross-account table sharing, or column/row-level access, Lake Formation is the answer. Macie discovers; Lake Formation controls.*
+
 ## Amazon Athena
 
 **Anchored in Redshift.** Both run SQL over large datasets. The difference: Redshift loads data into a cluster you provision; **Athena queries data directly in S3, no cluster, no loading**.
@@ -5419,6 +5803,48 @@ Both let you SQL-query S3. The difference is **where the query engine lives**:
 | Cost | Per query (bytes scanned) | Cluster cost + Spectrum charges |
 
 If you already have Redshift → Spectrum is the natural fit. If you don't and only need occasional SQL on S3 → Athena.
+
+### Athena vs DynamoDB (the "both are serverless" trap)
+
+Exam questions often pair Athena with DynamoDB because both are serverless. But they solve completely different problems — picking DynamoDB when Athena is right (or vice versa) is one of the most common exam traps. Match the constraints in the question, not just the "serverless" tag.
+
+**Example question pattern:** *"Log files in S3, perform quick analysis, serverless, find users who attempted unauthorised actions."*
+
+| Constraint | Athena | DynamoDB |
+| ---------- | ------ | -------- |
+| **Data already in S3 — no loading** | ✅ Queries S3 in place | ❌ Doesn't read S3; you'd ETL every log into DynamoDB items first |
+| **"Quick analysis"** | ✅ Point + SQL query → done | ❌ Plan keys/GSIs, load data, then query |
+| **Filter by an arbitrary attribute** (e.g. `action = 'unauthorized'`) | ✅ Standard SQL | ❌ No general filter — Query needs the partition key; Scan reads the entire table |
+| **Serverless** | ✅ | ✅ (the only box DynamoDB ticks — and not enough on its own) |
+
+**Why DynamoDB falls apart for "query logs in S3":**
+
+1. **Wrong data location** — DynamoDB is a database (put data in, look it up by key). The logs are already in S3. Loading them in is itself a project, not a "quick analysis."
+2. **Wrong query shape** — DynamoDB is built for *"give me item with ID=X"*. The question wants *"find all items where `action='unauthorized'`"* — that's a filter, not a key lookup. Efficient filter on DynamoDB requires a pre-designed GSI on the filter attribute. You don't design infrastructure for ad-hoc forensic queries.
+3. **Even with data loaded, you'd Scan** — querying without the partition key forces a full Scan: expensive and slow.
+
+**The mental model:**
+
+```
+Athena    = "I have data sitting in S3 and want to query it ad-hoc"
+DynamoDB  = "I'm building an app that needs key-based lookups in milliseconds"
+```
+
+Different services, different problems. The exam question's "S3 + quick analysis + filter" framing fits Athena cleanly.
+
+**The "serverless" trap — general lesson:**
+
+"Serverless" alone is **never** the discriminator in an exam question. Lambda, S3, SNS, SQS, EventBridge, DynamoDB, Athena, Step Functions, Aurora Serverless v2, Fargate, OpenSearch Serverless — all qualify. You always need a second constraint (data location, query shape, latency, durability, access pattern) to pick between them. If two options are both serverless, ignore that word and compare them on the *other* criteria the question lists.
+
+**Vocabulary mapping (the question pattern → the right answer):**
+
+| Phrase in the question | Service |
+| ---------------------- | ------- |
+| *"log files in S3, query with SQL, serverless"* | **Athena** |
+| *"CloudTrail / VPC Flow Logs / ALB logs / S3 access logs"* | **Athena** (these are all S3-resident log formats) |
+| *"key-based lookup with single-digit ms latency"* | **DynamoDB** |
+| *"search across text fields in logs, dashboards"* | **OpenSearch** |
+| *"occasional log query, minimise idle cost"* | **CloudWatch Logs Insights** |
 
 ### Federated Queries
 
@@ -5581,6 +6007,316 @@ Both can search logs in AWS. The trade-off:
 - *"OpenSearch without managing a cluster"* → **OpenSearch Serverless**
 
 **The 80/20:** *managed Elasticsearch + Kibana fork; two superpowers — full-text search and log analytics with dashboards; the pipeline is Firehose → OpenSearch; it's an **index**, not a database; CloudWatch Logs Insights is the cheap alternative for infrequent log search.*
+
+## Amazon EMR
+
+**Anchored in services you know.** Athena runs interactive SQL on S3. Glue runs serverless Spark for ETL. Redshift is the warehouse. **EMR is the managed cluster running the full big-data ecosystem** — Hadoop, Spark, Hive, HBase, Presto/Trino, Flink, Pig. You get more frameworks, more control, more flexibility — at the cost of running a cluster.
+
+```
+Athena    → just SQL, on S3, interactive, serverless, no code
+Glue      → ETL pipelines, Spark, serverless, integrated with Data Catalog
+Redshift  → data warehouse, columnar storage, BI dashboards
+EMR       → run any big-data framework on a cluster you control (or serverless)
+```
+
+### Three Deployment Modes
+
+| Mode | What it is |
+| ---- | ---------- |
+| **EMR on EC2** | Classic — you size the cluster, install frameworks, pay for instances. Use **transient clusters** that spin up for a job and tear down to save cost |
+| **EMR on EKS** | Run EMR workloads on an existing Kubernetes cluster |
+| **EMR Serverless** | No cluster — pay per task/runtime. Sweet spot for Spark/Hive without ops overhead |
+
+### When EMR Is the Right Answer
+
+| Workload | Why EMR over the alternatives |
+| -------- | ----------------------------- |
+| **Petabyte-scale ETL with Spark/Hive** | Glue can do this too — pick EMR if you need version control, custom libraries, long-running jobs, or already have on-prem Spark code |
+| **Lift-and-shift Hadoop/Spark from on-prem** | EMR is the natural home — same Apache stack, just managed |
+| **Machine learning training data prep at scale** | Spark MLlib, distributed feature engineering across TB+ data |
+| **Streaming with Flink or Spark Streaming** | EMR runs these; Kinesis Data Analytics is more limited |
+| **HBase / Hudi / Iceberg / Delta Lake workloads** | EMR ships these frameworks; nothing else does as cleanly |
+| **Interactive Presto/Trino with cluster control** | Same engine as Athena but with sizing/tuning control |
+
+### When EMR Is the WRONG Answer
+
+| If you only need… | Use instead |
+| ----------------- | ----------- |
+| Interactive SQL on S3 | **Athena** (no cluster, pay per query) |
+| Managed ETL pipeline | **AWS Glue** (serverless Spark, less ops) |
+| BI dashboards on big data | **Redshift** |
+| Short-running event processing | **Lambda** (+ Kinesis if streaming) |
+| Real-time alerting on streams | **Kinesis Data Analytics** (Flink-based, managed) |
+| Search / log analytics | **OpenSearch** |
+
+### The Decision Tree
+
+```
+Need to process big data?
+├── Just SQL on S3 occasionally?            → Athena
+├── BI dashboards, frequent complex SQL?    → Redshift
+├── Simple ETL pipeline, want serverless?   → Glue
+├── Need Hadoop / Spark / Hive / HBase /
+│   Flink / Presto with cluster control?    → EMR
+└── Want EMR features but no cluster ops?   → EMR Serverless
+```
+
+### Real-World Scenarios Where EMR Wins
+
+- *"Lift-and-shift our on-prem Spark/Hadoop pipeline to AWS"* — same code, EMR runs it.
+- *"Train ML models on 50 TB of clickstream data"* — Spark MLlib on EMR.
+- *"Process Delta Lake / Hudi / Iceberg tables"* — EMR ships these; Glue is catching up but EMR is still the default.
+- *"Run a custom Hive UDF written by our data team"* — full control over the cluster + libraries.
+- *"Stream-process Kinesis events with Flink"* — EMR + Flink, or Kinesis Data Analytics if you want managed.
+
+### Common Anti-patterns (exam wrong answers)
+
+- **EMR for occasional SQL on S3** — overkill; cluster cost dominates. Use Athena.
+- **EMR when AWS Glue would do** — Glue is cheaper, simpler, serverless. Pick EMR only when you need a framework Glue doesn't have or need cluster control.
+- **EMR for short-running event processing** — Lambda or Kinesis is the right answer.
+- **EMR for BI dashboards** — Redshift is built for it.
+- **EMR cluster running 24/7 for nightly batch jobs** — use **EMR Serverless** or transient clusters that start/stop per job.
+
+### Exam Triggers
+
+- *"managed Hadoop / Spark / Hive / HBase / Flink / Presto cluster"* → **EMR**
+- *"lift and shift existing Hadoop/Spark workload to AWS"* → **EMR**
+- *"petabyte-scale ETL with Apache Spark, need cluster control"* → **EMR** (or **Glue** if you want serverless and don't need control)
+- *"train ML model on terabytes of data with Spark MLlib"* → **EMR**
+- *"Delta Lake / Hudi / Iceberg processing"* → **EMR**
+- *"Spark jobs without managing a cluster"* → **EMR Serverless** or **Glue**
+- *"transient cluster that spins up for a job and tears down after"* → **EMR** transient cluster pattern
+- *"interactive Presto with cluster sizing control"* → **EMR with Presto** (or Athena if you want serverless)
+
+**The 80/20:** *EMR is the managed home for the full Apache big-data stack (Spark, Hadoop, Hive, HBase, Flink, Presto). Pick it when you need a framework Athena/Glue/Redshift don't offer, or you're lifting on-prem Hadoop/Spark to AWS. For interactive SQL → Athena; serverless ETL → Glue; warehouse → Redshift; everything else big-data → EMR (or EMR Serverless).*
+
+## Amazon QuickSight
+
+**Anchored against Datadog** — because the instinct to call this "AWS Datadog" is wrong, and the exam exploits that confusion.
+
+QuickSight is AWS's **BI / Business Intelligence** tool. Its competitors are **Tableau, Looker, Power BI** — not Datadog. Both show data on dashboards, but they live in different worlds:
+
+| | Amazon QuickSight | Datadog |
+| - | ----------------- | ------- |
+| Category | **BI / Business Intelligence** | **Observability / APM / Monitoring** |
+| Data source | Data warehouses + databases — **Redshift, Athena, RDS, S3 (via Athena), Snowflake**, SaaS connectors | **Live operational telemetry** — metrics, traces, logs from servers/apps via agents |
+| Typical user | Analysts, finance, marketing, execs | SREs, DevOps, on-call engineers |
+| Typical question | *"Revenue by region by quarter"*, *"customer cohort retention"* | *"P99 latency on the checkout API right now"*, *"5xx error spike at 14:32"* |
+| Data freshness | Minutes-to-hours-old (warehouse refresh) | Seconds-old (live telemetry) |
+| Closest competitors | **Tableau, Looker, Power BI** | **New Relic, Dynatrace, Splunk Observability, Grafana Cloud** |
+
+### The Real AWS-Native Datadog Competitor
+
+If a question describes Datadog-shaped work — *"monitor application latency, error rates, infrastructure metrics, traces, logs in one place"* — the AWS answer is the **observability bundle**, not QuickSight:
+
+```
+Datadog (one product) ≈ CloudWatch (metrics + logs + alarms + dashboards)
+                       + CloudWatch Logs Insights (log queries)
+                       + X-Ray (distributed tracing)
+                       + OpenSearch + Dashboards (richer log analytics)
+```
+
+Datadog rolls all of those into one slick UI. AWS sells each piece separately.
+
+### QuickSight Key Properties
+
+- **Serverless** — no infrastructure to manage
+- **SPICE** — in-memory cache that accelerates dashboards (terabyte-scale, columnar). Data is ingested into SPICE on a schedule; dashboards query SPICE, not the source
+- **Direct query mode** — alternative to SPICE; runs every query live against the source (Redshift, Athena, RDS). Good for always-fresh data, slower per query
+- **QuickSight Q** — ML-powered natural-language queries (*"show me sales by region last quarter"* in plain English)
+- **Embed in apps** — Embedded Analytics SDK; build QuickSight dashboards into your own product
+- **Pricing** — per-user authors + per-reader pay-per-session
+
+### When You'd Reach for QuickSight
+
+- *"Executive sales dashboard backed by Redshift"*
+- *"Show analysts a self-service way to slice the data warehouse"*
+- *"Embed a billing dashboard into our SaaS product"*
+- *"Customer wants a Tableau-style tool, AWS-native"*
+- *"Connect natural-language queries to our data warehouse"* (QuickSight Q)
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Using QuickSight as a monitoring / observability tool** — wrong product. CloudWatch + Logs Insights + X-Ray + OpenSearch is the AWS observability stack.
+- **QuickSight on real-time streaming data with sub-second freshness** — QuickSight refreshes on schedule (SPICE) or per query (Direct Query). Real-time live ops dashboards belong in CloudWatch / OpenSearch / Grafana.
+- **Using QuickSight as the data store** — it's a visualisation layer; data lives in Redshift / Athena / RDS / S3.
+- **Picking QuickSight when the team needs trace analysis** — that's X-Ray (or a third-party APM).
+
+### Exam Triggers
+
+- *"BI dashboard on top of Redshift / Athena / RDS"* → **QuickSight**
+- *"AWS-native alternative to Tableau / Looker / Power BI"* → **QuickSight**
+- *"natural-language queries against the data warehouse"* → **QuickSight Q**
+- *"embed analytics dashboards into a SaaS product"* → **QuickSight Embedded Analytics**
+- *"in-memory cache to accelerate dashboard queries"* → **SPICE**
+- *"monitor latency / error rates / traces"* → **CloudWatch + X-Ray** (NOT QuickSight)
+- *"AWS equivalent of Datadog"* → **CloudWatch + Logs Insights + X-Ray + OpenSearch** (NOT QuickSight)
+
+**The 80/20:** *QuickSight is AWS Tableau, not AWS Datadog. It visualises data in warehouses/databases for business users; it does not monitor running systems. The Datadog-equivalent on AWS is the CloudWatch + Logs Insights + X-Ray + OpenSearch bundle.*
+
+## Big Data Ingestion Pipelines
+
+The reason exam questions on data pipelines are hard isn't the individual services — you know those — it's choosing *which combination* solves the scenario. This section ties the messaging + analytics services together into the canonical pipelines.
+
+### The Universal Pipeline Skeleton
+
+Every big-data ingestion scenario maps to this five-stage shape:
+
+```
+Source → Buffer/Transport → Process → Store → Query/Consume
+```
+
+Identify the right service at each stage and the answer falls out. The decision table at the end of this section is the cheat sheet.
+
+### Five Canonical Pipelines
+
+#### 1. Real-time Log Analytics
+
+```
+App logs / VPC Flow Logs / CloudTrail
+       ↓
+Kinesis Firehose  ──── (optional Lambda transform: parse, enrich, redact PII)
+       ↓                                  ↓
+OpenSearch Service              S3 (Parquet, partitioned)
+       ↓                                  ↓
+OpenSearch Dashboards         Athena (ad-hoc) + Glue Catalog
+```
+
+**When:** centralised logging, observability, ELK-style search.
+
+#### 2. Clickstream / Event Streaming for Real-time Reactions
+
+```
+Web/Mobile apps ──→ Kinesis Data Streams
+                          ↓                        ↓
+                  Lambda (stateless              Managed Flink (stateful:
+                  per-event reactions)            windows, joins, CEP)
+                          ↓                        ↓
+              DynamoDB (counters) + S3        OpenSearch (live dashboards)
+```
+
+**When:** real-time fraud detection, leaderboards, personalisation, abuse signals.
+
+#### 3. Operational DB → Analytics Warehouse (CDC pattern)
+
+```
+RDS / Aurora production
+       ↓
+DMS with full load + CDC (continuous change capture)
+       ↓
+S3 (raw landing zone) ─→ Glue ETL (clean, convert to Parquet)
+                              ↓
+                  Glue Data Catalog (schema)
+                              ↓
+                  ┌───────────────────────────────┐
+                  ▼                               ▼
+         Redshift COPY               Athena (ad-hoc)
+         (warehouse for BI)                ↓
+                  ↓                  Federated joins
+            QuickSight dashboards
+```
+
+**When:** "move data out of production OLTP for analytics" — classic exam scenario.
+
+#### 4. File Upload → Analytics-Ready
+
+```
+Customer uploads CSV/JSON → S3 (raw bucket)
+                                  ↓
+                          S3 Event Notification
+                                  ↓
+              ┌──────────────────┴──────────────────┐
+              ▼                                     ▼
+      Lambda (lightweight)                Glue ETL (heavyweight Spark)
+       quick validation                   convert CSV → Parquet,
+              ↓                                  partition, dedupe
+      S3 (cleaned bucket)                          ↓
+              ↓                            Glue Data Catalog
+        Glue Crawler                               ↓
+              ↓                              Athena + QuickSight
+       Glue Data Catalog
+              ↓
+     Athena + QuickSight
+```
+
+**When:** "customers / partners upload files for analysis," self-service data lake ingestion.
+
+#### 5. IoT at Massive Scale (Lambda Architecture — Real-time + Batch)
+
+```
+Millions of devices ──→ AWS IoT Core (MQTT)
+                              ↓
+                    Kinesis Data Streams
+                              ↓
+                ┌─────────────┼─────────────┐
+                ▼             ▼             ▼
+         Kinesis        Managed Flink    Lambda
+         Firehose       (windowed         (device state
+            ↓            aggregations)      → DynamoDB)
+        S3 (raw)              ↓
+            ↓           Timestream
+       Glue ETL         (time-series
+            ↓            live dashboards)
+       Athena
+       (historical)
+```
+
+**When:** IoT, telemetry at huge scale, with both live dashboards and historical querying.
+
+### Which Service at Each Stage
+
+| Stage | Need | Pick |
+| ----- | ---- | ---- |
+| **Source** | Servers / apps | SDK push to Kinesis / MSK / Firehose |
+| | IoT devices | **AWS IoT Core** |
+| | Operational DB | **DMS** (full load + CDC) |
+| | File drops | **S3 + Event Notification** |
+| **Buffer/Transport** | Just land in S3 | **Kinesis Firehose** |
+| | Replay + multiple consumers | **Kinesis Data Streams** or **MSK** |
+| | Kafka-compatible / existing Kafka workload | **MSK** |
+| **Process** | Per-event, stateless | **Lambda** |
+| | Stateful, windowed, joins | **Managed Apache Flink** |
+| | Heavy ETL, Spark | **Glue ETL** (serverless) or **EMR** (more control) |
+| | No-code analyst prep | **Glue DataBrew** |
+| **Store** | Data lake | **S3 + Glue Data Catalog** |
+| | Warehouse for BI | **Redshift** |
+| | Search / log analytics | **OpenSearch** |
+| | Time-series | **Timestream** |
+| | Operational lookups | **DynamoDB / RDS** |
+| **Query/Consume** | Ad-hoc SQL on S3 | **Athena** |
+| | BI dashboards | **QuickSight** (or third-party via Redshift) |
+| | Search UI | **OpenSearch Dashboards** |
+| | Programmatic | SDK to the underlying store |
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Picking Kinesis Data Streams when Firehose would do** — if all you need is "buffer events and write to S3/Redshift/OpenSearch with no code," Firehose is the answer. Data Streams is for when you need replay + multiple consumers.
+- **Lambda for stateful windowed aggregations** — use Flink.
+- **Writing raw CSV/JSON to S3 forever** — Athena scan costs balloon. Convert to Parquet + partition via Glue ETL.
+- **One-million-tiny-files pattern from per-event PUTs to S3** — buffer with Firehose first (1–128 MB output files).
+- **Loading directly into Redshift from production OLTP via JDBC** — kills the OLTP DB. Use **DMS + CDC** through S3.
+- **DataSync for a database** — DataSync is for files (S3/EFS/FSx). DMS is for databases.
+- **Picking Athena for queries that run every minute on the same data** — load into Redshift instead; cost flips at volume.
+
+### Exam Triggers
+
+- *"centralised log analytics with dashboards"* → **Firehose → OpenSearch + S3**
+- *"clickstream into a data lake"* → **Kinesis Data Streams → Firehose → S3**
+- *"migrate production DB to a warehouse with minimal downtime"* → **DMS (full load + CDC) → S3 → Glue → Redshift**
+- *"customer uploads CSV, want it queryable with SQL"* → **S3 event → Glue ETL → Parquet → Athena**
+- *"IoT telemetry at millions of devices, both live and historical"* → **IoT Core → Kinesis → Firehose (S3) + Flink (Timestream)**
+- *"convert raw S3 data to columnar for cheap Athena queries"* → **Glue ETL → Parquet + partitioning**
+- *"replay an event stream from yesterday"* → **Kinesis Data Streams / MSK** (NOT Firehose, NOT SNS)
+- *"fraud detection in real time on a stream"* → **Kinesis → Flink** (or Lambda for stateless rules)
+
+**The 80/20 — the universal skeleton:**
+
+```
+Source → Buffer/Transport → Process → Store → Query/Consume
+   ?            ?              ?         ?         ?
+```
+
+Five questions, one per stage. Identify each from the exam scenario and the answer falls out. The three most common pipelines: **logs → Firehose → OpenSearch**, **events → Kinesis → Lambda/Flink → S3 + DynamoDB**, and **operational DB → DMS → S3 → Glue → Redshift**.
 
 ## Serverless
 
