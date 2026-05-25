@@ -74,6 +74,27 @@
 - [ElastiCache](#elasticache)
   - [ElastiCache Security](#elasticache-security)
   - [ElastiCache Redis Replication](#elasticache-redis-replication)
+  - [Caching Strategies](#caching-strategies)
+  - [Redis vs DynamoDB](#redis-vs-dynamodb)
+- [DocumentDB and Neptune](#documentdb-and-neptune)
+  - [DocumentDB — anchored in Redis](#documentdb--anchored-in-redis)
+  - [Neptune — anchored in Redis](#neptune--anchored-in-redis)
+  - [Comparison — Redis vs DocumentDB vs Neptune](#comparison--redis-vs-documentdb-vs-neptune)
+  - [Picking between RDS, Aurora, DynamoDB, DocumentDB, Neptune](#picking-between-rds-aurora-dynamodb-documentdb-neptune)
+  - [Common anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers)
+  - [Exam triggers](#exam-triggers)
+- [Other Managed Databases](#other-managed-databases)
+  - [Amazon Keyspaces (Cassandra-compatible)](#amazon-keyspaces-cassandra-compatible)
+  - [Amazon MemoryDB for Redis](#amazon-memorydb-for-redis)
+  - [Amazon Timestream](#amazon-timestream)
+- [AWS Database Migration Service (DMS) and Schema Conversion Tool (SCT)](#aws-database-migration-service-dms-and-schema-conversion-tool-sct)
+  - [What DMS Does](#what-dms-does)
+  - [Homogeneous vs Heterogeneous Migrations](#homogeneous-vs-heterogeneous-migrations)
+  - [AWS Schema Conversion Tool (SCT)](#aws-schema-conversion-tool-sct)
+  - [Replication Instance Sizing](#replication-instance-sizing)
+  - [When DMS Is Not the Answer](#when-dms-is-not-the-answer)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers)
+  - [Exam Triggers](#exam-triggers)
 - [Route 53](#route-53)
   - [Authoritative vs Non-Authoritative DNS](#authoritative-vs-non-authoritative-dns)
   - [DNS Record Types](#dns-record-types)
@@ -106,6 +127,7 @@
   - [S3 Select and S3 Object Lambda](#s3-select-and-s3-object-lambda)
   - [S3 Replication](#s3-replication)
   - [S3 Storage Lens](#s3-storage-lens)
+  - [When Not to Use S3](#when-not-to-use-s3)
 - [AWS Snow Family](#aws-snow-family)
 - [AWS DataSync](#aws-datasync)
 - [AWS Transfer Family](#aws-transfer-family)
@@ -126,13 +148,94 @@
   - [SNS + SQS Fan-Out](#sns--sqs-fan-out)
   - [Kinesis](#kinesis)
   - [SQS vs SNS vs Kinesis](#sqs-vs-sns-vs-kinesis)
+  - [Amazon MQ](#amazon-mq)
+  - [Amazon MSK (Managed Streaming for Apache Kafka)](#amazon-msk-managed-streaming-for-apache-kafka)
+  - [Amazon Managed Service for Apache Flink](#amazon-managed-service-for-apache-flink)
+  - [How MSK and Flink Fit Together](#how-msk-and-flink-fit-together)
+  - [Kafka vs SNS vs Redis pub/sub](#kafka-vs-sns-vs-redis-pubsub)
 - [Amazon Redshift](#amazon-redshift)
+  - [When People Reach for Redshift](#when-people-reach-for-redshift)
   - [OLTP vs OLAP](#oltp-vs-olap)
   - [Why Not RDS for Analytics?](#why-not-rds-for-analytics)
+  - [Why Load into Redshift Instead of Querying S3?](#why-load-into-redshift-instead-of-querying-s3)
   - [Redshift Key Properties](#redshift-key-properties)
   - [Loading Data into Redshift](#loading-data-into-redshift)
   - [Redshift vs Athena](#redshift-vs-athena)
-  - [Redshift Snapshots](#redshift-snapshots)
+  - [Redshift Snapshots and Disaster Recovery](#redshift-snapshots-and-disaster-recovery)
+- [AWS Glue](#aws-glue)
+  - [The Five Pieces of Glue](#the-five-pieces-of-glue)
+  - [Where Glue Sits in the Analytics Stack](#where-glue-sits-in-the-analytics-stack)
+  - [Glue vs EMR — the Key Decision](#glue-vs-emr--the-key-decision)
+  - [Job Bookmarks (exam favourite)](#job-bookmarks-exam-favourite)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-5)
+  - [Exam Triggers](#exam-triggers-5)
+- [AWS Lake Formation](#aws-lake-formation)
+  - [What Lake Formation Adds](#what-lake-formation-adds)
+  - [Who Honours Lake Formation Permissions](#who-honours-lake-formation-permissions)
+  - [The Mental Model](#the-mental-model)
+  - [Classic Use Cases](#classic-use-cases-1)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-6)
+  - [Exam Triggers](#exam-triggers-6)
+- [Amazon Athena](#amazon-athena)
+  - [Key Properties](#key-properties)
+  - [The Cost Model — Why File Format Matters](#the-cost-model--why-file-format-matters)
+  - [Athena vs Redshift Spectrum (close cousins)](#athena-vs-redshift-spectrum-close-cousins)
+  - [Athena vs DynamoDB (the "both are serverless" trap)](#athena-vs-dynamodb-the-both-are-serverless-trap)
+  - [Federated Queries](#federated-queries)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-1)
+  - [Exam Triggers](#exam-triggers-1)
+- [Amazon OpenSearch Service](#amazon-opensearch-service)
+  - [When OpenSearch, Anchored in What You Know](#when-opensearch-anchored-in-what-you-know)
+  - [Key Properties](#key-properties-1)
+  - [Where Does OpenSearch Actually Store the Data?](#where-does-opensearch-actually-store-the-data)
+  - [Three Storage Tiers (cost optimisation)](#three-storage-tiers-cost-optimisation)
+  - [Is OpenSearch a Database?](#is-opensearch-a-database)
+  - [The Canonical Architecture](#the-canonical-architecture)
+  - [Classic Use Cases](#classic-use-cases)
+  - [OpenSearch vs CloudWatch Logs Insights](#opensearch-vs-cloudwatch-logs-insights)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-2)
+  - [Exam Triggers](#exam-triggers-2)
+- [Amazon EMR](#amazon-emr)
+  - [Three Deployment Modes](#three-deployment-modes)
+  - [When EMR Is the Right Answer](#when-emr-is-the-right-answer)
+  - [When EMR Is the WRONG Answer](#when-emr-is-the-wrong-answer)
+  - [The Decision Tree](#the-decision-tree)
+  - [Real-World Scenarios Where EMR Wins](#real-world-scenarios-where-emr-wins)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-3)
+  - [Exam Triggers](#exam-triggers-3)
+- [Amazon QuickSight](#amazon-quicksight)
+  - [The Real AWS-Native Datadog Competitor](#the-real-aws-native-datadog-competitor)
+  - [QuickSight Key Properties](#quicksight-key-properties)
+  - [When You'd Reach for QuickSight](#when-youd-reach-for-quicksight)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-4)
+  - [Exam Triggers](#exam-triggers-4)
+- [Big Data Ingestion Pipelines](#big-data-ingestion-pipelines)
+  - [The Universal Pipeline Skeleton](#the-universal-pipeline-skeleton)
+  - [Five Canonical Pipelines](#five-canonical-pipelines)
+  - [Which Service at Each Stage](#which-service-at-each-stage)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-7)
+  - [Exam Triggers](#exam-triggers-7)
+- [AWS AI/ML Services](#aws-aiml-services)
+  - [The Family at a Glance](#the-family-at-a-glance)
+  - [Amazon Rekognition (the headliner for computer vision)](#amazon-rekognition-the-headliner-for-computer-vision)
+  - [Amazon Transcribe (the headliner for speech-to-text)](#amazon-transcribe-the-headliner-for-speech-to-text)
+  - [Amazon Polly (the headliner for text-to-speech)](#amazon-polly-the-headliner-for-text-to-speech)
+  - [Amazon Translate (the headliner for machine translation)](#amazon-translate-the-headliner-for-machine-translation)
+  - [Amazon Lex and Amazon Connect (chatbot brain + contact center)](#amazon-lex-and-amazon-connect-chatbot-brain--contact-center)
+  - [Amazon Bedrock (the headliner for generative AI / foundation models)](#amazon-bedrock-the-headliner-for-generative-ai--foundation-models)
+  - [Amazon Comprehend (the headliner for general NLP)](#amazon-comprehend-the-headliner-for-general-nlp)
+  - [Amazon Comprehend Medical (HIPAA-eligible clinical NLP)](#amazon-comprehend-medical-hipaa-eligible-clinical-nlp)
+  - [Amazon Kendra](#amazon-kendra)
+  - [Amazon Personalize](#amazon-personalize)
+  - [Amazon Textract](#amazon-textract)
+  - [Amazon Forecast](#amazon-forecast)
+  - [Amazon Fraud Detector](#amazon-fraud-detector)
+  - [Amazon Augmented AI (A2I)](#amazon-augmented-ai-a2i)
+  - [When to Pick SageMaker Over Pre-trained Services](#when-to-pick-sagemaker-over-pre-trained-services)
+  - [Amazon SageMaker — Deep Dive](#amazon-sagemaker--deep-dive)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-8)
+  - [Exam Triggers](#exam-triggers-8)
+  - [AI/ML Cheat Sheet](#aiml-cheat-sheet)
 - [Serverless](#serverless-1)
   - [AWS Lambda](#aws-lambda)
   - [DynamoDB](#dynamodb)
@@ -1573,6 +1676,68 @@ Oracle and SQL Server have their own enterprise authentication ecosystems, so AW
 - *"integrate database authentication with Active Directory"* → Kerberos
 - *"audit all queries run against the database"* → CloudWatch Logs / Aurora Advanced Auditing
 
+**IAM database authentication — the details:**
+
+Instead of storing a database password, the application asks AWS STS for a **short-lived token** and uses it as the password.
+
+```
+App (IAM role)  ──→  aws rds generate-db-auth-token ──→  token (valid 15 min)
+                ──→  connect to RDS using user + token as password
+```
+
+- Token is **valid for 15 minutes** — rotates automatically every call
+- Auth uses **AWS Signature V4** under the hood (your IAM credentials sign the request)
+- **TLS is enforced** — IAM auth cannot be used over an unencrypted connection
+- Throughput limit: ~200 connections/sec per instance with IAM auth — fine for Lambda spawning many short connections, can be a bottleneck for heavy concurrent connection workloads (use RDS Proxy in front to pool connections)
+
+**Use cases:**
+- **Lambda → RDS** — Lambda's IAM role generates the token; no secret to ship in the code
+- **Apps running on EC2/ECS** with an instance/task role
+- **Anywhere you'd rather not store a database password**
+
+**Anti-pattern:** generating a fresh token on every query → throttling. Cache the token for its 15-minute lifetime.
+
+**Secrets Manager rotation for RDS / Aurora:**
+
+Store the database credentials in **AWS Secrets Manager**, and have it **automatically rotate** them on a schedule (e.g. every 30 days). Rotation is performed by an AWS-managed Lambda function for RDS/Aurora — you don't write the rotation code.
+
+```
+App  →  GetSecretValue (Secrets Manager)  →  current password
+        Secrets Manager (every 30 days)   →  triggers Lambda
+                                          →  Lambda generates new password
+                                          →  updates RDS user
+                                          →  updates the secret
+                                          →  app picks up the new value next call
+```
+
+**Two rotation strategies (the exam-relevant nuance):**
+
+| Strategy | How | Use when |
+| -------- | --- | -------- |
+| **Single-user rotation** | One DB user; rotation changes its password. Brief moment where old/new password coexist | Simple, default |
+| **Alternating users rotation** (recommended for production) | Two DB users (`app_user` + `app_user_clone`); each rotation flips between them. Old password remains valid until next rotation — zero connection breakage | Production where any password-change race must be avoided |
+
+| | Parameter Store (SSM) | Secrets Manager |
+| - | --------------------- | --------------- |
+| Stores secrets | Yes (SecureString) | Yes |
+| Automatic rotation | No (you build it) | **Yes — built-in for RDS/Aurora/Redshift/DocumentDB** |
+| Cost | Cheaper (free for Standard) | More expensive (~$0.40/secret/month) |
+| Use case | Static config, infrequently rotated secrets | RDS credentials, anything needing scheduled rotation |
+
+**Anti-patterns:**
+
+- **Storing the DB password in env vars or code** — use Secrets Manager (or IAM auth for short-lived apps).
+- **Storing RDS credentials in Parameter Store and expecting auto-rotation** — Parameter Store doesn't rotate. Use Secrets Manager for credentials, Parameter Store for static config.
+- **Using IAM auth for a long-lived high-concurrency connection workload without RDS Proxy** — token generation rate limit can bite. Put Proxy in front.
+
+**Exam triggers:**
+- *"automatically rotate RDS credentials every N days"* → **Secrets Manager** (built-in rotation Lambda)
+- *"rotate the database password without any downtime"* → Secrets Manager with **alternating users** strategy
+- *"app should authenticate to RDS without a stored password"* → **IAM database authentication**
+- *"Lambda connecting to RDS, want short-lived credentials"* → IAM database authentication
+- *"cheaper way to store database connection string that doesn't need rotation"* → Parameter Store
+- *"credential rotation breaking app connections"* → switch from single-user to alternating-users rotation
+
 ### RDS Backups
 
 **Automated backups:**
@@ -1829,16 +1994,26 @@ This shared storage is why Aurora's other features work:
 - **Faster failover** — typically under 30 seconds vs 1–2 minutes for standard RDS Multi-AZ
 - **Up to 15 read replicas** (vs 5 for standard RDS) with sub-10ms replica lag
 
-**Aurora Serverless:**
+**Aurora Serverless v1 vs v2:**
 
-Aurora Serverless scales compute capacity up and down automatically — including scaling to zero when idle. You pay per ACU-second (Aurora Capacity Unit) instead of provisioning a fixed instance size.
+Aurora Serverless auto-scales compute (ACU = Aurora Capacity Unit ≈ 2 GB RAM + matching CPU). Two generations exist; **v1 is deprecated** (end of life announced) — assume **v2** unless a question specifically references v1.
 
-| | Aurora Provisioned | Aurora Serverless |
-| - | ------------------ | ----------------- |
-| Compute | Fixed instance size you choose | Auto-scales based on demand |
-| Scale to zero | No | Yes (v2 scales to minimum, v1 can fully pause) |
-| Cost model | Pay for instance 24/7 | Pay for what you use |
-| Use case | Steady, predictable workloads | Intermittent, unpredictable, or dev/test |
+| | Aurora Provisioned | Aurora Serverless v1 (deprecated) | **Aurora Serverless v2** |
+| - | ------------------ | --------------------------------- | ------------------------ |
+| Compute | Fixed instance size | Auto-scales in big steps | Auto-scales in **0.5 ACU increments**, sub-second |
+| Scale to zero | No | Yes — fully pauses | Scales to a configurable minimum (0.5 ACU); can scale to zero on supported engines |
+| Cold-start latency on resume | N/A | Seconds — measurable cold start | Near-instant (always-on minimum) |
+| Mixing with provisioned in same cluster | No | No | **Yes** — v2 readers alongside provisioned writers |
+| Read replicas | Limited | Limited | Up to 15 |
+| Global Database support | No | No | **Yes** |
+| Cost model | Pay for instance 24/7 | Pay per ACU-second + per-request | Pay per ACU-second |
+| Use case | Steady, predictable workloads | Legacy only | **Default for variable workloads** |
+
+**Exam triggers:**
+- *"Aurora with auto-scaling compute for unpredictable workloads"* → Aurora Serverless v2
+- *"Aurora Serverless that supports Global Database"* → v2 only (v1 doesn't)
+- *"sub-second scaling response, no cold starts"* → Aurora Serverless v2
+- *"dev/test database that should pause when idle"* → Aurora Serverless v2 (or v1 for full pause)
 
 **Writer topology:**
 
@@ -1952,6 +2127,62 @@ A clone is a **live running database** — it costs compute, and it's not a back
 - *"centralized backup policy across multiple databases"* → **AWS Backup**
 - *"quick copy for testing"* → Aurora clone
 - *"retain backups beyond 35 days"* → manual snapshots (automated backups max out at 35 days)
+
+**Aurora Backtrack (Aurora MySQL only):**
+
+**Rewind the database in-place** to a point in the past — no restore from snapshot, no new instance. Aurora keeps a change log of writes; Backtrack replays the log backward.
+
+```
+12:00  Application is healthy
+12:30  Engineer runs UPDATE without a WHERE clause — corrupts table
+12:35  Run Backtrack to 12:29 → table is restored, cluster keeps running
+```
+
+| | Snapshot restore | Aurora Clone | **Backtrack** |
+| - | ---------------- | ------------ | ------------- |
+| What happens | New instance created from snapshot | New live instance, copy-on-write | **Same instance**, rewound in place |
+| Speed | Minutes to hours | Seconds | Seconds |
+| Loses data after the target time | No (snapshot is older) | No | **Yes** — all writes after the target are gone |
+| Available on | All RDS engines | Aurora MySQL + PostgreSQL | **Aurora MySQL only** |
+| Use case | Disaster recovery, cross-region | Dev/test copy | Undo a recent operator mistake |
+
+**Window:** up to **72 hours** of backtrack history (configurable). Storage cost scales with the change-log size.
+
+**Exam triggers:**
+- *"undo a recent destructive operation without creating a new instance"* → Aurora Backtrack
+- *"rewind the database to a point in time, same instance"* → Aurora Backtrack
+- *"point-in-time recovery, Aurora PostgreSQL"* → restore from snapshot (Backtrack is MySQL only)
+
+**Babelfish for Aurora PostgreSQL:**
+
+A translation layer that lets **SQL Server clients (T-SQL, TDS wire protocol)** talk to Aurora PostgreSQL **without changing application code**. The app thinks it's connecting to SQL Server; Babelfish translates T-SQL to PostgreSQL and SQL Server tabular results back.
+
+```
+Existing SQL Server app  ─── T-SQL + TDS ──→  Babelfish  ─── PostgreSQL ──→  Aurora Postgres
+(unchanged)                                    (translator)                   (real engine)
+```
+
+Use case: migrating SQL Server workloads off expensive licenses without rewriting application code. Caveat: not 100% T-SQL compatible — some advanced SQL Server features (CLR procedures, certain XML functions, MERGE quirks) don't translate.
+
+**Exam triggers:**
+- *"migrate SQL Server workload to Aurora without rewriting the application"* → Babelfish for Aurora PostgreSQL
+- *"reduce SQL Server licensing costs while keeping the app unchanged"* → Babelfish
+- *"open-source database that speaks the SQL Server wire protocol"* → Babelfish
+
+**Aurora I/O-Optimized storage:**
+
+Aurora bills I/O **per request** by default — fine for low-traffic apps, expensive for I/O-heavy workloads. **I/O-Optimized** is a storage class where you pay more per GB but **I/O is free**.
+
+| | Aurora Standard (default) | Aurora I/O-Optimized |
+| - | ------------------------- | -------------------- |
+| Storage cost | Lower per GB | ~125% higher per GB |
+| I/O cost | Per request | **Free** |
+| Break-even | I/O bill is < 25% of total | I/O bill is > 25% of total |
+| Use case | Most workloads | I/O-heavy, predictable cost |
+
+Switch with one setting. AWS recommends I/O-Optimized when I/O accounts for more than 25% of your Aurora bill — typical for write-heavy or large-scan workloads.
+
+**Exam trigger:** *"reduce Aurora costs for an I/O-heavy workload with predictable monthly billing"* → Aurora I/O-Optimized.
 
 **When to use standard RDS over Aurora:**
 
@@ -2171,6 +2402,629 @@ Shard 3: Primary → Replica
 - *"scale Redis read throughput"* → add read replicas
 - *"Redis dataset is too large for a single node"* → Cluster Mode Enabled (sharding)
 - *"scale Redis write throughput"* → Cluster Mode Enabled (writes distributed across shards)
+
+### Caching Strategies
+
+Picking *the right cache* is only half the problem — picking *the right strategy for talking to it* determines whether you actually get faster, cheaper, or staler results. Four patterns show up on the exam.
+
+**Lazy Loading (Cache-Aside) — the default:**
+
+The app talks to both the cache and the database. On miss, it populates the cache.
+
+```
+Read:
+  1. App → Cache: GET user:42
+  2. Cache miss → App → DB: SELECT * FROM users WHERE id=42
+  3. App → Cache: SET user:42 = {...} with TTL
+  4. Return to caller
+Write:
+  App → DB only. Cache is not updated on write.
+```
+
+- **Pros:** only cache what's actually requested (cheap); cache failure doesn't break writes; survives stale data via TTL
+- **Cons:** **3 round trips on a miss**; stale data is possible if you write to the DB without invalidating
+- **Use when:** read-heavy, miss rate acceptable, stale data tolerable for the TTL window
+
+**Write-Through — write goes to cache + DB together:**
+
+Every write updates the cache and the database in the same operation.
+
+```
+Write:
+  1. App → Cache: SET user:42 = {...}
+  2. App → DB:    UPDATE users SET ... WHERE id=42
+Read:
+  1. App → Cache: GET user:42 (always populated)
+```
+
+- **Pros:** cache is always fresh; reads are always a hit (for keys that have been written)
+- **Cons:** **writes are slower** (two writes); cache holds data that may never be read (wasted memory); on cache cold-start, no data unless you pre-warm
+- **Use when:** writes are infrequent vs reads, freshness matters, you can afford the write latency
+
+**Write-Behind / Write-Back — async DB write:**
+
+The app writes only to the cache; the cache asynchronously batches writes to the database.
+
+```
+Write:
+  1. App → Cache: SET order:abc = {...}
+  2. Cache → DB (later, in batches): INSERT INTO orders ...
+```
+
+- **Pros:** very fast writes; DB sees batched, smoothed traffic
+- **Cons:** **risk of data loss** if the cache fails before flushing; consistency window between cache and DB; complex to implement
+- **Use when:** ingest spikes where DB can't keep up *and* losing some recent writes is acceptable; rarely the right exam answer
+
+**Read-Through — cache handles the miss for you:**
+
+The application only ever talks to the cache. The cache itself fetches from the DB on a miss. (Conceptually similar to lazy loading but the cache, not the app, does the DB call.)
+
+```
+App → Cache: GET user:42
+  ├── hit  → return value
+  └── miss → cache calls DB, stores result, returns to app
+```
+
+- **Pros:** simpler app code (one client); cache loader is centralised
+- **Cons:** initial miss still slow; needs a cache that supports it (e.g. DAX is read-through for DynamoDB; Redis isn't natively read-through but libraries can add it)
+- **DAX is the canonical AWS read-through cache** — drop-in for the DynamoDB SDK
+
+**Side-by-side:**
+
+| | Lazy Loading | Write-Through | Write-Behind | Read-Through |
+| - | ------------ | ------------- | ------------ | ------------ |
+| Cache miss path | App → DB → cache | N/A (always populated) | N/A | Cache → DB → cache |
+| Write path | DB only | Cache + DB synchronously | Cache only (DB async) | DB only |
+| Freshness | Stale until TTL | Always fresh | Eventually consistent | Stale until TTL |
+| Risk of data loss | None | None | **Yes** (cache fails before flush) | None |
+| Write latency | Fast (DB only) | Slow (cache + DB) | Fastest | Fast |
+| Wasted cache memory | Low (demand-driven) | High (writes-rarely-read) | Moderate | Low |
+| Typical exam answer | "default cache pattern" | "data must always be fresh in cache" | rarely correct | "DynamoDB cache with no code changes" → DAX |
+
+**TTL strategy — the often-missed trade-off:**
+
+- **Short TTL** (seconds–minutes) — fresh data but more cache misses, more DB load
+- **Long TTL** (hours–days) — fewer misses but staler data
+- **No TTL** — only safe with explicit invalidation on writes (write-through pattern)
+- **Per-key TTL** — different freshness for different data: user profile (1h), product price (5min), session (30min)
+
+**Cache invalidation patterns:**
+
+- **TTL-based** — simplest, accept staleness up to TTL
+- **Write-through** — cache is updated on every write, never stale
+- **Explicit invalidation** — on write, `DEL` the cache key (lazy loading + explicit invalidation is a common middle ground)
+- **Event-driven invalidation** — DynamoDB Stream / RDS event → Lambda → invalidate Redis key
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Lazy loading with no TTL or invalidation** — data drifts stale forever. Always set a TTL.
+- **Write-through with a cache that doesn't survive failures** — if the cache loses data, the DB still has it (write-through doesn't lose data) but cold start is brutal. Use Redis with replicas, or accept the cold-start cost.
+- **Write-behind for critical writes** — order placements, payments, audit logs. If the cache fails mid-flush, data is gone. Use write-through or write directly to DB with cache invalidation.
+- **Picking Redis when the question describes "no code changes to cache DynamoDB"** → DAX (read-through, drop-in).
+- **Caching for write-heavy workloads** — caches accelerate reads, not writes. If writes dominate, focus on database write capacity (Aurora write throughput, DynamoDB on-demand) instead.
+
+**Exam triggers:**
+
+- *"default caching pattern, app reads from cache, falls back to DB"* → **Lazy loading**
+- *"cache must always reflect the latest data"* → **Write-through**
+- *"cache fresh writes without slowing the write path, can lose data"* → **Write-behind**
+- *"cache for DynamoDB with no code changes"* → **DAX** (read-through)
+- *"prevent stale data with minimal effort"* → short TTL
+- *"reduce DB load for repeated reads"* → lazy loading with reasonable TTL
+
+### Redis vs DynamoDB
+
+Both are key/value-ish, both single-digit ms latency, both managed by AWS — but they solve fundamentally different problems. Redis is a **cache** (with extras); DynamoDB is a **durable system of record**.
+
+| | ElastiCache Redis | DynamoDB |
+| - | ----------------- | -------- |
+| What it is | In-memory data store | Disk-backed (SSD) NoSQL database |
+| Primary role | Cache + specialised data structures | Durable storage |
+| Latency | Sub-millisecond | 1–10 ms (sub-ms with DAX) |
+| Durability | Optional (RDB snapshots, AOF) — treat as volatile by default | Durable by default, 3-AZ replication |
+| Capacity | Limited by **RAM** | Effectively unlimited storage |
+| Scaling | Vertical + sharding via cluster mode | Horizontal, auto-sharded, invisible |
+| Serverless? | Provisioned by default (Redis Serverless exists) | Serverless by default (on-demand or provisioned) |
+| Data model | Strings, lists, sets, **sorted sets**, hashes, streams, geo, pub/sub | Key/value or document items up to 400 KB |
+| Multi-region | Global Datastore (one-way, primary region) | Global Tables (active-active) |
+| Auth | AUTH token, Redis ACLs, security groups | **IAM only** (no SGs — public API) |
+| Pricing | Per node-hour | Per RCU/WCU or per request + storage |
+
+**Use Redis when:**
+
+- **Caching** — read-through / write-through in front of RDS or DynamoDB
+- **Session store** — fast, losing a session is acceptable
+- **Leaderboards / top-N** — sorted sets do this in O(log N); DynamoDB can't
+- **Real-time counters** — atomic `INCR` is built in
+- **Rate limiting** — counter + TTL per user/IP
+- **Distributed locks** — Redlock pattern
+- **Pub/sub** between app processes (for AWS-native fan-out use SNS)
+- Working set comfortably fits in RAM
+
+**Use DynamoDB when:**
+
+- **System of record** — durable storage for orders, users, events
+- **Massive scale** — terabytes+ with no capacity planning
+- **Serverless app** — pay-per-request, no nodes to size
+- **Multi-region active-active** — Global Tables
+- **Predictable single-digit-ms latency at any scale**
+- **Streams + Lambda** for change capture
+- **TTL auto-expiry** of items
+
+**Use both together — the common pattern:**
+
+```
+Read path:  App → Redis (hit? return)
+                → DynamoDB (miss → query → write to Redis → return)
+Write path: App → DynamoDB (always) → optionally invalidate Redis key
+```
+
+If you're caching DynamoDB *specifically*, **DAX** is usually a better fit than Redis — microsecond reads, no client code changes, write-through automatic. Redis is more flexible (any data structure, any data source) but you manage cache invalidation.
+
+**DAX vs Redis as a DynamoDB cache:**
+
+| | DAX | ElastiCache Redis |
+| - | --- | ----------------- |
+| What it caches | DynamoDB only | Anything (you control it) |
+| Code changes | None — DAX client drops in for the DynamoDB SDK | Yes — explicit GET/SET around DDB calls |
+| Cache invalidation | Automatic on write | You manage it |
+| Data structures | Item cache + query cache | Sorted sets, lists, pub/sub, etc. |
+| Use when | Caching DynamoDB reads with minimal effort | Need sorted sets, multi-source cache, or pub/sub |
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Redis as the durable system of record for critical data** — it's a cache. If the node fails before a snapshot, data is gone. Use DynamoDB or RDS for durability.
+- **DynamoDB for real-time top-N leaderboards** — Scan/Query won't give you O(log N) ranking. Redis sorted sets do.
+- **Redis with persistence disabled, then surprised when data is missing after a restart** — Redis is volatile by default. Enable RDB/AOF if you need recovery, or accept the loss.
+- **Caching DynamoDB with Redis when DAX would do** — DAX is no-code, write-through. Pick Redis only if you need more than DAX provides.
+- **Attaching a security group to DynamoDB** — public API, no ENI. Use IAM + VPC interface endpoint.
+- **Using DynamoDB as a queue** — possible (TTL + Streams) but SQS is the right answer. Same anti-pattern with Redis lists — use SQS.
+
+**Exam triggers:**
+
+- *"sub-millisecond latency"* → Redis
+- *"real-time leaderboard / top-N"* → Redis sorted sets
+- *"session store, fast"* → ElastiCache Redis
+- *"durable serverless NoSQL with predictable latency"* → DynamoDB
+- *"unlimited storage, single-digit ms"* → DynamoDB
+- *"global active-active database"* → DynamoDB Global Tables
+- *"cache for DynamoDB with minimal code changes"* → DAX
+- *"distributed lock"* → Redis (Redlock)
+- *"pub/sub between app processes"* → Redis pub/sub (or SNS for AWS-native fan-out)
+- *"key/value store, pay-per-use"* → DynamoDB on-demand
+
+## DocumentDB and Neptune
+
+Two AWS-managed databases that are not RDS, not DynamoDB, and not Redis — each built for a specific data shape that the others handle badly.
+
+The easiest way in is to **anchor both in Redis**, which you already know as an in-memory key/value store with a few clever data structures (lists, sorted sets, hashes, pub/sub). Redis is great at sub-ms lookups by key, but the moment you want to *query* by attribute or follow *relationships*, it falls over. DocumentDB and Neptune are what you reach for in those two cases.
+
+### DocumentDB — anchored in Redis
+
+Imagine you store a user profile in Redis as a hash:
+
+```
+HSET user:42 name "Alice" age 30 city "London"
+HGET user:42 name        ← works
+HGETALL user:42           ← works
+"give me all users in London aged 25–35"  ← Redis can't do this
+```
+
+To answer the third query in Redis you'd hand-roll secondary indexes (`SADD city:London 42`), maintain them on every write, intersect sets in your app code, and accept that nothing is queryable except via your hand-built indexes.
+
+**DocumentDB is what you'd want if Redis hashes had:**
+
+- A **query language** (`find({city: "London", age: {$gte: 25, $lte: 35}})`)
+- **Indexes** on any field
+- **Durable disk storage** (not limited by RAM)
+- **Replicas + automatic failover** built in
+- **MongoDB driver compatibility** — existing Mongo app code works unchanged
+
+It's AWS's managed Mongo-compatible service: same wire protocol, same APIs (within a supported version), but AWS handles the cluster, replication, backups, and patching.
+
+**Key properties:**
+
+- **Data model:** JSON documents (BSON), flexible schema
+- **Query API:** MongoDB API — `find`, `aggregate`, indexes on any field
+- **Storage:** durable, 6 copies across 3 AZs, scales automatically up to 64 TB
+- **Cluster:** one writer instance + up to 15 read replicas (Aurora-style storage layer)
+- **Failover:** automatic, typically under 30 seconds
+- **Latency:** single-digit ms
+- **Auth:** native MongoDB auth + IAM database authentication; security groups (ENI-backed, lives in your VPC)
+- **Multi-region:** Global Clusters — one writer region, others are read-only
+- **Pricing:** per instance-hour + I/O + storage; Elastic Clusters offer a more serverless-style model
+
+**Trade-off vs Redis:** latency goes from sub-ms → ms, and per-GB cost is higher. You get a real database in exchange.
+
+**⚠ "Is DocumentDB really MongoDB?" — no, and this matters:**
+
+There are three flavours of "MongoDB on AWS" and the distinction shows up in exam wrong-answer choices:
+
+| Option | Who runs it | Is it the real MongoDB engine? |
+| ------ | ----------- | ------------------------------ |
+| **Amazon DocumentDB (MongoDB compatibility)** | AWS | **No** — AWS-built reimplementation that speaks the MongoDB wire protocol. Existing MongoDB drivers work unchanged |
+| **MongoDB Atlas on AWS** | MongoDB Inc. (the company), available via AWS Marketplace | **Yes** — the real MongoDB engine, sold as SaaS, deployed onto AWS infrastructure |
+| **Self-managed MongoDB on EC2** | You | Yes — but you own all the maintenance pain |
+
+**Why DocumentDB is the default AWS exam answer:**
+
+Questions phrased *"which AWS service"* are looking for an AWS-native service. Atlas is third-party SaaS — it runs *on* AWS, but it isn't *an* AWS service. So:
+
+- *"AWS service for managed MongoDB"* → **DocumentDB**
+- *"any way to run MongoDB on AWS"* → DocumentDB *or* Atlas *or* self-hosted
+
+**Compatibility gaps (occasional exam trap):**
+
+DocumentDB emulates MongoDB API versions 3.6, 4.0, and 5.0 but is **not 100% compatible**. Some features don't work:
+
+- Certain aggregation operators
+- Some index types (text search, parts of geospatial)
+- Cross-document transactions have constraints
+- Change streams behave differently from MongoDB's
+
+If a question says *"team relies on MongoDB feature X that DocumentDB doesn't support"*, the answer is **MongoDB Atlas on AWS Marketplace** or self-managed on EC2 — not DocumentDB.
+
+**Mnemonic:**
+
+- "AWS service" + "MongoDB" + "no code changes" → **DocumentDB**
+- "Real MongoDB" + "feature parity" + "AWS infrastructure" → **MongoDB Atlas (Marketplace)**
+
+### Neptune — anchored in Redis
+
+What if your data is **relationships**? Who follows whom on a social network. Which accounts touched which transactions in a fraud graph. Which products were co-bought by users similar to me.
+
+In Redis you can model edges as sets:
+
+```
+SADD friends:alice bob carol dave
+SADD friends:bob   alice eve frank
+"who are friends of friends of Alice?"  ← N round-trips + app-side joining
+"shortest path from Alice to Zach?"     ← essentially impossible
+```
+
+Every hop is another `SMEMBERS` call and another set intersection in your app. At two hops it's painful. At three or four it's broken.
+
+**Neptune is what you reach for when graph traversal is the question.** One query, optimised by a graph engine:
+
+```gremlin
+g.V().has('user','id','alice')
+     .out('friend').out('friend')           # friends of friends
+     .where(out('bought').has('id','X'))    # who also bought X
+```
+
+**Key properties:**
+
+- **Two graph models** in one engine:
+  - **Property graph** — nodes + edges with properties. Query with **Gremlin** or **openCypher**
+  - **RDF triples** — knowledge-graph style. Query with **SPARQL**
+- **Storage:** durable, 6 copies across 3 AZs, scales automatically up to 64 TB (Aurora-style)
+- **Cluster:** one writer + up to 15 read replicas
+- **Latency:** single-digit ms for typical traversals
+- **Auth:** IAM, security groups (lives in your VPC)
+- **Multi-region:** Global Database — one writer region, others read-only
+- **Serverless:** Neptune Serverless option scales capacity up and down automatically
+- **Pricing:** per instance-hour + I/O + storage
+
+**Classic use cases:**
+
+- **Social networks** — followers, friends-of-friends, mutual connections
+- **Fraud detection** — "is this new account connected to any known-bad accounts within 3 hops?"
+- **Recommendation engines** — "users who bought X also bought Y" expressed as graph traversal
+- **Knowledge graphs** — Wikidata-style entity relationships
+- **Identity resolution** — linking accounts/devices/sessions that belong to the same person
+
+**⚠ OLTP trap — do not pick Neptune for an OLTP question:**
+
+Neptune uses the **same Aurora-style storage layer**: 6 copies across 3 AZs, auto-scaling storage, up to 15 read replicas. That's tempting when an exam question says *"OLTP database with built-in auto-scaling and the maximum number of replicas for its underlying storage."* Two qualifiers match Neptune — but the answer is **Aurora**.
+
+The decisive word is **OLTP**:
+
+| Term | What it means | The right database |
+| ---- | ------------- | ------------------ |
+| **OLTP** — Online *Transaction* Processing | Frequent short atomic relational operations: insert order, update balance | **Aurora** (or RDS) |
+| **OLAP** — analytical queries | Aggregations across millions of rows | **Redshift** |
+| **Graph workload** | Traversal: friends-of-friends, fraud paths | **Neptune** |
+
+"Transactions" in OLTP is industry shorthand for **relational** workload (banking, ordering, inventory). Fraud detection in a graph DB is *not* OLTP, despite involving ACID transactions and "transactional data" in plain English. If a question says OLTP, eliminate Neptune, DynamoDB, DocumentDB, and Redshift before picking the storage-replicas winner from the relational survivors → Aurora.
+
+### Comparison — Redis vs DocumentDB vs Neptune
+
+| | Redis | DocumentDB | Neptune |
+| - | ----- | ---------- | ------- |
+| What it is | In-memory key/value + data structures | Managed MongoDB-compatible document DB | Managed graph database |
+| Data shape | Strings, lists, sets, sorted sets, hashes | JSON documents, flexible schema | Nodes + edges (or RDF triples) |
+| Query | Redis commands (no general query) | MongoDB API (`find`, `aggregate`) | Gremlin / openCypher / SPARQL |
+| Durability | Volatile by default | Durable, 3-AZ | Durable, 3-AZ |
+| Latency | Sub-ms | Single-digit ms | Single-digit ms |
+| Capacity | Limited by RAM | Up to 64 TB | Up to 64 TB |
+| Best at | Caching, leaderboards, counters, pub/sub | Queryable durable JSON at scale | Graph traversal, "friends of friends" |
+| Anchor for the exam | "the cache" | "Redis hashes with queries and durability" | "what Redis edges *can't* do" |
+
+### Picking between RDS, Aurora, DynamoDB, DocumentDB, Neptune
+
+| Question | Use |
+| -------- | --- |
+| Relational tables, joins, transactions, SQL | **RDS** or **Aurora** |
+| Same as above but cloud-native, auto-scale, multi-region read scale | **Aurora** |
+| Key/value or document, serverless, predictable ms latency, massive scale | **DynamoDB** |
+| JSON documents with rich queries, Mongo compatibility | **DocumentDB** |
+| Graph: relationships, traversals, paths | **Neptune** |
+| Sub-ms cache or specialised structures (sorted sets, pub/sub, locks) | **ElastiCache Redis** |
+| Analytics over petabytes of columnar data | **Redshift** |
+
+### Common anti-patterns (exam wrong answers)
+
+- **Using Redis for graph queries** — possible to store edges in sets, but multi-hop traversal becomes N round-trips + app-side joining. Use Neptune.
+- **Using Redis as a primary document store** — fetch by key only, no `find`-style queries. Use DocumentDB if you need querying + durability.
+- **Using DocumentDB as a cache** — durable disk, ms latency, expensive per GB. If volatile + sub-ms is what you want, use Redis.
+- **Using Neptune for tabular data** — wrong shape entirely. Use RDS or Redshift.
+- **Using DocumentDB for relational joins** — Mongo-style document DBs don't do joins well. Use RDS / Aurora.
+- **Using RDS for deep relationship queries with recursive CTEs** — fine for 2 hops, falls over beyond 3–4. Use Neptune.
+- **Picking DocumentDB just because it's "NoSQL"** — DynamoDB is usually a better choice for new AWS-native apps. DocumentDB shines when you have existing Mongo code or need Mongo-style ad-hoc queries on documents.
+- **Picking DocumentDB when the team relies on a MongoDB feature DocumentDB doesn't support** — DocumentDB is API-compatible, not feature-complete. Some aggregation operators, index types, transactions, and change streams differ. If the question hints at a specific Mongo feature, the answer might be **MongoDB Atlas on AWS Marketplace** or self-hosted on EC2.
+- **Picking Neptune just because the data "feels relational"** — Neptune wins only when traversal is the access pattern. A normal foreign-key model belongs in RDS.
+- **Picking Neptune on an OLTP question because it mentions "6 copies across 3 AZs" or "auto-scaling storage"** — Neptune shares the Aurora storage layer, so those qualifiers match, but **OLTP** means relational. The answer is Aurora. Eliminate Neptune the moment you see "OLTP".
+
+### Exam triggers
+
+- *"managed MongoDB-compatible database"* → **DocumentDB**
+- *"migrate an existing MongoDB workload to AWS"* → **DocumentDB**
+- *"JSON document database with flexible schema and queries"* → **DocumentDB**
+- *"graph database"* → **Neptune**
+- *"social network / recommendation engine / fraud detection / identity resolution"* → **Neptune**
+- *"friends-of-friends / shortest path / multi-hop traversal"* → **Neptune**
+- *"knowledge graph / SPARQL / RDF"* → **Neptune**
+- *"Gremlin / openCypher / Cypher"* → **Neptune**
+- *"AWS-managed graph database that supports multiple query languages"* → **Neptune**
+- *"AWS-managed alternative to self-hosting MongoDB on EC2"* → **DocumentDB**
+- *"OLTP database with auto-scaling and the maximum storage replicas"* → **Aurora** (not Neptune — OLTP means relational, eliminate graph DBs first)
+- *"team needs a specific MongoDB feature DocumentDB doesn't support"* → **MongoDB Atlas (AWS Marketplace)** or self-hosted on EC2 (DocumentDB is API-compatible, not feature-complete)
+
+## Other Managed Databases
+
+Three more AWS-managed databases that show up in exam scenarios, each built for a workload the mainstream services handle badly. The pattern is the same as DocumentDB/Neptune: anchor each one in a service you already know, then describe the delta.
+
+### Amazon Keyspaces (Cassandra-compatible)
+
+**Anchored in DynamoDB.** Both are AWS-managed, serverless, wide-column-ish, and target massive scale with single-digit ms latency. The differences:
+
+- **CQL (Cassandra Query Language)** — looks SQL-ish, same as open-source Apache Cassandra. If your team already speaks CQL or your application uses a Cassandra driver, Keyspaces is a near-drop-in.
+- **Clustering columns** — Cassandra's first-class concept for ordered rows within a partition. DynamoDB approximates this with a sort key but the semantics differ.
+- **No native streams + Lambda trigger** — DynamoDB Streams has no direct equivalent. You can use change data capture via integrations but it's not as seamless.
+
+```
+DynamoDB item:    PK=user#42, SK=order#2024-01-15, attrs={...}
+Keyspaces row:    partition_key=user#42, clustering=(order_date), columns=...
+                  (SELECT * FROM orders WHERE user_id = '42' ORDER BY order_date DESC)
+```
+
+**Key properties:**
+
+- Serverless or provisioned (same model as DynamoDB)
+- Multi-AZ by default, durable
+- Single-digit ms reads/writes
+- IAM authentication, KMS encryption, VPC endpoints
+- Multi-Region replication (active-active)
+- Same "public API, no security group" model as DynamoDB
+
+**One-line decision rule:**
+
+| Situation | Pick |
+| --------- | ---- |
+| New AWS-native application | **DynamoDB** (better-integrated, streams, broader feature set) |
+| Migrating an existing Apache Cassandra workload | **Keyspaces** (keep your CQL queries and drivers) |
+| Team already fluent in CQL | **Keyspaces** |
+| Need DynamoDB Streams → Lambda triggers | **DynamoDB** |
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Picking Keyspaces for a greenfield AWS-native app** — DynamoDB is better integrated, has Streams, has DAX, has TTL. Keyspaces shines on migration, not new builds.
+- **Expecting DynamoDB Streams behaviour on Keyspaces** — no native equivalent. If event-driven processing matters, DynamoDB is the answer.
+- **Trying to attach a security group to Keyspaces** — public API, no ENI. IAM + VPC endpoint, same as DynamoDB.
+
+**Exam triggers:**
+
+- *"managed Cassandra-compatible database"* → **Keyspaces**
+- *"migrate existing Cassandra workload to AWS without rewriting CQL"* → **Keyspaces**
+- *"serverless wide-column database with CQL"* → **Keyspaces**
+
+### Amazon MemoryDB for Redis
+
+**Anchored in ElastiCache Redis.** Same Redis API, same data structures. The critical difference: **MemoryDB is durable** — it's a primary database, not a cache.
+
+```
+ElastiCache Redis:  in-memory, optional RDB snapshots, treat as volatile (lose data on failure)
+MemoryDB for Redis: in-memory + Multi-AZ transaction log → durable, survives node failure
+```
+
+The transaction log gives MemoryDB:
+
+- **Microsecond reads, single-digit ms writes**
+- **Durable across multi-AZ failures** — no data loss on node failure
+- **Strong consistency** for reads from the primary
+
+Think of it as "Redis you can trust as a system of record." Same API as ElastiCache Redis (you can use the same client libraries), but you don't need a separate durable database underneath.
+
+**ElastiCache vs MemoryDB:**
+
+| | ElastiCache Redis | MemoryDB for Redis |
+| - | ----------------- | ------------------ |
+| Role | Cache (in front of a real DB) | Primary database |
+| Durability | Volatile by default | Durable (multi-AZ transaction log) |
+| Read latency | Sub-ms | Microseconds |
+| Write latency | Sub-ms | Single-digit ms (transaction log write) |
+| Use when | You have a separate durable store | You want Redis API as the source of truth |
+| Cost | Cheaper | More expensive (durability isn't free) |
+
+**Common anti-patterns:**
+
+- **Using ElastiCache Redis as a primary store for critical data** — volatile by default. If you need Redis API + durability, use MemoryDB.
+- **Using MemoryDB as a cache** — durability costs money. If you have a real database underneath, ElastiCache is cheaper.
+- **Picking MemoryDB when DynamoDB would do** — DynamoDB is cheaper at scale unless you specifically need Redis data structures (sorted sets, streams, pub/sub) as the primary access pattern.
+
+**Exam triggers:**
+
+- *"Redis-compatible database I can use as the primary data store"* → **MemoryDB for Redis**
+- *"durable in-memory database with Redis API"* → **MemoryDB for Redis**
+- *"need Redis sorted sets / streams as a system of record, not a cache"* → **MemoryDB**
+- *"cache in front of RDS / DynamoDB"* → **ElastiCache Redis** (cheaper, durability not needed)
+
+### Amazon Timestream
+
+**Anchored in DynamoDB and CloudWatch.** Time-series data — IoT sensor readings, application metrics, DevOps telemetry — has a specific shape that general-purpose databases handle badly:
+
+```
+Time-series characteristics:
+- Append-only (you don't update past readings)
+- Indexed primarily by timestamp + dimension (sensor_id, region, etc.)
+- Recent data queried often, old data queried rarely (or aggregated)
+- Massive write volume (millions of points per second)
+- Queries are aggregations over time windows ("avg temperature per hour")
+```
+
+Storing this in DynamoDB works for ingestion but kills you on cost and query: aggregations require scans or pre-aggregation jobs. RDS dies on the write volume. CloudWatch metrics is too coarse and storage-limited.
+
+**Timestream solves the shape:**
+
+- **Two storage tiers**, automatic:
+  - **Memory store** — recent data, fast reads, expensive per GB
+  - **Magnetic store** — older data, cheaper, slightly slower reads
+- **Built-in time-series functions** — interpolation, smoothing, derivatives, rate-of-change
+- **SQL-compatible query language**
+- **Scales to trillions of events per day**
+- **Pay per write + storage tier + per query (data scanned)**
+
+```
+SELECT bin(time, 1m) AS minute,
+       avg(temperature) AS avg_temp
+FROM "iot"."readings"
+WHERE sensor_id = 'sensor-42'
+  AND time > ago(1h)
+GROUP BY bin(time, 1m)
+```
+
+**Timestream vs alternatives:**
+
+| Workload | Better than Timestream? |
+| -------- | ----------------------- |
+| AWS infrastructure metrics | **CloudWatch Metrics** — built-in, free for AWS-emitted metrics |
+| Custom app metrics, low volume | **CloudWatch Metrics** custom metrics |
+| Massive IoT or app telemetry, query-heavy | **Timestream** |
+| Time-series + need full SQL joins with other tables | RDS with time-series extensions (TimescaleDB-style), but Timestream's purpose-built tiers will usually win |
+| Time-series at petabyte analytical scale | **Redshift** or **OpenSearch** depending on access pattern |
+
+**Common anti-patterns:**
+
+- **Storing IoT readings in DynamoDB** — works, but aggregations are painful and storage cost scales linearly with no tiering. Timestream tiers data automatically and has time-series functions.
+- **Storing metrics in RDS** — write volume kills it.
+- **Using CloudWatch Metrics for high-cardinality custom dimensions** — expensive at scale ($0.30 per custom metric per month adds up fast). Timestream is cheaper per dimension at high cardinality.
+- **Using Timestream for transactional data that isn't time-series** — wrong shape; use DynamoDB / RDS.
+
+**Exam triggers:**
+
+- *"store and analyse IoT sensor data at scale"* → **Timestream**
+- *"time-series database"* → **Timestream**
+- *"trillions of events per day with time-window aggregations"* → **Timestream**
+- *"application metrics from AWS services"* → **CloudWatch Metrics** (not Timestream)
+- *"queries like average temperature over the last hour grouped by minute"* → **Timestream** (built-in time-series functions)
+
+## AWS Database Migration Service (DMS) and Schema Conversion Tool (SCT)
+
+The single most likely topic to be missing from a database study list. Almost every "migrate from on-prem X to AWS Y" exam question is answered by DMS, sometimes with SCT.
+
+### What DMS Does
+
+A managed service that **replicates data from a source database to a target database**, with the source typically remaining online during the migration. AWS spins up a **replication instance** (an EC2 under the hood, fully managed) that reads from the source and writes to the target.
+
+```
+On-prem Oracle  ──→  Replication Instance (DMS)  ──→  Amazon Aurora PostgreSQL
+                         │
+                         ├── Full load: copy existing rows
+                         └── CDC: stream ongoing changes (zero or near-zero downtime)
+```
+
+**Two migration modes:**
+
+| Mode | What it does |
+| ---- | ------------ |
+| **Full load** | One-time copy of all data from source to target. Downtime = duration of the load |
+| **CDC (Change Data Capture)** | Continuous stream of source changes (inserts/updates/deletes) to the target. Cuts over with minimal downtime |
+| **Full load + CDC** (most common) | Initial copy + ongoing replication. Switch the app to the target when CDC has caught up |
+
+**Sources DMS supports:** Oracle, SQL Server, MySQL, PostgreSQL, MariaDB, MongoDB, Db2, SAP ASE, Azure SQL, S3, plus on-prem self-managed installations of the same.
+
+**Targets DMS supports:** all the above (as RDS or self-managed), plus Aurora, Redshift, DynamoDB, OpenSearch, Kinesis, Kafka, S3, DocumentDB, Neptune.
+
+### Homogeneous vs Heterogeneous Migrations
+
+```
+Homogeneous:    Oracle on-prem  →  RDS for Oracle      (same engine on both sides)
+                MySQL on-prem   →  Aurora MySQL        (compatible engines)
+
+Heterogeneous:  Oracle on-prem  →  Aurora PostgreSQL   (different engines)
+                SQL Server      →  RDS for MySQL       (different engines)
+```
+
+- **Homogeneous** — DMS alone is enough. Schema and SQL syntax are compatible.
+- **Heterogeneous** — DMS moves the **data**; **schema and stored procedures need conversion first**. That's where SCT comes in.
+
+### AWS Schema Conversion Tool (SCT)
+
+A free downloadable tool (runs on your laptop) that **converts schema, stored procedures, views, and code** from one database engine to another.
+
+```
+Source (Oracle PL/SQL)  ──→  SCT  ──→  Target (PostgreSQL PL/pgSQL)
+                              │
+                              ├── Tables, indexes, constraints → auto-converted
+                              ├── Stored procs / functions     → auto-converted where possible
+                              └── Non-convertible items        → flagged for manual rewrite + effort estimate
+```
+
+**Workflow for a heterogeneous migration:**
+
+1. **SCT** converts the schema and code → apply to the target database
+2. **DMS** loads the data + replicates ongoing changes
+3. Cut over the application to the target
+
+**SCT also helps:** migrating data warehouses (Teradata, Netezza, Greenplum, Vertica) to **Redshift** — schema conversion is essential because warehouse DDL/SQL differs significantly.
+
+### Replication Instance Sizing
+
+DMS performance depends on the replication instance size. Right-sizing matters:
+
+- **Small instances** (t3.medium): fine for low-volume migrations, dev/test
+- **Large instances** (c5/r5.xlarge+): high-volume production, parallel table loads
+- **Multi-AZ** option for the replication instance during long-running CDC migrations — survives AZ failures without restarting the migration
+
+### When DMS Is Not the Answer
+
+Common confusions on the exam:
+
+- **Lift-and-shift VM (the whole server, not just the DB)** → **AWS Application Migration Service (MGN)** or **VM Import**, not DMS
+- **Migrate Hadoop / S3 data lake content** → **AWS DataSync** or **Snowball** depending on volume, not DMS
+- **Migrate the OS + database on EC2** → MGN, then point DMS at the new instance if you want to move the DB engine afterward
+- **Continuous data integration between cloud systems forever** → DMS *can* do this but a streaming service (Kinesis, MSK) or change data capture pipeline is often a better long-term answer
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Picking DMS for a homogeneous migration but forgetting CDC** → full-load-only forces downtime equal to the load time. Production cutovers almost always need full load + CDC.
+- **Picking DMS without SCT for heterogeneous migrations** → DMS moves data but doesn't convert schema or stored procedures. Without SCT the target won't have the tables/code to receive the data.
+- **Using DMS for huge initial loads when bandwidth is the bottleneck** → **Snowball Edge** can be the initial-load mechanism, with DMS doing CDC catch-up afterward.
+- **Picking DataSync for database migration** → DataSync is for file storage (S3, EFS, FSx), not databases.
+- **Picking DMS to migrate a VMware VM** → that's MGN's job.
+
+### Exam Triggers
+
+- *"migrate an on-prem database to AWS with minimal downtime"* → **DMS** (full load + CDC)
+- *"migrate Oracle to Aurora PostgreSQL"* → **SCT** (schema conversion) + **DMS** (data)
+- *"migrate SQL Server to RDS for MySQL"* → **SCT** + **DMS**
+- *"migrate Teradata / Netezza data warehouse to Redshift"* → **SCT** + **DMS**
+- *"migrate MongoDB on-prem to DocumentDB"* → **DMS** (DocumentDB is a valid target)
+- *"continuously replicate from production database to analytics database"* → **DMS** with ongoing CDC
+- *"replicate a database across AWS regions"* → Aurora Global Database or DMS CDC
+- *"convert database schema from one engine to another"* → **SCT**
+- *"initial load is too big to stream over the internet"* → **Snowball Edge** for bulk + **DMS** CDC for catch-up
+- *"migrate VMs, not just the database"* → **MGN** (AWS Application Migration Service), not DMS
 
 ## Route 53
 
@@ -3384,6 +4238,61 @@ A dashboard that gives you **visibility across all your S3 buckets** — usage m
 
 **Exam trigger:** *"get visibility into S3 usage and cost optimization across multiple accounts"* → S3 Storage Lens.
 
+### When Not to Use S3
+
+S3 is the right answer for *most* storage questions on the exam — but the trap questions are the ones where S3 looks plausible and is actually wrong. Here's where it breaks down.
+
+| Anti-use case | Why S3 hurts | Better fit |
+| ------------- | ------------ | ---------- |
+| **Millions of tiny objects** (< few KB each) | Per-request charges dominate: PUT ~$5/million, GET ~$0.40/million. List operations slow down. Latency overhead per object | Aggregate into Parquet/ORC/tar/zip; or EFS/FSx for file workloads |
+| **Tiny objects in Glacier / Deep Archive** | Minimum **40 KB** charged per object + ~32 KB metadata overhead. A 1 KB file costs the same as 40 KB | Aggregate before archiving |
+| **Tiny objects in Intelligent-Tiering** | Per-object **monitoring fee** dominates for sub-128 KB objects (which aren't tiered anyway) | S3 Standard, or aggregate |
+| **POSIX filesystem semantics** — locking, partial writes, symlinks, atomic rename | S3 is whole-object PUT, no locks, no append | EFS (Linux) or FSx (Windows / Lustre) |
+| **Append-mostly workloads** (per-event logging) | No append — every event is a new PUT + per-request cost | Kinesis Firehose to batch into S3, or CloudWatch Logs |
+| **Sub-ms or low-latency reads** | First-byte latency typically 100–200 ms | DynamoDB, ElastiCache, EBS |
+| **Random byte-range writes** | S3 PUT is whole-object only (byte-range *GET* is fine) | EBS, EFS |
+| **Concurrent edits to the same object** | Last writer wins, no merge | DynamoDB with conditional writes, or RDS |
+| **High write rate to one prefix** | S3 partitions by prefix; ~3,500 PUT/s and 5,500 GET/s per partitioned prefix | Spread across more prefixes, or use a database |
+| **Primary database** — querying by attributes, joins, transactions | No query engine. Athena/S3 Select read whole objects | DynamoDB / RDS / Redshift |
+| **Strong multi-object transactions** | No cross-object atomicity | DynamoDB `TransactWriteItems` |
+
+**The small-object cost problem made concrete:**
+
+```
+1 GB stored as:
+  1,000,000 × 1 KB objects → $5 to upload + listing overhead + per-request fees on every operation
+                            + Glacier/Intelligent-Tiering economics break completely
+  1 × 1 GB object          → $0.000005 to upload + one cheap GET + clean archive economics
+```
+
+Same storage volume, same storage cost. Every other dimension (upload cost, list cost, request rate, latency, archive economics) is dramatically worse for the tiny-object version.
+
+**Mitigations when you're stuck with small objects:**
+
+- **Aggregate before writing** — Kinesis Firehose buffers events and writes 1–128 MB Parquet files instead of N tiny JSONs
+- **S3 Inventory** to discover the small-object problem in existing buckets
+- **Manifest pattern** — one larger index file pointing at related small ones, when small files must remain separate
+- **S3 Express One Zone** — newer **single-AZ** storage class designed for high-frequency small-object workloads. Much lower per-request cost, ms-scale latency. Trade-off: one AZ (no cross-AZ durability), more expensive per-GB storage. **Exam answer for: "millions of small objects accessed at high rate, low latency, AZ-local is OK"**
+
+**Common anti-patterns (exam wrong answers):**
+
+- **S3 as a database** — pick DynamoDB for key/value, RDS for relational
+- **S3 as a queue / event log** — pick SQS for queueing, Kinesis for streams
+- **S3 as a shared filesystem for EC2** — pick EFS (Linux multi-attach) or FSx (Windows / Lustre)
+- **Millions of small PUTs per day with no aggregation** — pre-batch with Firehose
+- **Glacier for tiny objects** — 40 KB minimum + metadata makes per-byte cost terrible
+
+**Exam triggers:**
+
+- *"millions of small files, cost is high"* → aggregate before writing (Firehose, batch jobs)
+- *"need POSIX filesystem semantics"* → not S3 — EFS / FSx
+- *"need sub-ms latency for a key/value lookup"* → not S3 — DynamoDB
+- *"need to append to a log file in S3"* → not directly — buffer with Firehose
+- *"high write rate to a single S3 prefix is being throttled"* → spread writes across more prefixes
+- *"high-frequency reads of millions of small files in one AZ, low latency"* → **S3 Express One Zone**
+- *"tiny files in Glacier costing more than expected"* → 40 KB per-object minimum + 32 KB metadata
+- *"concurrent edits to the same file"* → not S3 — DynamoDB / RDS
+
 ## AWS Snow Family
 
 AWS's answer to: "how do I move petabytes of data to AWS when the internet is too slow?" AWS ships you a physical device, you load your data onto it, ship it back.
@@ -4377,9 +5286,241 @@ Amazon MQ runs on a provisioned instance (not serverless), supports Multi-AZ for
 
 **Exam trigger:** *"migrate an application using ActiveMQ/RabbitMQ/MQTT to AWS"* → Amazon MQ. Any other messaging scenario → SQS/SNS.
 
+### Amazon MSK (Managed Streaming for Apache Kafka)
+
+**Anchored against Kinesis Data Streams.** Both are AWS-managed streaming services. The split:
+
+- **MSK runs real Apache Kafka** — wire-compatible, existing Kafka producers/consumers/tools (Kafka Connect, Schema Registry, MirrorMaker, kafkactl) work unchanged
+- **Kinesis is AWS-proprietary** — simpler API, deeper AWS integration, no Kafka ecosystem
+
+| | Amazon MSK | Kinesis Data Streams |
+| - | ---------- | -------------------- |
+| Engine | Real Apache Kafka | AWS proprietary |
+| Wire-compatible with | Open-source Kafka | Kinesis SDK only |
+| Lives in VPC? | **Yes** — brokers have ENIs + **security groups** | No — public API endpoint |
+| Deployment | MSK Provisioned (size brokers) or **MSK Serverless** | Always serverless |
+| Retention | Configurable, default 7 days, **unlimited** with tiered storage | 24h default, max 365 days |
+| Best for | Lift-and-shift Kafka, Kafka ecosystem (Connect, KSQL, Streams API) | Greenfield AWS-native streaming |
+| Auth | IAM, SASL/SCRAM, mTLS, ACLs | IAM only |
+
+**When MSK wins:**
+- Existing Apache Kafka workload, want managed
+- Need Kafka Connect, Schema Registry, Streams API ecosystem
+- Multi-cloud / portability concerns — Kafka runs anywhere
+
+**When Kinesis wins:**
+- Greenfield streaming on AWS, no Kafka commitment
+- Tight AWS integration (Kinesis Firehose → S3/Redshift/OpenSearch with no code)
+- Don't want to think about brokers at all
+
+**Exam triggers:**
+- *"managed Apache Kafka on AWS"* → **MSK**
+- *"lift-and-shift Kafka cluster to AWS"* → **MSK**
+- *"Kafka without managing brokers"* → **MSK Serverless**
+- *"existing tools use the Kafka protocol"* → **MSK**
+
+### Amazon Managed Service for Apache Flink
+
+**Anchored against Lambda + Kinesis event source.** Both consume streams. The difference is *state*:
+
+- **Lambda is stateless per-message** — process one record, forget it. State has to live elsewhere (DynamoDB, S3)
+- **Flink is stateful with built-in windowing** — "count events per minute by user", "join two streams within a 10-minute window", "detect a pattern across the last 100 events" — all native, in-memory state with checkpoints to S3
+
+**Formerly known as:** Kinesis Data Analytics for Apache Flink. The older SQL-only "Kinesis Data Analytics" product was deprecated; this is the current Flink offering. Can also run on **EMR with Flink** if cluster control matters.
+
+**What Flink is for:**
+
+| Use case | Why Flink wins |
+| -------- | -------------- |
+| **Windowed aggregations** | "P95 latency per service per minute" — tumbling / sliding / session windows built in |
+| **Stream-to-stream joins** | Join two streams within a time window (clicks + impressions on the same user) |
+| **Complex event processing (CEP)** | "3 failed logins followed by a successful one in 5 minutes" |
+| **Stateful ML feature engineering** | Real-time feature pipelines updating model inputs as events stream |
+| **Exactly-once processing** | Flink checkpointing gives strong guarantees Lambda + Kinesis can't easily match |
+
+**The canonical pipeline:**
+
+```
+Producers (apps, IoT) ──→ MSK or Kinesis Data Streams
+                              │
+                              ▼
+                       Managed Service for Apache Flink
+                       (windows, joins, CEP, stateful)
+                              │
+                              ├──→ OpenSearch (search/dashboards)
+                              ├──→ S3 (data lake)
+                              ├──→ RDS / DynamoDB (aggregated state)
+                              └──→ another Kafka/Kinesis stream
+```
+
+**When to pick Flink vs alternatives:**
+
+| Workload | Pick |
+| -------- | ---- |
+| Per-message transformation, no state needed | **Lambda** (cheaper, simpler) |
+| Buffer + batch-write to S3 | **Kinesis Firehose** |
+| Stateful windowed aggregations / joins / CEP | **Managed Flink** |
+| Spark on streams (existing Spark code) | **EMR with Spark Streaming** |
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Lambda for stateful windowing** — possible but painful; you'd build state in DynamoDB. Flink does it natively.
+- **Kinesis Data Streams alone for analytics** — Streams is the transport; you still need a processor (Flink, Lambda, Spark).
+- **MSK when Kinesis would do** — Kafka complexity for no gain on greenfield AWS apps.
+- **Flink for simple filter/transform** — Lambda is simpler and cheaper.
+- **Confusing "Kinesis Data Analytics SQL" with Flink** — the SQL-only product is gone; **Managed Service for Apache Flink** is the current Flink offering.
+
+**Exam triggers:**
+
+- *"stateful stream processing with windowing"* → **Managed Service for Apache Flink**
+- *"real-time aggregation over sliding / tumbling / session windows"* → **Flink**
+- *"join two streams in real time"* → **Flink**
+- *"complex event processing / pattern detection across events"* → **Flink** (CEP)
+- *"exactly-once stream processing"* → **Flink** with checkpointing
+
+### How MSK and Flink Fit Together
+
+```
+            ┌───────────────────────────────────────────────────┐
+            │                  Producers                         │
+            └───────────────────────────────────────────────────┘
+                                │
+                                ▼
+                    ┌─────────────────────┐
+            Choose: │  MSK    or  Kinesis │      (transport)
+                    └─────────────────────┘
+                                │
+                                ▼
+            ┌───────────────────────────────────────────────────┐
+            │  Lambda  (stateless, per-event)                    │
+            │  Firehose  (batch to S3/Redshift/OpenSearch)       │
+            │  Managed Flink  (stateful, windows, joins, CEP)    │
+            │  EMR Spark Streaming  (Spark on streams)           │
+            └───────────────────────────────────────────────────┘
+                                │
+                                ▼
+                       Sinks (S3, RDS, OpenSearch, another stream)
+```
+
+**The 80/20:**
+- *"managed Kafka"* → **MSK**
+- *"managed Kafka with no brokers to size"* → **MSK Serverless**
+- *"stateful stream processing with windows/joins"* → **Managed Service for Apache Flink**
+- *"simple per-event transform"* → **Lambda** (not Flink)
+- *"buffer stream to S3"* → **Kinesis Firehose** (not Flink)
+
+### Kafka vs SNS vs Redis pub/sub
+
+All three "broadcast a message to multiple consumers" — but they are fundamentally different *shapes*. The cleanest mental model:
+
+| | SNS | Redis pub/sub | Kafka (MSK) |
+| - | --- | ------------- | ----------- |
+| Analogy | **Telegraph** — delivered or lost, no record | **Walkie-talkie** — only people listening *right now* hear it | **Tape recorder** — everything stored, anyone can rewind and replay |
+| Storage | None (transient) | None (transient) | **Durable, retention configurable** (days → forever with tiered storage) |
+| Consumers | Push to subscribers (Lambda, SQS, email, SMS, HTTP) | Only currently-connected subscribers | **Pull-based**; each consumer tracks its own offset |
+| Replay | No | No | **Yes** — rewind, reprocess any time |
+| Multiple independent reader groups | All subscribers share the broadcast; no per-subscriber position | No — one-shot | **Yes** — N consumer groups, each at their own position on the same topic |
+| Ordering | None (Standard); FIFO for one consumer | Best-effort | **Strict within a partition** |
+| Throughput | High, but per-message billed | Limited by single Redis node for pub/sub | **Millions msg/sec** sustained |
+| Schema management | None | None | **Schema Registry** (Glue or Confluent) |
+| Auth / VPC | Public API, IAM (no SGs) | Inside VPC, SGs, AUTH token | Inside VPC, IAM/SASL/mTLS |
+
+**Why Kafka exists alongside SNS / Redis pub/sub — the five reasons:**
+
+1. **Durability + replay** — the headline. Kafka is an **append-only log**, not a message broker. Consumers are independent and can rewind.
+
+   ```
+   SNS:    Publisher → SNS → if a subscriber is down, message is lost
+                            (pair with SQS to durably buffer per subscriber)
+   Redis:  Publisher → Redis → only currently-connected subs receive it
+   Kafka:  Publisher → message persists for days/weeks
+                       → Service B reads now
+                       → Service C reads tomorrow
+                       → Service D (new consumer) replays from offset 0
+   ```
+
+2. **Multiple independent consumer groups on the same stream** — you publish "order events" once; fulfilment, analytics, audit, and search each read at their own pace with their own offset. SNS fans out but each subscriber gets only "now."
+
+3. **Throughput at scale** — Redis pub/sub is capped by a single node. SNS scales but at per-request pricing. Kafka was built for LinkedIn-scale event volumes (millions of messages/sec) and stays cheap per message.
+
+4. **Streaming pipeline backbone** — stateful stream processors (Flink, Spark Streaming, Kafka Streams) need a durable log to checkpoint against. You don't run Flink on top of SNS or Redis pub/sub.
+
+5. **Cross-cloud / portable** — Kafka runs anywhere. SNS and Redis pub/sub (in AWS form) lock you in.
+
+**Direct comparison — Kafka vs SNS fan-out:**
+
+```
+SNS fan-out:
+  Publisher → SNS → SQS (Service A queue) → Service A
+                  → SQS (Service B queue) → Service B
+                  → SQS (Service C queue) → Service C
+  Each subscriber gets a separate queue; no replay; messages drop off after consumption.
+
+Kafka:
+  Publisher → Kafka topic ─→ Service A consumer group (own offset)
+                          ─→ Service B consumer group (own offset)
+                          ─→ Service C consumer group (own offset)
+  All three read the same persistent log. Any can reset offset and replay.
+```
+
+Looks similar from above. Behaves very differently when you need replay, late-joining consumers, or rewind for debugging.
+
+**Pick which:**
+
+| Pattern | Pick |
+| ------- | ---- |
+| Notification fan-out — email user, send SMS, ping a Lambda | **SNS** (with SQS where durability matters) |
+| Real-time UI updates between websocket clients on the same app | **Redis pub/sub** (or AppSync subscriptions) |
+| Ephemeral signalling between app instances (cache invalidation, leader election) | **Redis pub/sub** |
+| Durable event log, multiple downstream consumers, replay, stream processing | **Kafka (MSK)** or **Kinesis Data Streams** |
+| AWS-native event bus with routing/filtering and 100+ SaaS integrations | **EventBridge** |
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Picking SNS for an event log that needs replay or late-joining consumers** — SNS doesn't store. Use Kafka or Kinesis.
+- **Picking Redis pub/sub for anything durable** — volatile, no replay, single-node throughput cap. Use Kafka.
+- **Picking Kafka for a notification scenario** — operational overhead and complexity for no gain. SNS is right.
+- **Picking Kafka greenfield on AWS when Kinesis would do** — same log shape, less ops. Pick MSK only when the Kafka *ecosystem* (Connect, Schema Registry, Streams API) or portability matters.
+- **Using SNS + Lambda for "stream processing"** — fine for per-event reactions, breaks down for windowed/joined/stateful processing. Use Kafka or Kinesis + Flink.
+
+**Exam triggers:**
+
+- *"durable, replayable event log with multiple independent consumers"* → **Kafka (MSK)** or **Kinesis Data Streams**
+- *"broadcast a notification to email/SMS/Lambda subscribers"* → **SNS**
+- *"real-time pub/sub between app processes, ephemeral"* → **Redis pub/sub**
+- *"existing on-prem Kafka workload, migrate to AWS"* → **MSK**
+- *"event-driven architecture with content-based routing and SaaS sources"* → **EventBridge**
+- *"stateful stream processing on top of a Kafka topic"* → **Managed Service for Apache Flink** consuming from **MSK**
+- *"late-joining consumer needs to replay all historical events"* → **Kafka / Kinesis** (not SNS)
+
+**The 80/20:** *SNS is a telegraph (delivered or lost), Redis pub/sub is a walkie-talkie (only people listening now hear it), Kafka is a tape recorder (everything stored, anyone can rewind). Pick Kafka when you need a durable replayable log with multiple independent consumer groups — typical of event-driven architectures and stream-processing pipelines.*
+
 ## Amazon Redshift
 
 AWS's **data warehouse** — designed for running analytics queries across massive datasets (petabytes). Not a transactional database like RDS — it's for **OLAP** (Online Analytical Processing), not OLTP.
+
+### When People Reach for Redshift
+
+You move data **out** of operational systems (RDS, DynamoDB, application logs, third-party feeds) **into** Redshift specifically for analytics. The trigger is one of these three:
+
+1. **BI dashboards on big data** — Tableau / QuickSight / PowerBI hitting the same dataset many times per minute. Always-on cluster + result cache + materialised views = fast repeated queries.
+2. **Petabyte-scale analytical queries** — complex joins and aggregations across billions of rows that would crush RDS.
+3. **Central data warehouse** — consolidate data from many sources into one place so analysts can query without touching production.
+
+**Concrete real-world scenarios:**
+
+- *"5 years of order history, want to slice by region/product/time for the exec dashboard"*
+- *"Daily ETL job pulls yesterday's orders from production RDS into Redshift so analysts don't hit the OLTP DB"*
+- *"Marketing wants to combine web clickstream (S3), CRM (RDS), and ad spend (third-party) — one warehouse, one SQL"*
+- *"Finance runs monthly close reports across the entire transaction history"*
+
+**Rule of thumb:**
+
+- Live transactional workload → **RDS / Aurora / DynamoDB**
+- Ad-hoc, infrequent SQL on S3 → **Athena**
+- **Repeated, complex analytics on big data feeding dashboards** → **Redshift**
+
+If you wouldn't use the word *"warehouse"* or *"BI"* to describe the workload, Redshift is probably the wrong answer.
 
 ### OLTP vs OLAP
 
@@ -4398,6 +5539,46 @@ RDS stores data in **rows**. To answer "total sales by region," it reads every c
 RDS (row storage):      reads entire rows → slow for "give me one column across 1 billion rows"
 Redshift (columnar):    reads only the columns needed → fast for analytics queries
 ```
+
+### Why Load into Redshift Instead of Querying S3?
+
+Given Athena and Redshift Spectrum can query S3 in place, why pay to load? The short answer: **speed, predictable cost, and warehouse features**.
+
+| Reason | Why loading into Redshift wins |
+| ------ | ------------------------------ |
+| **Performance** | Loaded data is distributed across cluster nodes using **distribution keys** + sorted using **sort keys**. A star-schema join on a 10-billion-row fact table is sub-second in Redshift, minutes in Athena |
+| **Cost flips at volume** | Athena = $5 per TB **scanned, per query**. A dashboard scanning 100 GB hit 1,000 times/day = $500/day. A Redshift cluster running 24/7 for the same workload might be $50/day |
+| **Result cache + warm cluster** | Repeated queries hit Redshift's cache in milliseconds. Athena has seconds of startup overhead per query |
+| **Materialised views** | Pre-compute aggregations (`SELECT region, SUM(sales) GROUP BY region`) and refresh on a schedule. Athena can't do this — every query re-aggregates from raw data |
+| **Concurrency** | Concurrency Scaling spins up extra clusters for spikes. Athena has lower default concurrency limits |
+| **Workload management (WLM)** | Queue management — give finance queries priority over marketing, prevent runaway queries from starving everyone else |
+| **Joins across big fact + dimension tables** | Co-locating joined rows via the distribution key is **Redshift's superpower**. Athena moves data across nodes during the join — slow |
+| **ELT pipeline** | `COPY` from S3 into a staging table, transform with SQL, load into a fact table |
+
+**The mental model:**
+
+```
+Raw events  →  S3 (cheap, durable, source of truth for raw data)
+                  │
+                  ├── Ad-hoc / infrequent query  →  Athena (query in place)
+                  │
+                  └── ETL/ELT into Redshift      →  fast repeated queries, BI dashboards,
+                                                    materialised views, complex joins
+```
+
+S3 stays the **source of truth for raw data**. Redshift becomes the **source of truth for analytical queries**. Both coexist in most architectures.
+
+**When NOT to copy in:**
+
+- Queries run rarely (weekly report, ad-hoc exploration) → **Athena**
+- Petabyte-scale data with only a small slice queried at a time → **Redshift Spectrum** (cluster for hot data, S3 for cold)
+- Cost-sensitive project, slower queries acceptable → **Athena**
+
+**The simple rule:**
+
+- *"Will I run this query many times per day?"* → **load into Redshift**
+- *"Will I run this query a few times per month?"* → **leave in S3, use Athena**
+- *"Some of both?"* → **Redshift Spectrum** (hot data loaded, cold data in S3)
 
 ### Redshift Key Properties
 
@@ -4431,21 +5612,1818 @@ Both query data in S3 with SQL, but for different use cases:
 
 **Exam shortcut:** "data warehouse", "BI dashboards", "complex analytics on petabytes" → **Redshift**. "Ad-hoc SQL on S3 data, no infrastructure" → **Athena**.
 
-### Redshift Snapshots
+### Redshift Snapshots and Disaster Recovery
 
-- Automated snapshots with configurable retention (1–35 days)
-- Manual snapshots persist indefinitely
-- Snapshots can be **copied to another region** for DR
-- Restore creates a new cluster
+Snapshots are the **cornerstone of Redshift's DR story**. Yes — Redshift supports snapshots (common confusion: people sometimes think of Redshift like Athena where there's nothing to back up). Redshift's cluster storage is real and the snapshot system is how you protect it.
+
+**Two types of snapshots:**
+
+| | Automated | Manual |
+| - | --------- | ------ |
+| Frequency | Every **8 hours** OR every **5 GB** of data change, whichever first | On-demand, when you trigger |
+| Retention | **1–35 days** (configurable) | **Indefinite** — until you delete |
+| What it captures | Incremental — only blocks changed since last snapshot | Same incremental mechanism |
+| Use case | Day-to-day recovery (last few weeks) | Long-term retention, pre-upgrade safety, end-of-project archive |
+| Cost | Storage of changed blocks | Same |
+
+**Snapshots are stored in S3 internally** (AWS-managed) — that's why they're incremental and cheap. Restoring a snapshot creates a **new cluster** (you can't restore in-place).
+
+### The Standard Redshift DR Plan
+
+```
+Primary region (eu-west-1)                          DR region (us-east-1)
+──────────────────────────                          ────────────────────
+Redshift cluster
+   ↓ automated snapshots (every 8h / 5GB)
+S3 (internal, AWS-managed)
+   ↓ cross-region snapshot copy (configurable)
+                            ─────────────────→     Snapshot stored in DR region
+                                                       ↓ on disaster
+                                                   Restore → new Redshift cluster
+                                                       ↓
+                                                   Update DNS / app config to point at new cluster
+```
+
+**Steps to implement:**
+
+1. **Automated snapshots are on by default** — verify retention is set to enough days for your RPO (default is 1 day; bump to e.g. 7–14 days for production).
+2. **Configure cross-region snapshot copy** — pick the destination region and the retention for copied snapshots (can differ from primary).
+3. **Take manual snapshots** for milestones (pre-upgrade, end of fiscal quarter, before risky migration) — these persist beyond the 35-day automated cap.
+4. **In the DR region, periodically test restore** — confirm a snapshot actually restores cleanly to a new cluster.
+
+### Additional Resilience Features
+
+**Multi-AZ for Redshift (RA3 nodes only):**
+
+Newer feature — deploy a single Redshift cluster across **two AZs in the same region**. Synchronous replication, automatic failover if one AZ fails, no manual recovery. Reduces RTO from "restore from snapshot" to near-zero for AZ failures.
+
+- Multi-AZ does NOT protect against **region** failure — still need cross-region snapshot copy for true DR
+- Only available on RA3 node types
+
+**AWS Backup integration:**
+
+Redshift snapshots can be managed via **AWS Backup** for centralised policy-based backup across all your AWS resources (RDS, DynamoDB, EFS, EBS, etc.) — one backup vault, one retention policy, cross-region copy, cross-account copy, audit reports.
+
+| Approach | When |
+| -------- | ---- |
+| Direct Redshift snapshot management | Single cluster, simple needs |
+| **AWS Backup** | Multiple AWS resources, centralised policy, compliance/audit requirements |
+
+**Cross-account snapshot sharing:**
+
+Share a snapshot with another AWS account — useful for giving the security/audit team access to a frozen copy, or recovering into a separate "DR account."
+
+### Common Anti-patterns (exam wrong answers)
+
+- **"Redshift doesn't support snapshots"** — yes it does. They're the primary DR mechanism. (Common knowledge gap.)
+- **Relying only on automated snapshots for long-term backup** — they max at 35 days. Use **manual snapshots** for longer retention, or AWS Backup with a long-retention policy.
+- **Multi-AZ alone as your DR strategy** — Multi-AZ protects against AZ failure within a region, not region failure. You still need **cross-region snapshot copy** for true DR.
+- **Copying snapshots manually as a DR strategy** — error-prone. Use the built-in **cross-region snapshot copy** feature; it runs automatically on every new snapshot.
+- **Forgetting the new cluster cost on restore** — restoring creates a new cluster with its own compute cost. Build the DR cost into your plan.
+
+### Exam Triggers
+
+- *"data warehouse for analytics and reporting"* → **Redshift**
+- *"run complex SQL across petabytes of data"* → **Redshift**
+- *"connect BI tools like Tableau to AWS"* → **Redshift**
+- *"query S3 data with SQL, no infrastructure"* → **Athena**
+- *"query S3 data from within Redshift"* → **Redshift Spectrum**
+- *"OLAP workload"* → **Redshift**
+- *"OLTP workload"* → **RDS / Aurora**
+- *"Redshift disaster recovery plan"* → **enable cross-region snapshot copy**
+- *"Redshift backup retention beyond 35 days"* → **manual snapshots** (or AWS Backup with long retention)
+- *"recover Redshift cluster in another region after disaster"* → **restore from cross-region copied snapshot**
+- *"centralised backup policy across Redshift + other AWS resources"* → **AWS Backup**
+- *"protect Redshift cluster against single-AZ failure with automatic failover"* → **Multi-AZ for RA3** (no manual recovery needed)
+- *"share Redshift snapshot with another AWS account"* → **cross-account snapshot sharing**
+
+**The 80/20:** *Redshift HAS snapshots (don't doubt this). Automated = up to 35 days; manual = forever. DR = cross-region snapshot copy → restore in the DR region creates a new cluster. Multi-AZ (RA3 only) handles AZ failures; cross-region snapshot copy handles region failures. AWS Backup is the centralised alternative.*
+
+## AWS Glue
+
+Glue is **five things sharing a name**, and the exam tests them as if they're separate services. Anchored in what you know: **Athena uses the Glue Data Catalog** for schema. **EMR is the alternative when you need cluster control**. Glue itself is the serverless ETL + metadata stack.
+
+### The Five Pieces of Glue
+
+| Component | What it is | Why it matters |
+| --------- | ---------- | -------------- |
+| **Glue Data Catalog** | Central metadata repository — table names, columns, types, S3 locations. **Used by Athena, Redshift Spectrum, EMR, Lake Formation** | AWS's central schema registry — one definition, many query engines |
+| **Glue Crawler** | Scans data sources (S3, RDS, DynamoDB, JDBC), **infers schema**, writes table definitions to the Data Catalog | Exam-favourite pairing with Athena: *"new S3 data lands daily, query with Athena without manual schema"* |
+| **Glue ETL Jobs** | Serverless Apache Spark (or Python shell) for transformations. Pay per **DPU-hour** (Data Processing Unit) | Glue = serverless EMR-for-ETL |
+| **Glue Studio** | Visual drag-and-drop ETL builder — generates Spark/PySpark under the hood | "No-code ETL" for engineers |
+| **Glue DataBrew** | Visual **no-code** data prep for analysts; 250+ built-in transformations | "No-code data prep" for non-engineers |
+| **Glue Schema Registry** | Versioned schemas for streaming data (Kafka, Kinesis); producers/consumers validate against it | "Schema validation for streaming" |
+
+### Where Glue Sits in the Analytics Stack
+
+```
+Raw data in S3 / RDS / JDBC sources
+       │
+       ▼
+Glue Crawler ──→ Glue Data Catalog (schema metadata, no actual data)
+       │
+       ▼
+Glue ETL Job (serverless Spark) ──→ transforms, writes Parquet to S3 / Redshift
+       │
+       ▼
+Athena / Redshift Spectrum / EMR / QuickSight all read using the Catalog's schema
+```
+
+### Glue vs EMR — the Key Decision
+
+| | AWS Glue | EMR |
+| - | -------- | --- |
+| Model | **Serverless** — no cluster | You manage the cluster (or use EMR Serverless) |
+| Frameworks | **Spark + Python shell only** | Spark, Hadoop, Hive, HBase, Flink, Presto, etc. |
+| Best for | Standard ETL feeding Athena/Redshift | Frameworks Glue doesn't ship, or cluster control |
+| Built-in | Job bookmarks, workflows, Data Catalog | Frameworks; you wire the rest |
+| Cost | Pay per DPU-hour, no idle cost | Cluster running cost (or EMR Serverless workers) |
+
+**Rule of thumb:** *"Serverless Spark ETL with auto schema discovery feeding Athena/Redshift"* → **Glue**. *"Need Hadoop / Hive / HBase / Flink / Presto, or want cluster control"* → **EMR**.
+
+### Job Bookmarks (exam favourite)
+
+State that Glue maintains *between* runs of an ETL job, recording which data has already been processed. The next run picks up only the new data.
+
+```
+Run 1, Monday:    Process orders_2026-05-19.csv, orders_2026-05-20.csv
+                  Bookmark: "processed up to 2026-05-20"
+Run 2, Tuesday:   Bookmark exists → read only orders_2026-05-21.csv
+                  Bookmark advances to "2026-05-21"
+Run 3, Wednesday: Read only orders_2026-05-22.csv
+```
+
+**Three modes:**
+
+| Mode | What it does | When to pick |
+| ---- | ------------ | ------------ |
+| **Enable** | Track processed data, skip it next run | Default for incremental ETL (daily/hourly batches) |
+| **Disable** | Reprocess everything on every run | Full reload, dev/test, when you want every run to be from scratch |
+| **Pause** | Track but don't apply | One-off reprocessing without losing the existing bookmark state |
+
+**Source support:**
+
+| Source | Bookmark tracking |
+| ------ | ----------------- |
+| **S3** | By file timestamp / key — new files since last run |
+| **JDBC** (RDS, on-prem DBs) | By a monotonically increasing column (e.g. `id`, `last_updated`) — you specify which column |
+| **Streaming sources** (Kinesis, Kafka) | Different mechanism (checkpoints), **not** bookmarks |
+| **DynamoDB** | Not supported via bookmarks |
+
+**Anti-pattern trap (exam):**
+
+- **Source data is updated in place** (rows modified rather than new rows added) → bookmarks **don't help**; they only track *additions*. Use **DMS CDC** to capture updates, or do a full reload.
+- **Filenames keep getting rewritten with the same name** → bookmarks may miss changes; pick a partition scheme that makes new data appear as new keys.
 
 **Exam triggers:**
-- *"data warehouse for analytics and reporting"* → Redshift
-- *"run complex SQL across petabytes of data"* → Redshift
-- *"connect BI tools like Tableau to AWS"* → Redshift
-- *"query S3 data with SQL, no infrastructure"* → Athena
-- *"query S3 data from within Redshift"* → Redshift Spectrum
-- *"OLAP workload"* → Redshift
-- *"OLTP workload"* → RDS/Aurora
+
+- *"avoid reprocessing data already handled by a previous Glue run"* → **Job Bookmarks**
+- *"incremental ETL from S3 to Redshift via Glue"* → enable **Job Bookmarks**
+- *"track data already processed during a previous run of a Glue ETL job"* → **Job Bookmarks** (this is the exam's literal phrasing)
+- *"Glue is reprocessing the same files every night"* → enable **Job Bookmarks**
+- *"one-off full reload without losing the existing bookmark state"* → set bookmarks to **Pause**
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Glue for non-Spark frameworks** — Glue only runs Spark + Python shell. Hive / HBase / Flink → EMR.
+- **Glue when Lambda + Step Functions would do** — for small per-event transformations, Lambda is cheaper. Glue is for batch Spark scale.
+- **Crawler when schema is stable** — define the table manually; avoid Crawler costs + risk of schema drift surprises.
+- **DataBrew for engineers** — they want ETL Jobs (more flexible). DataBrew is for analysts.
+- **Glue Studio for highly custom code** — once logic gets complex, write PySpark directly; Studio's generated code becomes unwieldy.
+
+### Exam Triggers
+
+- *"serverless ETL with Apache Spark"* → **AWS Glue** (ETL job)
+- *"central metadata catalog used by Athena / Spectrum / EMR"* → **Glue Data Catalog**
+- *"automatically discover schema of S3 data"* → **Glue Crawler → Glue Data Catalog → Athena**
+- *"no-code data prep for business analysts"* → **Glue DataBrew**
+- *"managed schema registry for Kafka / Kinesis"* → **Glue Schema Registry**
+- *"avoid reprocessing the same data on every Glue job run"* → **Job bookmarks**
+- *"convert raw CSV/JSON in S3 to Parquet for cheaper Athena queries"* → **Glue ETL Job**
+- *"orchestrate multiple Glue jobs with dependencies"* → **Glue Workflows** (or Step Functions)
+- *"need Hadoop/Hive/HBase/Flink instead of Spark"* → **EMR**, NOT Glue
+
+**The 80/20:** *Glue is five things sharing a name — **Data Catalog** (used by Athena/Spectrum/EMR), **Crawler** (auto schema discovery), **ETL Jobs** (serverless Spark), **Studio** (visual ETL for engineers), **DataBrew** (no-code for analysts), **Schema Registry** (streaming validation). Catalog + Crawler + ETL Jobs are the exam-critical trio. Glue is to ETL what Athena is to SQL: serverless. Use EMR when you need frameworks Glue doesn't ship.*
+
+## AWS Lake Formation
+
+**Anchored in Glue + S3 + IAM.** S3 holds the bytes. The **Glue Data Catalog** holds the schema. **IAM and S3 bucket policies** control access — but only at bucket/prefix/table granularity. Lake Formation is the **fine-grained access-control and governance layer** that sits on top, so you can say "user X can read columns A and B but **not** column SSN, and only rows where region = 'EU'."
+
+```
+Without Lake Formation:  "Can user X read the orders table?"  (table-level only)
+With Lake Formation:     "Can user X read columns A, B, C but NOT SSN,
+                          only for rows where region = 'EU'?"  (cell-level)
+```
+
+The headline is security and governance — yes.
+
+### What Lake Formation Adds
+
+| Capability | What it adds |
+| ---------- | ------------ |
+| **Centralised permissions** | Grant/revoke at database, table, column, row, or cell level — *once*, applied across all consumers |
+| **LF-Tags** (Lake Formation tags) | Tag-based access control: tag a column `PII=true`, then grant "no access to anything tagged PII" to a role |
+| **Row-level filters** | `WHERE region = 'EU'` baked into the permission; users see only their slice |
+| **Cross-account sharing** | Share a table from account A to account B **without copying data**; consumer's queries see it natively (uses AWS RAM under the hood) |
+| **Data-lake setup helpers** | Register S3 locations, blueprint workflows to ingest from RDS/Aurora into the lake |
+| **Centralised audit** | Track who queried which columns; pairs with CloudTrail |
+
+### Who Honours Lake Formation Permissions
+
+Lake Formation policies are enforced by the analytics services that integrate with it:
+
+- **Athena**, **Redshift Spectrum**, **EMR**, **Glue**, **QuickSight**
+
+A custom client that hits S3 directly (e.g. a Spark job using S3 URIs without going through Glue Catalog) **bypasses** Lake Formation. The catalog-aware services are the choke point.
+
+### The Mental Model
+
+```
+S3              → where the bytes live
+Glue Catalog    → where the schema (table definitions) live
+Lake Formation  → who can see what — at column/row/cell granularity
+```
+
+### Classic Use Cases
+
+- *"Analysts can query the customer table but must NOT see SSN / email columns"* → Lake Formation **column-level permissions**
+- *"EU team can only see rows where `region = 'EU'`"* → **row-level filters**
+- *"Share a production table with the data science account without copying data"* → **cross-account sharing**
+- *"Centralised data lake governance across many AWS accounts"* → Lake Formation
+- *"GDPR / HIPAA compliance for the data lake"* → column/row controls + centralised audit
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Using S3 bucket policies for column-level data-lake permissions** — impossible at that granularity. Lake Formation is the answer.
+- **Using Lake Formation when simple IAM + table-level access is enough** — overkill for single-account, table-level needs.
+- **Expecting Lake Formation to control tools it doesn't integrate with** — only catalog-aware services (Athena, Spectrum, EMR, Glue, QuickSight) enforce it. Direct S3 readers bypass it.
+- **Confusing Lake Formation with Macie** — **Macie** *discovers* sensitive data (PII detection in S3). Lake Formation *controls access* to known data. They're complementary, not interchangeable.
+
+### Exam Triggers
+
+- *"fine-grained access control on a data lake"* → **Lake Formation**
+- *"column-level / row-level / cell-level permissions on S3 data"* → **Lake Formation**
+- *"share tables across AWS accounts without copying data"* → **Lake Formation cross-account sharing**
+- *"centralised data lake governance"* → **Lake Formation**
+- *"GDPR / PII compliance — hide columns from certain users"* → **Lake Formation column permissions**
+- *"discover and classify sensitive data in S3"* → **Macie** (NOT Lake Formation)
+- *"build and secure a data lake quickly"* → **Lake Formation**
+
+**The 80/20:** *Lake Formation is the access-control + governance layer on top of S3 + Glue Data Catalog. It exists because IAM and S3 bucket policies can't do column/row/cell-level permissions on data lakes. If a question mentions fine-grained data-lake permissions, cross-account table sharing, or column/row-level access, Lake Formation is the answer. Macie discovers; Lake Formation controls.*
+
+## Amazon Athena
+
+**Anchored in Redshift.** Both run SQL over large datasets. The difference: Redshift loads data into a cluster you provision; **Athena queries data directly in S3, no cluster, no loading**.
+
+```
+Redshift:  Load CSV/Parquet from S3 → into Redshift cluster → SQL queries
+Athena:    Leave files in S3 → point Athena at them → SQL queries
+```
+
+Built on **Presto/Trino** under the hood. Schema is defined in the **AWS Glue Data Catalog** (or Athena's own catalog), which is metadata only — Athena reads the underlying objects on each query.
+
+**Glue Crawler + Glue Data Catalog (exam pairing with Athena):**
+
+- **Glue Crawler** scans S3 paths, infers schema, and writes the table definition to the **Glue Data Catalog** — no manual `CREATE TABLE` needed.
+- **Glue Data Catalog** is a central metadata store shared by Athena, Redshift Spectrum, and EMR. One table definition, multiple query engines.
+- Typical exam pattern: *"new S3 data lands daily, want to query it with Athena without manually maintaining schema"* → Glue Crawler on a schedule → Glue Data Catalog → Athena.
+
+### Key Properties
+
+- **Serverless** — no infrastructure to manage, no cluster to size
+- **Pay per query** — billed by **bytes scanned from S3** ($5 per TB scanned at standard rate)
+- **Standard SQL** (ANSI), JOINs, window functions, CTEs
+- **Reads many formats** — CSV, JSON, Parquet, ORC, Avro
+- **Federated queries** — query RDS, DynamoDB, on-prem databases via connectors (no need to copy data into S3 first)
+- **Athena for Apache Spark** — same service, Spark notebooks for non-SQL workloads
+- **Integrates with QuickSight** for BI dashboards directly on S3 data
+
+### The Cost Model — Why File Format Matters
+
+```
+Same data, three formats, scanning to answer the same query:
+  CSV (raw):     scan all 100 GB           → $0.50 per query
+  JSON:          scan all 100 GB           → $0.50 per query
+  Parquet:       scan only relevant columns (~5 GB) → $0.025 per query (20× cheaper)
+```
+
+**Athena cost optimisations (exam-tested):**
+
+| Technique | Effect |
+| --------- | ------ |
+| **Convert to Parquet/ORC** (columnar) | Athena reads only the columns you select — 10–100× less data scanned |
+| **Compress** (Snappy, gzip) | Smaller files, less data scanned, same bytes-billed reduction |
+| **Partition** by common filter (date, region) | Athena skips partitions outside the `WHERE` clause |
+| **Larger files** (128 MB – 1 GB) | Fewer S3 GET requests, faster query |
+| **Use `LIMIT` carefully** — *doesn't* reduce scanned bytes for most queries | Don't rely on it as a cost control |
+
+**Partitioning example:**
+
+```
+s3://logs/year=2026/month=05/day=20/events.parquet
+                                                   ↑
+SELECT * FROM logs WHERE year=2026 AND month=05    ← scans only that month
+```
+
+### Athena vs Redshift Spectrum (close cousins)
+
+Both let you SQL-query S3. The difference is **where the query engine lives**:
+
+| | Athena | Redshift Spectrum |
+| - | ------ | ----------------- |
+| Engine | Serverless (Presto-based) | Part of a Redshift cluster |
+| Need a cluster? | No | Yes — Spectrum requires a Redshift cluster |
+| Best for | Ad-hoc queries, infrequent use | Extending an existing Redshift workload to query S3 data without loading |
+| Cost | Per query (bytes scanned) | Cluster cost + Spectrum charges |
+
+If you already have Redshift → Spectrum is the natural fit. If you don't and only need occasional SQL on S3 → Athena.
+
+### Athena vs DynamoDB (the "both are serverless" trap)
+
+Exam questions often pair Athena with DynamoDB because both are serverless. But they solve completely different problems — picking DynamoDB when Athena is right (or vice versa) is one of the most common exam traps. Match the constraints in the question, not just the "serverless" tag.
+
+**Example question pattern:** *"Log files in S3, perform quick analysis, serverless, find users who attempted unauthorised actions."*
+
+| Constraint | Athena | DynamoDB |
+| ---------- | ------ | -------- |
+| **Data already in S3 — no loading** | ✅ Queries S3 in place | ❌ Doesn't read S3; you'd ETL every log into DynamoDB items first |
+| **"Quick analysis"** | ✅ Point + SQL query → done | ❌ Plan keys/GSIs, load data, then query |
+| **Filter by an arbitrary attribute** (e.g. `action = 'unauthorized'`) | ✅ Standard SQL | ❌ No general filter — Query needs the partition key; Scan reads the entire table |
+| **Serverless** | ✅ | ✅ (the only box DynamoDB ticks — and not enough on its own) |
+
+**Why DynamoDB falls apart for "query logs in S3":**
+
+1. **Wrong data location** — DynamoDB is a database (put data in, look it up by key). The logs are already in S3. Loading them in is itself a project, not a "quick analysis."
+2. **Wrong query shape** — DynamoDB is built for *"give me item with ID=X"*. The question wants *"find all items where `action='unauthorized'`"* — that's a filter, not a key lookup. Efficient filter on DynamoDB requires a pre-designed GSI on the filter attribute. You don't design infrastructure for ad-hoc forensic queries.
+3. **Even with data loaded, you'd Scan** — querying without the partition key forces a full Scan: expensive and slow.
+
+**The mental model:**
+
+```
+Athena    = "I have data sitting in S3 and want to query it ad-hoc"
+DynamoDB  = "I'm building an app that needs key-based lookups in milliseconds"
+```
+
+Different services, different problems. The exam question's "S3 + quick analysis + filter" framing fits Athena cleanly.
+
+**The "serverless" trap — general lesson:**
+
+"Serverless" alone is **never** the discriminator in an exam question. Lambda, S3, SNS, SQS, EventBridge, DynamoDB, Athena, Step Functions, Aurora Serverless v2, Fargate, OpenSearch Serverless — all qualify. You always need a second constraint (data location, query shape, latency, durability, access pattern) to pick between them. If two options are both serverless, ignore that word and compare them on the *other* criteria the question lists.
+
+**Vocabulary mapping (the question pattern → the right answer):**
+
+| Phrase in the question | Service |
+| ---------------------- | ------- |
+| *"log files in S3, query with SQL, serverless"* | **Athena** |
+| *"CloudTrail / VPC Flow Logs / ALB logs / S3 access logs"* | **Athena** (these are all S3-resident log formats) |
+| *"key-based lookup with single-digit ms latency"* | **DynamoDB** |
+| *"search across text fields in logs, dashboards"* | **OpenSearch** |
+| *"occasional log query, minimise idle cost"* | **CloudWatch Logs Insights** |
+
+### Federated Queries
+
+Standard Athena queries S3. **Federated queries** extend Athena to query *non-S3* sources — RDS, DynamoDB, Redshift, DocumentDB, ElastiCache, Neptune, Timestream, CloudWatch Logs, on-prem databases — and **join across sources** in one SQL statement.
+
+```
+Athena query
+   ├── SELECT from s3.logs          (native S3 scan)
+   ├── JOIN  rds.orders ON ...      (Lambda connector → RDS → results back)
+   └── JOIN  dynamodb.users ON ...  (Lambda connector → DynamoDB → results back)
+```
+
+**How it works:**
+
+- Each non-S3 source has a **Lambda connector** that runs in your account and talks to the source on Athena's behalf
+- AWS provides connectors for ~25 sources (RDS, DynamoDB, Redshift, DocumentDB, Neptune, ElastiCache, Timestream, CloudWatch, Snowflake, SAP HANA, on-prem MySQL/Postgres via JDBC…)
+- Build custom connectors with the **Athena Query Federation SDK**
+- Connectors live in your account — they reach private sources (RDS in a VPC) using Lambda VPC config
+
+**Key properties:**
+
+- Cost = **Lambda execution** (connector) **+ Athena bytes-scanned**
+- **Pushdown depends on the connector** — good ones push filters/projections to the source; poor ones fetch everything and let Athena filter (expensive)
+- One AWS region per query — federated query doesn't cross regions
+- Source credentials stored in **Secrets Manager**, referenced by the connector
+
+**Use cases:**
+
+- Ad-hoc reporting that touches multiple stores without building a warehouse
+- One-off audits joining live RDS with S3 archives
+- Investigation across logs (S3), state (DynamoDB), and metadata (RDS)
+- Avoiding ETL for queries that run rarely
+
+**Common anti-patterns:**
+
+- **Federated queries for high-volume production reporting** — Lambda cost + per-query latency add up. Use **DMS** to replicate into Redshift, or **Glue ETL** to land everything in S3 as Parquet.
+- **Federated query with a non-pushdown connector on a huge table** — the connector pulls every row and Athena filters in memory. Pre-aggregate at source or copy first.
+- **Federated query for a single source you'll use heavily** — if you only need DynamoDB, use **PartiQL** on DynamoDB directly. If you only need RDS, just query RDS.
+
+**Exam triggers:**
+
+- *"ad-hoc SQL across multiple data sources without ETL"* → **Athena federated queries**
+- *"join S3 data with live RDS data without copying it"* → **Athena federated queries**
+- *"query a non-S3 source with Athena"* → **federated query + Lambda connector**
+- *"build a custom data source for Athena"* → **Athena Query Federation SDK**
+- *"production high-volume reporting across sources"* → **NOT federated** — replicate to a warehouse via DMS or Glue ETL
+
+**Mental model:** federated queries are **ad-hoc cross-source SQL**, not a substitute for a warehouse. Cheap and convenient for occasional use; wrong answer when the query runs every minute.
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Storing data as raw CSV/JSON in S3 and querying it with Athena daily** — high recurring scan cost. Convert to Parquet + partition. AWS Glue ETL can automate this.
+- **Athena for sub-second OLTP-style queries** — Athena has query startup overhead (seconds). For low-latency lookups use DynamoDB or RDS.
+- **Using `SELECT *` on a partitioned columnar table** — defeats the columnar benefit; reads every column. Select only the columns you need.
+- **Forgetting that scanned bytes are billed even on failed queries** — bad SQL still costs money.
+- **Using Athena when the data is constantly being updated row-by-row** — S3 isn't designed for that; the small-object problem will hit you. Use a real database.
+
+### Exam Triggers
+
+- *"query S3 with SQL, no infrastructure"* → **Athena**
+- *"ad-hoc SQL queries, infrequent, low cost when idle"* → **Athena**
+- *"query CloudTrail / VPC Flow Logs / ALB logs / S3 access logs"* → **Athena** (all S3-resident log formats)
+- *"reduce Athena cost"* → **Parquet + partition + compress**
+- *"already have Redshift, want S3 data without loading"* → **Redshift Spectrum**
+- *"discover schema of S3 data automatically"* → **Glue Crawler → Glue Data Catalog → Athena**
+- *"connect QuickSight to S3 data"* → **Athena** (or Spectrum if Redshift is already in play)
+- *"federated SQL across S3 + RDS + DynamoDB"* → **Athena federated queries**
+
+**The 80/20:** *serverless SQL on S3 + cost = bytes scanned + Parquet/partitioning fixes cost + Spectrum is the Redshift-resident version*. Remember those four pieces and most Athena questions fall out.
+
+## Amazon OpenSearch Service
+
+**Anchored in DynamoDB and RDS.** Both serve point lookups by ID well. Neither is good at **full-text search** ("find every product description containing 'waterproof hiking boots'") or **log analytics at scale** ("how many 5xx errors did our ALB return per minute over the last 7 days, broken down by URL path?").
+
+OpenSearch (the AWS-managed fork of Elasticsearch + Kibana, rebranded as OpenSearch + OpenSearch Dashboards in 2021) is the right tool for those two access patterns.
+
+### When OpenSearch, Anchored in What You Know
+
+If your data and queries look like:
+
+```
+"find me orders where the customer notes field contains 'urgent' AND order_date is in the last 7 days"
+"top 10 most-searched product names in the last hour"
+"all log lines from service X with status_code=500 in a specific time window"
+```
+
+…then a key/value store (DynamoDB) can't help — there's no key to look up — and a relational DB (RDS) can do it but slowly (full-text search via `LIKE '%urgent%'` is unindexed and brutal at scale).
+
+OpenSearch indexes documents on **every field**, builds an **inverted index** for full-text search, and adds aggregations on top. Results come back in tens of milliseconds even over billions of documents.
+
+### Key Properties
+
+- **Document store** — JSON documents, schema-flexible (with mapping types)
+- **Full-text search** — tokenisation, stemming, relevance scoring (BM25), fuzzy match
+- **Aggregations** — counts, histograms, percentiles, time-bucketed series
+- **OpenSearch Dashboards** — built-in visualisation tool (the fork of Kibana)
+- **Cluster-based** — master + data nodes + (optional) ingest nodes, scaled by node count and storage
+- **OpenSearch Serverless** — pay-per-OCU (OpenSearch Compute Unit), no cluster management
+- **Auth:** Cognito, IAM, fine-grained access control, security groups (lives in VPC)
+- **Cross-cluster replication** for multi-region
+
+### Where Does OpenSearch Actually Store the Data?
+
+A genuine source of confusion. Two clear answers:
+
+1. **Yes, OpenSearch stores the logs itself.** Each data node has **EBS volumes** holding the indexed documents.
+2. **But don't treat it as a primary database.** The production pattern is: **raw logs land in S3 (source of truth), and OpenSearch holds the indexed copy for search**. If the cluster dies, you rebuild from S3.
+
+**How it stores each document:**
+
+```
+Document: {"timestamp":"...","user":"alice","action":"login_failed","ip":"1.2.3.4"}
+       ↓
+OpenSearch stores:
+  - The raw JSON document (on disk via EBS)
+  - An inverted index alongside:
+        "login_failed" → [doc-id-1, doc-id-7, doc-id-22, ...]
+        "alice"        → [doc-id-1, doc-id-9, ...]
+        "1.2.3.4"      → [doc-id-1, doc-id-3, ...]
+  - Distributed across shards, replicated for resilience
+```
+
+Search is fast because looking up "login_failed" gives you doc IDs immediately — no scanning every document.
+
+### Three Storage Tiers (cost optimisation)
+
+OpenSearch has built-in tiering so you don't keep everything on expensive hot nodes:
+
+| Tier | Where data lives | Performance | Cost | Use for |
+| ---- | ---------------- | ----------- | ---- | ------- |
+| **Hot** | EBS on data nodes | Fast (ms) | $$$ | Recent logs queried daily |
+| **UltraWarm** | Backed by **S3** under the hood | Slower (seconds) | ~10% of hot | Older logs queried occasionally |
+| **Cold** | Also backed by S3; must "attach" indices before querying | Slowest | Cheapest | Compliance retention, rarely queried |
+
+Typical pattern: **hot for last 30 days, UltraWarm for last 90 days, cold for everything older**.
+
+### Is OpenSearch a Database?
+
+**Technically yes** — it persists data, indexes it, replicates it. But categorise it as a **search engine / analytics store**, not a traditional database:
+
+| | OpenSearch | DynamoDB / RDS (true primary DBs) |
+| - | ---------- | --------------------------------- |
+| Persistent storage | Yes | Yes |
+| ACID transactions | ❌ No | ✅ Yes |
+| Joins | ❌ Limited / not at scale | ✅ Yes (RDS) |
+| Source of truth | **No — typically not** | **Yes** |
+| Built for | Search + analytics over documents | Operational reads/writes by key/query |
+| Loses data if cluster dies | Possible — treat as rebuildable | No — durable by design |
+
+### The Canonical Architecture
+
+```
+Apps  ──→  Kinesis Firehose  ──┬──→  S3 (raw logs, cheap, durable, source of truth)
+                                │         retention: months / years for compliance
+                                │
+                                └──→  OpenSearch (indexed copy for search + dashboards)
+                                          retention: days / weeks — short, hot
+```
+
+**Why both:**
+- **S3** — effectively infinite, ~$0.023/GB/month, durable. The perfect cold archive.
+- **OpenSearch** — expensive per GB, but searches in milliseconds. Terrible as a cold archive, unbeatable for live querying.
+
+If OpenSearch fails or you blow away the cluster, **S3 still has every log**. Rebuild OpenSearch from S3 via Firehose, Logstash, or OpenSearch Ingestion.
+
+**Anti-patterns (exam wrong answers):**
+
+- *"Store 7 years of logs in OpenSearch for compliance"* — wildly expensive. Use S3 for long retention; OpenSearch for short hot retention only.
+- *"OpenSearch as our single source of truth for orders / users / payments"* — wrong shape; no ACID, no joins. Use RDS / DynamoDB; index them in OpenSearch for search.
+- *"Skip S3, ship logs straight to OpenSearch only"* — cluster failure or misconfigured index lifecycle = logs gone. Always keep S3 in the pipeline.
+
+**Exam triggers:**
+
+- *"long-term log retention for compliance"* → **S3** (paired with OpenSearch for the hot portion)
+- *"reduce OpenSearch cost for older log data"* → **UltraWarm / Cold storage tiers**
+- *"rebuild OpenSearch index from raw logs"* → **replay from S3** via Firehose / OpenSearch Ingestion
+
+### Classic Use Cases
+
+| Use case | Why OpenSearch wins |
+| -------- | ------------------- |
+| **Application logs / centralised logging** | "ELK / EFK stack" — apps ship logs to Kinesis Firehose → OpenSearch; engineers search and visualise in Dashboards |
+| **Full-text search** for an e-commerce / SaaS product | Search-as-you-type, typo tolerance, relevance ranking — way beyond `LIKE` queries |
+| **Real-time observability dashboards** | Time-series aggregations on operational data (latency P95, error rate per endpoint) |
+| **Security analytics / SIEM** | OpenSearch has a security analytics module; correlate VPC Flow Logs + CloudTrail + WAF logs |
+| **Clickstream / behavioural analytics** | Aggregate millions of events per second, query in seconds |
+
+**The canonical OpenSearch logging pipeline (memorise this — exam-favourite):**
+
+```
+App logs / CloudWatch Logs / VPC Flow Logs
+       │
+       ▼
+Kinesis Data Firehose
+       │
+       ├── (optional) Lambda transform (parse, enrich, redact PII)
+       │
+       ▼
+OpenSearch Service
+       │
+       ▼
+OpenSearch Dashboards (the Kibana fork — search + visualise)
+```
+
+If a question describes "stream logs from many sources into a searchable analytics store with rich dashboards," this is the architecture.
+
+### OpenSearch vs CloudWatch Logs Insights
+
+Both can search logs in AWS. The trade-off:
+
+| | CloudWatch Logs Insights | OpenSearch Service |
+| - | ------------------------ | ------------------ |
+| Setup | Zero — already where AWS logs go | Provision cluster, ship logs in |
+| Cost | Pay per query (GB scanned) | Cluster running cost + storage |
+| Query language | Insights query (custom) | Lucene / OpenSearch query DSL / SQL |
+| Visualisation | Basic CloudWatch dashboards | OpenSearch Dashboards (richer) |
+| Best for | Occasional searches over CloudWatch-collected logs | Heavy day-to-day log analytics, full-text search, dashboards |
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Using OpenSearch as a primary system of record** — it's a search index, not a durable source-of-truth database. Source data should live in DynamoDB / RDS / S3; OpenSearch holds an *index* of it.
+- **Using OpenSearch for transactional workloads** — no ACID transactions, no joins. Wrong tool.
+- **Building search with RDS `LIKE '%term%'`** — works for tiny datasets, falls over at scale. OpenSearch is the right answer when search relevance and speed matter.
+- **Using OpenSearch when CloudWatch Logs Insights suffices** — OpenSearch has cluster running costs even when idle; CloudWatch Logs Insights is pay-per-query.
+- **Trying to attach a security group directly to "OpenSearch Serverless"** — OpenSearch Serverless uses VPC endpoints; attach the SG to the endpoint, not the service. (Domain-mode OpenSearch *does* live in your VPC with its own ENIs and SGs.)
+
+### Exam Triggers
+
+- *"full-text search across product descriptions / documents"* → **OpenSearch**
+- *"centralised log analytics with rich querying and dashboards"* → **OpenSearch**
+- *"ELK stack / Kibana on AWS"* → **OpenSearch Service** (Dashboards is the Kibana fork)
+- *"search-as-you-type, typo tolerance, relevance ranking"* → **OpenSearch**
+- *"real-time observability dashboards beyond what CloudWatch provides"* → **OpenSearch**
+- *"ingest logs from many sources for search and analytics"* → **Kinesis Firehose → OpenSearch**
+- *"occasional log search, minimise cost"* → **CloudWatch Logs Insights** (not OpenSearch)
+- *"OpenSearch without managing a cluster"* → **OpenSearch Serverless**
+
+**The 80/20:** *managed Elasticsearch + Kibana fork; two superpowers — full-text search and log analytics with dashboards; the pipeline is Firehose → OpenSearch; it's an **index**, not a database; CloudWatch Logs Insights is the cheap alternative for infrequent log search.*
+
+## Amazon EMR
+
+**Anchored in services you know.** Athena runs interactive SQL on S3. Glue runs serverless Spark for ETL. Redshift is the warehouse. **EMR is the managed cluster running the full big-data ecosystem** — Hadoop, Spark, Hive, HBase, Presto/Trino, Flink, Pig. You get more frameworks, more control, more flexibility — at the cost of running a cluster.
+
+```
+Athena    → just SQL, on S3, interactive, serverless, no code
+Glue      → ETL pipelines, Spark, serverless, integrated with Data Catalog
+Redshift  → data warehouse, columnar storage, BI dashboards
+EMR       → run any big-data framework on a cluster you control (or serverless)
+```
+
+### Three Deployment Modes
+
+| Mode | What it is |
+| ---- | ---------- |
+| **EMR on EC2** | Classic — you size the cluster, install frameworks, pay for instances. Use **transient clusters** that spin up for a job and tear down to save cost |
+| **EMR on EKS** | Run EMR workloads on an existing Kubernetes cluster |
+| **EMR Serverless** | No cluster — pay per task/runtime. Sweet spot for Spark/Hive without ops overhead |
+
+### When EMR Is the Right Answer
+
+| Workload | Why EMR over the alternatives |
+| -------- | ----------------------------- |
+| **Petabyte-scale ETL with Spark/Hive** | Glue can do this too — pick EMR if you need version control, custom libraries, long-running jobs, or already have on-prem Spark code |
+| **Lift-and-shift Hadoop/Spark from on-prem** | EMR is the natural home — same Apache stack, just managed |
+| **Machine learning training data prep at scale** | Spark MLlib, distributed feature engineering across TB+ data |
+| **Streaming with Flink or Spark Streaming** | EMR runs these; Kinesis Data Analytics is more limited |
+| **HBase / Hudi / Iceberg / Delta Lake workloads** | EMR ships these frameworks; nothing else does as cleanly |
+| **Interactive Presto/Trino with cluster control** | Same engine as Athena but with sizing/tuning control |
+
+### When EMR Is the WRONG Answer
+
+| If you only need… | Use instead |
+| ----------------- | ----------- |
+| Interactive SQL on S3 | **Athena** (no cluster, pay per query) |
+| Managed ETL pipeline | **AWS Glue** (serverless Spark, less ops) |
+| BI dashboards on big data | **Redshift** |
+| Short-running event processing | **Lambda** (+ Kinesis if streaming) |
+| Real-time alerting on streams | **Kinesis Data Analytics** (Flink-based, managed) |
+| Search / log analytics | **OpenSearch** |
+
+### The Decision Tree
+
+```
+Need to process big data?
+├── Just SQL on S3 occasionally?            → Athena
+├── BI dashboards, frequent complex SQL?    → Redshift
+├── Simple ETL pipeline, want serverless?   → Glue
+├── Need Hadoop / Spark / Hive / HBase /
+│   Flink / Presto with cluster control?    → EMR
+└── Want EMR features but no cluster ops?   → EMR Serverless
+```
+
+### Real-World Scenarios Where EMR Wins
+
+- *"Lift-and-shift our on-prem Spark/Hadoop pipeline to AWS"* — same code, EMR runs it.
+- *"Train ML models on 50 TB of clickstream data"* — Spark MLlib on EMR.
+- *"Process Delta Lake / Hudi / Iceberg tables"* — EMR ships these; Glue is catching up but EMR is still the default.
+- *"Run a custom Hive UDF written by our data team"* — full control over the cluster + libraries.
+- *"Stream-process Kinesis events with Flink"* — EMR + Flink, or Kinesis Data Analytics if you want managed.
+
+### Common Anti-patterns (exam wrong answers)
+
+- **EMR for occasional SQL on S3** — overkill; cluster cost dominates. Use Athena.
+- **EMR when AWS Glue would do** — Glue is cheaper, simpler, serverless. Pick EMR only when you need a framework Glue doesn't have or need cluster control.
+- **EMR for short-running event processing** — Lambda or Kinesis is the right answer.
+- **EMR for BI dashboards** — Redshift is built for it.
+- **EMR cluster running 24/7 for nightly batch jobs** — use **EMR Serverless** or transient clusters that start/stop per job.
+
+### Exam Triggers
+
+- *"managed Hadoop / Spark / Hive / HBase / Flink / Presto cluster"* → **EMR**
+- *"lift and shift existing Hadoop/Spark workload to AWS"* → **EMR**
+- *"petabyte-scale ETL with Apache Spark, need cluster control"* → **EMR** (or **Glue** if you want serverless and don't need control)
+- *"train ML model on terabytes of data with Spark MLlib"* → **EMR**
+- *"Delta Lake / Hudi / Iceberg processing"* → **EMR**
+- *"Spark jobs without managing a cluster"* → **EMR Serverless** or **Glue**
+- *"transient cluster that spins up for a job and tears down after"* → **EMR** transient cluster pattern
+- *"interactive Presto with cluster sizing control"* → **EMR with Presto** (or Athena if you want serverless)
+
+**The 80/20:** *EMR is the managed home for the full Apache big-data stack (Spark, Hadoop, Hive, HBase, Flink, Presto). Pick it when you need a framework Athena/Glue/Redshift don't offer, or you're lifting on-prem Hadoop/Spark to AWS. For interactive SQL → Athena; serverless ETL → Glue; warehouse → Redshift; everything else big-data → EMR (or EMR Serverless).*
+
+## Amazon QuickSight
+
+**Anchored against Datadog** — because the instinct to call this "AWS Datadog" is wrong, and the exam exploits that confusion.
+
+QuickSight is AWS's **BI / Business Intelligence** tool. Its competitors are **Tableau, Looker, Power BI** — not Datadog. Both show data on dashboards, but they live in different worlds:
+
+| | Amazon QuickSight | Datadog |
+| - | ----------------- | ------- |
+| Category | **BI / Business Intelligence** | **Observability / APM / Monitoring** |
+| Data source | Data warehouses + databases — **Redshift, Athena, RDS, S3 (via Athena), Snowflake**, SaaS connectors | **Live operational telemetry** — metrics, traces, logs from servers/apps via agents |
+| Typical user | Analysts, finance, marketing, execs | SREs, DevOps, on-call engineers |
+| Typical question | *"Revenue by region by quarter"*, *"customer cohort retention"* | *"P99 latency on the checkout API right now"*, *"5xx error spike at 14:32"* |
+| Data freshness | Minutes-to-hours-old (warehouse refresh) | Seconds-old (live telemetry) |
+| Closest competitors | **Tableau, Looker, Power BI** | **New Relic, Dynatrace, Splunk Observability, Grafana Cloud** |
+
+### The Real AWS-Native Datadog Competitor
+
+If a question describes Datadog-shaped work — *"monitor application latency, error rates, infrastructure metrics, traces, logs in one place"* — the AWS answer is the **observability bundle**, not QuickSight:
+
+```
+Datadog (one product) ≈ CloudWatch (metrics + logs + alarms + dashboards)
+                       + CloudWatch Logs Insights (log queries)
+                       + X-Ray (distributed tracing)
+                       + OpenSearch + Dashboards (richer log analytics)
+```
+
+Datadog rolls all of those into one slick UI. AWS sells each piece separately.
+
+### QuickSight Key Properties
+
+- **Serverless** — no infrastructure to manage
+- **SPICE** — in-memory cache that accelerates dashboards (terabyte-scale, columnar). Data is ingested into SPICE on a schedule; dashboards query SPICE, not the source
+- **Direct query mode** — alternative to SPICE; runs every query live against the source (Redshift, Athena, RDS). Good for always-fresh data, slower per query
+- **QuickSight Q** — ML-powered natural-language queries (*"show me sales by region last quarter"* in plain English)
+- **Embed in apps** — Embedded Analytics SDK; build QuickSight dashboards into your own product
+- **Pricing** — per-user authors + per-reader pay-per-session
+
+### When You'd Reach for QuickSight
+
+- *"Executive sales dashboard backed by Redshift"*
+- *"Show analysts a self-service way to slice the data warehouse"*
+- *"Embed a billing dashboard into our SaaS product"*
+- *"Customer wants a Tableau-style tool, AWS-native"*
+- *"Connect natural-language queries to our data warehouse"* (QuickSight Q)
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Using QuickSight as a monitoring / observability tool** — wrong product. CloudWatch + Logs Insights + X-Ray + OpenSearch is the AWS observability stack.
+- **QuickSight on real-time streaming data with sub-second freshness** — QuickSight refreshes on schedule (SPICE) or per query (Direct Query). Real-time live ops dashboards belong in CloudWatch / OpenSearch / Grafana.
+- **Using QuickSight as the data store** — it's a visualisation layer; data lives in Redshift / Athena / RDS / S3.
+- **Picking QuickSight when the team needs trace analysis** — that's X-Ray (or a third-party APM).
+
+### Exam Triggers
+
+- *"BI dashboard on top of Redshift / Athena / RDS"* → **QuickSight**
+- *"AWS-native alternative to Tableau / Looker / Power BI"* → **QuickSight**
+- *"natural-language queries against the data warehouse"* → **QuickSight Q**
+- *"embed analytics dashboards into a SaaS product"* → **QuickSight Embedded Analytics**
+- *"in-memory cache to accelerate dashboard queries"* → **SPICE**
+- *"monitor latency / error rates / traces"* → **CloudWatch + X-Ray** (NOT QuickSight)
+- *"AWS equivalent of Datadog"* → **CloudWatch + Logs Insights + X-Ray + OpenSearch** (NOT QuickSight)
+
+**The 80/20:** *QuickSight is AWS Tableau, not AWS Datadog. It visualises data in warehouses/databases for business users; it does not monitor running systems. The Datadog-equivalent on AWS is the CloudWatch + Logs Insights + X-Ray + OpenSearch bundle.*
+
+## Big Data Ingestion Pipelines
+
+The reason exam questions on data pipelines are hard isn't the individual services — you know those — it's choosing *which combination* solves the scenario. This section ties the messaging + analytics services together into the canonical pipelines.
+
+### The Universal Pipeline Skeleton
+
+Every big-data ingestion scenario maps to this five-stage shape:
+
+```
+Source → Buffer/Transport → Process → Store → Query/Consume
+```
+
+Identify the right service at each stage and the answer falls out. The decision table at the end of this section is the cheat sheet.
+
+### Five Canonical Pipelines
+
+#### 1. Real-time Log Analytics
+
+```
+App logs / VPC Flow Logs / CloudTrail
+       ↓
+Kinesis Firehose  ──── (optional Lambda transform: parse, enrich, redact PII)
+       ↓                                  ↓
+OpenSearch Service              S3 (Parquet, partitioned)
+       ↓                                  ↓
+OpenSearch Dashboards         Athena (ad-hoc) + Glue Catalog
+```
+
+**When:** centralised logging, observability, ELK-style search.
+
+#### 2. Clickstream / Event Streaming for Real-time Reactions
+
+```
+Web/Mobile apps ──→ Kinesis Data Streams
+                          ↓                        ↓
+                  Lambda (stateless              Managed Flink (stateful:
+                  per-event reactions)            windows, joins, CEP)
+                          ↓                        ↓
+              DynamoDB (counters) + S3        OpenSearch (live dashboards)
+```
+
+**When:** real-time fraud detection, leaderboards, personalisation, abuse signals.
+
+#### 3. Operational DB → Analytics Warehouse (CDC pattern)
+
+```
+RDS / Aurora production
+       ↓
+DMS with full load + CDC (continuous change capture)
+       ↓
+S3 (raw landing zone) ─→ Glue ETL (clean, convert to Parquet)
+                              ↓
+                  Glue Data Catalog (schema)
+                              ↓
+                  ┌───────────────────────────────┐
+                  ▼                               ▼
+         Redshift COPY               Athena (ad-hoc)
+         (warehouse for BI)                ↓
+                  ↓                  Federated joins
+            QuickSight dashboards
+```
+
+**When:** "move data out of production OLTP for analytics" — classic exam scenario.
+
+#### 4. File Upload → Analytics-Ready
+
+```
+Customer uploads CSV/JSON → S3 (raw bucket)
+                                  ↓
+                          S3 Event Notification
+                                  ↓
+              ┌──────────────────┴──────────────────┐
+              ▼                                     ▼
+      Lambda (lightweight)                Glue ETL (heavyweight Spark)
+       quick validation                   convert CSV → Parquet,
+              ↓                                  partition, dedupe
+      S3 (cleaned bucket)                          ↓
+              ↓                            Glue Data Catalog
+        Glue Crawler                               ↓
+              ↓                              Athena + QuickSight
+       Glue Data Catalog
+              ↓
+     Athena + QuickSight
+```
+
+**When:** "customers / partners upload files for analysis," self-service data lake ingestion.
+
+#### 5. IoT at Massive Scale (Lambda Architecture — Real-time + Batch)
+
+```
+Millions of devices ──→ AWS IoT Core (MQTT)
+                              ↓
+                    Kinesis Data Streams
+                              ↓
+                ┌─────────────┼─────────────┐
+                ▼             ▼             ▼
+         Kinesis        Managed Flink    Lambda
+         Firehose       (windowed         (device state
+            ↓            aggregations)      → DynamoDB)
+        S3 (raw)              ↓
+            ↓           Timestream
+       Glue ETL         (time-series
+            ↓            live dashboards)
+       Athena
+       (historical)
+```
+
+**When:** IoT, telemetry at huge scale, with both live dashboards and historical querying.
+
+### Which Service at Each Stage
+
+| Stage | Need | Pick |
+| ----- | ---- | ---- |
+| **Source** | Servers / apps | SDK push to Kinesis / MSK / Firehose |
+| | IoT devices | **AWS IoT Core** |
+| | Operational DB | **DMS** (full load + CDC) |
+| | File drops | **S3 + Event Notification** |
+| **Buffer/Transport** | Just land in S3 | **Kinesis Firehose** |
+| | Replay + multiple consumers | **Kinesis Data Streams** or **MSK** |
+| | Kafka-compatible / existing Kafka workload | **MSK** |
+| **Process** | Per-event, stateless | **Lambda** |
+| | Stateful, windowed, joins | **Managed Apache Flink** |
+| | Heavy ETL, Spark | **Glue ETL** (serverless) or **EMR** (more control) |
+| | No-code analyst prep | **Glue DataBrew** |
+| **Store** | Data lake | **S3 + Glue Data Catalog** |
+| | Warehouse for BI | **Redshift** |
+| | Search / log analytics | **OpenSearch** |
+| | Time-series | **Timestream** |
+| | Operational lookups | **DynamoDB / RDS** |
+| **Query/Consume** | Ad-hoc SQL on S3 | **Athena** |
+| | BI dashboards | **QuickSight** (or third-party via Redshift) |
+| | Search UI | **OpenSearch Dashboards** |
+| | Programmatic | SDK to the underlying store |
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Picking Kinesis Data Streams when Firehose would do** — if all you need is "buffer events and write to S3/Redshift/OpenSearch with no code," Firehose is the answer. Data Streams is for when you need replay + multiple consumers.
+- **Lambda for stateful windowed aggregations** — use Flink.
+- **Writing raw CSV/JSON to S3 forever** — Athena scan costs balloon. Convert to Parquet + partition via Glue ETL.
+- **One-million-tiny-files pattern from per-event PUTs to S3** — buffer with Firehose first (1–128 MB output files).
+- **Loading directly into Redshift from production OLTP via JDBC** — kills the OLTP DB. Use **DMS + CDC** through S3.
+- **DataSync for a database** — DataSync is for files (S3/EFS/FSx). DMS is for databases.
+- **Picking Athena for queries that run every minute on the same data** — load into Redshift instead; cost flips at volume.
+
+### Exam Triggers
+
+- *"centralised log analytics with dashboards"* → **Firehose → OpenSearch + S3**
+- *"clickstream into a data lake"* → **Kinesis Data Streams → Firehose → S3**
+- *"migrate production DB to a warehouse with minimal downtime"* → **DMS (full load + CDC) → S3 → Glue → Redshift**
+- *"customer uploads CSV, want it queryable with SQL"* → **S3 event → Glue ETL → Parquet → Athena**
+- *"IoT telemetry at millions of devices, both live and historical"* → **IoT Core → Kinesis → Firehose (S3) + Flink (Timestream)**
+- *"convert raw S3 data to columnar for cheap Athena queries"* → **Glue ETL → Parquet + partitioning**
+- *"replay an event stream from yesterday"* → **Kinesis Data Streams / MSK** (NOT Firehose, NOT SNS)
+- *"fraud detection in real time on a stream"* → **Kinesis → Flink** (or Lambda for stateless rules)
+
+**The 80/20 — the universal skeleton:**
+
+```
+Source → Buffer/Transport → Process → Store → Query/Consume
+   ?            ?              ?         ?         ?
+```
+
+Five questions, one per stage. Identify each from the exam scenario and the answer falls out. The three most common pipelines: **logs → Firehose → OpenSearch**, **events → Kinesis → Lambda/Flink → S3 + DynamoDB**, and **operational DB → DMS → S3 → Glue → Redshift**.
+
+## AWS AI/ML Services
+
+AWS splits AI/ML into two layers:
+
+1. **Pre-trained services** — call an API, get an answer. You don't train anything. Each service targets one input type (images, text, speech, video, documents).
+2. **Build-your-own platform** — **SageMaker** for the full ML lifecycle when no pre-trained service fits.
+
+The exam shortcut: **pick the pre-built service that matches your input type before reaching for SageMaker.**
+
+### The Family at a Glance
+
+| Service | Input | What it does | Anchor |
+| ------- | ----- | ------------ | ------ |
+| **Rekognition** | Images & video | Computer vision — detect objects, faces, text, content moderation, PPE | "AWS for image/video AI" |
+| **Comprehend** | Text | NLP — sentiment, entities, key phrases, language detection, PII detection | "Rekognition for text" |
+| **Translate** | Text | Language translation | "Google Translate API" |
+| **Transcribe** | Audio | Speech-to-text | "audio → text" |
+| **Polly** | Text | Text-to-speech (lifelike voices) | "text → audio" |
+| **Textract** | Documents (PDFs, scans) | Extract text **+ structure** from forms, tables, receipts | "OCR with layout" |
+| **Lex** | Text/voice | Build chatbots (powers Alexa) | "build a chatbot" |
+| **Personalize** | User events | Recommendation engine | "Netflix-style recommendations" |
+| **Forecast** | Time-series data | Demand / metric forecasting | "predict future numbers" |
+| **Bedrock** | Anything (LLMs) | Foundation models / GenAI — call Claude, Llama, Titan via one API | "AWS gateway to LLMs" |
+| **SageMaker** | Anything | Build/train/deploy **your own** ML models — end-to-end platform | "DIY ML" |
+
+### Amazon Rekognition (the headliner for computer vision)
+
+**Capabilities:**
+
+| Capability | What you get back |
+| ---------- | ----------------- |
+| **Object & scene detection** | "cat (98%)", "beach (94%)" with bounding boxes |
+| **Facial analysis** | Age range, emotion, gender, glasses/beard, smile, eyes-open |
+| **Face comparison** | Similarity score between two faces |
+| **Face search** in a face collection | "Does this face match anyone in our DB of 100k stored faces?" |
+| **Celebrity recognition** | Identify well-known people |
+| **Content moderation** | Flag explicit / suggestive / violent imagery |
+| **Text detection** | OCR-lite — signs, license plates, screenshots (use **Textract** for documents) |
+| **PPE detection** | Helmets, masks, gloves — safety/compliance use |
+| **Custom Labels** | Train your own image classifier with ~10–100 images per class |
+| **Video analysis** | Stored video (S3) or live video (Kinesis Video Streams) — async output to SNS |
+
+**Classic Rekognition pipelines:**
+
+```
+User uploads photo → S3 → S3 event → Lambda → Rekognition.DetectLabels()
+                                              → store JSON tags in DynamoDB
+                                              → moderation flag? → SNS alert
+```
+
+- **Content moderation** — S3 upload → Lambda → `DetectModerationLabels` → block or quarantine
+- **User photo tagging** — auto-tag uploaded photos for search
+- **Identity verification (KYC)** — selfie + ID photo → `CompareFaces` → match score
+- **Smart camera** — Kinesis Video Streams → Rekognition Video → real-time person detection
+- **Safety compliance** — factory camera → `DetectProtectiveEquipment` → flag missing helmet
+
+### Amazon Transcribe (the headliner for speech-to-text)
+
+**Anchored against Rekognition.** Rekognition is "what's in this image/video?"; Transcribe is "what was said in this audio/video?" — both pre-trained APIs, you call them and get JSON back.
+
+**Two execution modes:**
+
+| Mode | How it works | Use case |
+| ---- | ------------ | -------- |
+| **Batch** | Audio file in S3 → start a job → output transcript JSON to S3 | Podcasts, recorded meetings, call recordings, archived video |
+| **Streaming** | Open a websocket / HTTP/2 stream → push audio chunks → receive partial transcripts in real time | Live captions, voice assistants, real-time call monitoring |
+
+**Key features (exam-relevant):**
+
+| Feature | What it does |
+| ------- | ------------ |
+| **Speaker diarization** | Identifies who said what — `"Speaker 1: ...", "Speaker 2: ..."`. Up to 10 speakers |
+| **Channel identification** | For stereo audio (call recordings), left = caller, right = agent — separate transcripts per channel |
+| **Custom vocabulary** | Teach Transcribe your brand names, product names, jargon — *"Magnetar"* instead of *"magnet are"* |
+| **Custom language models** | Train on domain-specific corpora for higher accuracy on niche vocabulary |
+| **PII redaction** | Built-in: redact SSN, credit-card numbers, names, addresses from transcripts |
+| **Vocabulary filtering** | Block profanity or sensitive terms |
+| **Subtitle output** | Generate **WebVTT** or **SubRip (SRT)** subtitle files directly |
+| **Automatic language identification** | Detect the spoken language when you don't know in advance |
+| **Call Analytics** | Special mode for call centers — sentiment, talk time, interruptions, issue categorisation |
+
+**Specialised variants:**
+
+- **Transcribe Medical** — trained on medical terminology (clinical notes, doctor-patient dialogue). HIPAA-eligible.
+- **Transcribe Call Analytics** — call-center-specific output (sentiment per channel, talk-time ratio, non-talk time)
+
+**Common pipelines:**
+
+```
+Call center recording → S3 → Lambda → Transcribe (Call Analytics + PII redaction)
+                                          → Comprehend (sentiment / topics)
+                                          → QuickSight (dashboards)
+
+Live meeting audio → Transcribe Streaming → real-time captions in the UI
+
+Video uploaded → S3 → Transcribe → SRT/WebVTT subtitles → CloudFront delivers video + subs
+```
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Polly for transcription** — Polly is text → audio (the opposite direction). Transcribe is audio → text.
+- **Using a generic transcriber for medical dictation** — accuracy is poor on clinical vocab; use **Transcribe Medical**.
+- **Trying to find sentiment with Transcribe alone** — Transcribe outputs text. Pair with **Comprehend** for sentiment (or use **Transcribe Call Analytics** which has sentiment built in).
+- **Building real-time captions with batch Transcribe** — batch is async, latency in minutes. Use **Transcribe Streaming** for live captions.
+- **Hoping Transcribe will magically know brand/product names** — use **Custom Vocabulary** for known proper nouns.
+
+**Exam triggers:**
+
+- *"transcribe a podcast / meeting / call recording"* → **Transcribe** (batch)
+- *"real-time captions for a live event / stream"* → **Transcribe Streaming**
+- *"identify which speaker said what in a recording"* → **Transcribe** with **speaker diarization**
+- *"call-center recording with caller on left channel, agent on right"* → **Transcribe** with **channel identification** (or **Call Analytics**)
+- *"redact credit-card numbers / PII from transcripts"* → **Transcribe PII redaction**
+- *"generate subtitles for a video library"* → **Transcribe** with WebVTT/SRT output
+- *"transcribe a doctor's dictation accurately"* → **Transcribe Medical**
+- *"sentiment + talk-time analytics from call recordings"* → **Transcribe Call Analytics** (+ optionally Comprehend)
+- *"my transcripts misspell our product name"* → **Custom Vocabulary**
+
+### Amazon Polly (the headliner for text-to-speech)
+
+**Anchored against Transcribe.** Transcribe is audio → text (recognition). **Polly is text → audio** (synthesis). Same pre-trained API pattern; opposite direction. They often pair for voice apps.
+
+```
+"Hello, Bobby. Your delivery has arrived." → Polly → audio bytes (MP3/OGG/PCM)
+```
+
+**Voice engine tiers (matters for cost + quality):**
+
+| Engine | Quality | Cost | Use for |
+| ------ | ------- | ---- | ------- |
+| **Standard** | Concatenative; "fine" — robotic in places | Cheapest | Quick prototypes, IVR menus where naturalness isn't critical |
+| **Neural (NTTS)** | Neural-network synthesis — much more natural | Higher | Production apps, customer-facing voice |
+| **Long-form** | Tuned for long content (articles, books) — natural pacing over paragraphs | Higher | Article narration, audiobooks |
+| **Generative** | Newest tier; most natural, conversational, emotionally expressive | Highest | Premium experiences, lifelike chatbots |
+
+**Key features:**
+
+| Feature | What it does |
+| ------- | ------------ |
+| **30+ languages, many voices per language** | Male/female, regional accents, age ranges |
+| **SSML** (Speech Synthesis Markup Language) | XML markup to control pronunciation, emphasis, pauses, whispering, breathing, speed |
+| **Pronunciation lexicons** | Define custom pronunciation for industry terms / brand names / proper nouns |
+| **Speech marks** | Word/sentence/viseme timing metadata — for **lip-syncing**, karaoke, subtitle alignment |
+| **Brand Voice** | Custom voice trained on a brand's recordings (enterprise; long lead time) |
+| **Real-time streaming** | Synthesise + stream audio chunks as produced (low-latency voice) |
+| **Save to S3** | Async synthesis for long inputs — output stored as an S3 object |
+
+**Canonical pipelines:**
+
+```
+Chatbot voice:     User text/voice → Lex (or Bedrock) → response text → Polly → audio reply
+
+Article narration: Article text → Polly (Long-form voice) → S3 → CloudFront → mobile app
+                                                            (synthesise once, replay forever)
+
+IVR / call center: Caller → Amazon Connect → Lex understands intent
+                                           → Polly speaks the response
+
+Accessibility:     Page text → Polly streaming → audio playback for visually impaired users
+```
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Polly for transcription** — Polly does TTS, not STT. **Transcribe** is the right service for audio → text.
+- **Standard voices for production customer-facing audio** — sounds robotic. Use **Neural** (or **Generative** for premium).
+- **Synthesising the same content on every request** — for static text (articles, menus, FAQ), synthesise once and cache in **S3** behind CloudFront. Don't pay per request when output never changes.
+- **Trying to fix awkward pronunciation by misspelling the input text** — use **SSML** (`<phoneme>` tag) or a **pronunciation lexicon** for proper nouns and brand names.
+- **Using Polly for on-demand voice cloning** — that's **Brand Voice** (enterprise, long lead time); not a self-service feature.
+
+**Exam triggers:**
+
+- *"text-to-speech with natural-sounding voices"* → **Polly**
+- *"convert articles / news / books into audio"* → **Polly** (Long-form voice)
+- *"voice responses for a chatbot"* → **Lex + Polly** (or **Bedrock + Polly**)
+- *"build an IVR / interactive voice response system"* → **Connect + Lex + Polly**
+- *"screen reader / accessibility audio for a website"* → **Polly**
+- *"control pronunciation, emphasis, pauses programmatically"* → **Polly with SSML**
+- *"fix the way Polly says our brand name"* → **pronunciation lexicon** (or SSML `<phoneme>`)
+- *"lip-sync animated character with Polly's audio"* → **Polly speech marks** (visemes)
+- *"low-latency conversational voice for an AI assistant"* → **Polly Neural / Generative** with real-time streaming
+- *"transcribe audio"* → **Transcribe** (NOT Polly — opposite direction)
+
+### Amazon Translate (the headliner for machine translation)
+
+**Anchored against Polly / Transcribe.** Another single-purpose pre-trained API: Polly synthesises speech, Transcribe recognises speech, **Translate converts text between languages**. Text in language A → text in language B.
+
+```
+"The package will arrive tomorrow" (en)
+            ↓ Translate
+"Le colis arrivera demain" (fr)
+"El paquete llegará mañana" (es)
+"パッケージは明日届きます" (ja)
+```
+
+- **75+ languages** supported
+- **Pay per character** translated
+- **Auto language detection** if source unknown (uses Comprehend under the hood)
+- **Real-time** API + **batch / async** for large S3 jobs
+- **Document translation** preserves formatting for PDF / DOCX / HTML
+
+**Key features:**
+
+| Feature | What it does |
+| ------- | ------------ |
+| **Custom Terminology** | Define exact translations for terms — *"Magnetar always translates as Magnetar"*, not "magnet are". Brand names, product names, jargon |
+| **Active Custom Translation (ACT)** | Provide parallel data (your own translation pairs) to influence the model's style/word choice for your domain |
+| **Profanity masking** | Mask profanity in the output |
+| **Formality setting** | For pairs that distinguish (German `du`/`Sie`, Spanish `tú`/`usted`) — choose formal or informal |
+| **Document translation** | Submit a PDF/DOCX/HTML, get translated output with formatting preserved |
+| **Real-time API + Batch jobs** | Sync call for chat; async batch for thousands of S3 documents |
+
+**Canonical pipelines:**
+
+```
+Multilingual customer support:
+  Customer writes in any language → Translate to agent's language
+                                  → Agent replies → Translate to customer's language
+
+User-generated content:
+  User posts in their language → store original + Translate to viewer's language on read
+
+Website localisation (batch):
+  Source content in S3 → Translate (batch) → translated content in S3 per locale
+
+Mixed-language analytics:
+  Unknown-language input → Comprehend (detect language)
+                         → Translate to English
+                         → Comprehend (sentiment / entities)
+                         → store
+
+Document translation:
+  Contract.pdf → Translate document API → Contract_fr.pdf (formatting intact)
+```
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Translate for content *generation*** — Translate converts between languages, it doesn't write new content. Use **Bedrock** for generation.
+- **Not using Custom Terminology when you have brand names / proper nouns** — outputs get weird. Define a glossary once.
+- **Calling Translate without detecting source language first** when the source is unknown — pair with **Comprehend** for language detection.
+- **Using Translate on code or structured data** — it's for natural language. Translating JSON keys or code identifiers breaks things.
+- **Confusing Translate with Comprehend** — Comprehend *understands* text (sentiment, entities, language detection). Translate *converts* text between languages.
+
+**Exam triggers:**
+
+- *"translate text between languages, real-time"* → **Translate**
+- *"localise a website / mobile app into multiple languages"* → **Translate** (batch jobs from S3)
+- *"customer support across languages"* → **Translate** (often paired with Lex/Connect)
+- *"translate PDF / DOCX preserving formatting"* → **Translate document translation**
+- *"brand names must translate consistently"* → **Translate Custom Terminology**
+- *"adapt translation style to our domain with our own parallel data"* → **Active Custom Translation (ACT)**
+- *"formal vs informal tone in target language"* → **Translate formality setting**
+- *"detect language then translate"* → **Comprehend + Translate**
+- *"translate user-generated reviews into the viewer's language"* → **Translate**
+- *"redact / mask profanity in translated output"* → **Translate profanity masking**
+
+### Amazon Lex and Amazon Connect (chatbot brain + contact center)
+
+Often paired but solving different parts of the problem. **Lex is the NLU engine** (same one that powers Alexa). **Connect is the cloud call center.** They're not alternatives — Connect *calls* Lex for the natural-language understanding inside an IVR.
+
+#### Amazon Lex — the chatbot brain
+
+Build conversational interfaces (voice **or** text). You define:
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Intent** | What the user wants — "BookHotel", "CheckBalance", "TrackOrder" |
+| **Utterances** | Example phrases for each intent — "I want to book a room", "Reserve a hotel" |
+| **Slots** | Parameters the intent needs — `date`, `city`, `room_type` |
+| **Prompts** | What Lex asks to fill missing slots — *"Which city?"* |
+| **Fulfillment** | A **Lambda** function that executes the intent once slots are filled |
+
+```
+User: "Book me a hotel in Paris for Friday"
+Lex picks: Intent=BookHotel, slots={city:"Paris", date:"Friday"}
+            ↓
+        Lambda fulfillment → reservation system → confirmation
+            ↓
+Lex/Polly: "Your hotel in Paris is booked for Friday, confirmation ABC123."
+```
+
+- **Multi-language**, voice **or** text — same definition works for both
+- **Lex v2** is current (v1 is legacy)
+- Integrates with **Lambda**, **Connect**, mobile/web SDKs
+
+#### Amazon Connect — the cloud contact center
+
+Pay-per-use cloud call center. Replaces traditional on-prem PBX / contact-center systems. No per-seat licensing, no hardware.
+
+| Capability | What it does |
+| ---------- | ------------ |
+| **Phone numbers** (toll-free, local) | Inbound and outbound calls |
+| **Contact flows** | Visual designer for routing, IVR, branching logic |
+| **Queues + routing** | Skills-based routing, priority queues |
+| **Agent workspace** | Browser-based UI — no software install for agents |
+| **Call recording** | Stored in your S3 |
+| **Real-time + historical metrics** | Dashboards for ops |
+| **Outbound campaigns** | Predictive / preview / progressive dialers |
+
+**Contact Lens for Amazon Connect** — the built-in analytics layer:
+
+- Real-time and post-call **sentiment analysis**
+- **Transcription** with PII redaction
+- **Issue / category detection** ("customer mentioned cancellation 3 times")
+- **Talk-time ratios**, silence detection
+- **Agent screen alerts** when sentiment turns negative
+
+#### The Canonical Pipeline (exam-favourite architecture)
+
+```
+Caller dials phone number
+       ↓
+Amazon Connect (cloud contact center)
+       ↓
+Contact Flow (visual routing logic)
+       ↓
+Amazon Lex (NLU — "what does the caller want?")
+       ↓
+AWS Lambda fulfillment (look up account in DynamoDB / RDS, place order, etc.)
+       ↓
+Amazon Polly (synthesise the spoken response)
+       ↓
+Caller hears the answer
+       ↓ if escalation needed
+Route to human agent → Connect agent workspace shows full context
+       ↓ after call
+Contact Lens (sentiment, issues, transcription)
+       ↓
+S3 (recording) + Comprehend / QuickSight (analytics dashboards)
+```
+
+This stack — **Connect + Lex + Polly + Lambda + Contact Lens** — is the AWS answer to "modernise a call center" and appears constantly in exam questions.
+
+#### Where Each Service Fits
+
+| Layer | Service |
+| ----- | ------- |
+| **Phone system / call routing / agents** | **Connect** |
+| **Understand what the caller wants** (NLU) | **Lex** |
+| **Speak responses naturally** | **Polly** |
+| **Execute business logic** (lookup, transact) | **Lambda** + databases |
+| **Transcribe + analyse calls** | **Contact Lens** (or **Transcribe Call Analytics** outside Connect) |
+| **Free-form generative conversation** (LLM-style) | **Bedrock** (Lex is intent/slot-based) |
+
+#### Common Anti-patterns (exam wrong answers)
+
+- **Lex for free-form open-ended conversation** — Lex is built around intents + slots. For true natural conversational AI, **Bedrock + Claude/Llama** is the right answer.
+- **Building a traditional rigid menu IVR ("press 1 for sales")** when Lex could understand natural language — Lex elevates IVR from menus to "tell me what you need".
+- **Connect for non-phone scenarios** — Connect is contact-center / telephony. For internal video meetings → **Chime SDK**. For chat-only support → **Lex + a web widget**, not Connect.
+- **Skipping Contact Lens** when the question mentions sentiment / analytics / transcription inside a call center — Contact Lens is the in-Connect answer.
+- **Picking Transcribe alone** when the question is about a *call center* — inside Connect, **Contact Lens** is the integrated path.
+- **Confusing Lex with Polly** — Lex understands input; Polly speaks output. They pair, not interchange.
+
+#### Exam Triggers
+
+- *"build a chatbot"* → **Lex**
+- *"voice chatbot / voice assistant"* → **Lex + Polly**
+- *"natural-language chatbot with intents and slots"* → **Lex**
+- *"cloud contact center / call center on AWS"* → **Connect**
+- *"replace on-prem PBX / call center"* → **Connect**
+- *"intelligent IVR that understands natural language"* → **Connect + Lex + Polly**
+- *"call center with agent assistance and screen pops"* → **Connect** with Lambda integration
+- *"real-time call sentiment / agent alerts"* → **Contact Lens for Amazon Connect**
+- *"transcribe + analyse customer calls inside the call center"* → **Contact Lens**
+- *"store call recordings"* → **Connect → S3**
+- *"chatbot that holds free-form conversation, no rigid intents"* → **Bedrock** (NOT Lex)
+- *"Alexa-like skill / the engine that powers Alexa"* → **Lex** (same NLU engine)
+- *"chatbot for a website with text + voice"* → **Lex** (web/mobile SDKs)
+
+**The 80/20:** *Lex = chatbot brain (intents + slots + NLU; powers Alexa). Connect = cloud call center (phone numbers, routing, agents). They pair: Connect handles the call, Lex understands the caller, Polly speaks back, Lambda executes business logic, Contact Lens analyses sentiment + transcribes. For free-form conversational AI use Bedrock instead of Lex.*
+
+### Amazon Bedrock (the headliner for generative AI / foundation models)
+
+**Anchored against Lex.** Lex is intent/slot-based — rigid conversation flows you design in advance. **Bedrock is the opposite end** — call a foundation model (LLM) and get free-form generation, summarisation, Q&A, or chat. One API across many models from Anthropic, Meta, Mistral, AI21, Cohere, Stability AI, and AWS Titan.
+
+```
+You: "Summarise this 50-page contract in 5 bullet points"
+   ↓
+Bedrock (InvokeModel) — pick the model (Claude / Llama / Titan / etc.)
+   ↓
+LLM response — bullets generated on the fly, no intents, no slots
+```
+
+**Why Bedrock matters on the exam:**
+
+- **Fully managed**, no infrastructure — call an API, get a response
+- **Multi-model marketplace**: Anthropic Claude, Meta Llama, Mistral, Cohere Command, AI21 Jurassic, Stability Diffusion (images), AWS Titan
+- **Serverless inference** — no endpoint to provision (unlike SageMaker)
+- **Data stays in your account** — Bedrock doesn't train on your prompts
+- **VPC endpoints** — keep traffic off the internet
+
+**Key Bedrock features (each is a likely exam trigger):**
+
+| Feature | What it does |
+| ------- | ------------ |
+| **InvokeModel / Converse APIs** | Call any supported foundation model |
+| **Knowledge Bases** | **RAG (Retrieval-Augmented Generation)** — point Bedrock at your S3 docs, vector store (OpenSearch / Aurora pgvector / Pinecone), and the model answers using *your* data |
+| **Agents** | LLM that can call APIs / Lambda functions to take actions, not just generate text |
+| **Guardrails** | Policy layer — block sensitive topics, redact PII, enforce safety rules |
+| **Prompt management + flows** | Versioned prompts, reusable prompt templates, visual prompt-chaining |
+| **Model evaluation** | Compare models side-by-side on your task |
+| **Provisioned Throughput** | Reserved capacity for predictable workloads at lower per-token cost |
+| **Custom Models** | Fine-tune a foundation model on your data (continued pre-training or fine-tuning) |
+
+**Canonical Bedrock pipelines:**
+
+```
+Document Q&A (RAG):
+  S3 (your PDFs) → Knowledge Base (vector embeddings) → Bedrock model → answer with citations
+
+Chatbot with actions:
+  User → Bedrock Agent → calls Lambda → updates DynamoDB → returns confirmation
+
+Content generation:
+  Lambda → Bedrock InvokeModel → generated copy / summaries / translations → S3
+
+Image generation:
+  API call → Bedrock (Stable Diffusion / Titan Image) → image → S3 → CloudFront
+```
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Lex for free-form conversational AI** — Lex is rigid intents/slots. Use **Bedrock** for natural chat.
+- **SageMaker JumpStart when Bedrock would do** — Bedrock is fully managed, no endpoints. JumpStart is for when you need to host the model yourself or fine-tune deeply.
+- **Asking Bedrock to "search our docs" without Knowledge Bases** — without RAG, the model has no access to your private data. Use **Bedrock Knowledge Bases**.
+- **Skipping Guardrails for customer-facing GenAI** — PII leaks, off-topic responses, jailbreaks. Bedrock Guardrails block them centrally.
+- **Provisioning a SageMaker endpoint for a foundation model when Bedrock supports it** — Bedrock is cheaper and managed; reach for SageMaker JumpStart only for models Bedrock doesn't host.
+
+**Exam triggers:**
+
+- *"call a foundation model (Claude / Llama / Titan / Stable Diffusion) via one API"* → **Bedrock**
+- *"build a chatbot with free-form conversation, no rigid intents"* → **Bedrock** (NOT Lex)
+- *"summarise / generate / translate text with an LLM"* → **Bedrock**
+- *"generate images from text prompts"* → **Bedrock** (Stable Diffusion / Titan Image)
+- *"build a Q&A bot over our private documents in S3"* → **Bedrock Knowledge Bases** (RAG)
+- *"LLM that can take actions / call APIs"* → **Bedrock Agents**
+- *"block PII / off-topic / unsafe responses in a GenAI app"* → **Bedrock Guardrails**
+- *"fine-tune a foundation model on our domain data"* → **Bedrock Custom Models**
+- *"reserved capacity for predictable LLM workloads"* → **Bedrock Provisioned Throughput**
+- *"compare multiple foundation models on our task"* → **Bedrock Model Evaluation**
+
+**The 80/20:** *Bedrock = managed API to foundation models (Claude/Llama/Titan/Stable Diffusion etc.). Five named features: **Knowledge Bases** (RAG over your data), **Agents** (LLM that takes actions), **Guardrails** (safety/PII), **Custom Models** (fine-tuning), **Provisioned Throughput** (reserved capacity). For free-form GenAI use Bedrock; for rigid intents/slots use Lex; for self-hosting a model use SageMaker JumpStart.*
+
+### Amazon Comprehend (the headliner for general NLP)
+
+**Anchored against Comprehend Medical.** Same API pattern, but tuned for **general text** — customer reviews, social media, support tickets, emails — not clinical content. Comprehend Medical is anchored against *this* service; here's the parent.
+
+**What it extracts:**
+
+| Capability | Output |
+| ---------- | ------ |
+| **Sentiment** | Positive / negative / neutral / mixed + confidence scores |
+| **Targeted Sentiment** | Sentiment toward a *specific entity* in a paragraph |
+| **Entity recognition** | People, places, organisations, dates, quantities, commercial items |
+| **Key phrases** | The noun phrases that matter in the text |
+| **Language detection** | 100+ languages with confidence |
+| **Syntax** | Parts of speech, tokenisation |
+| **Topic modelling** | Discover themes across a corpus of documents |
+| **PII detection** | Identify + redact names, addresses, SSN, credit cards, etc. |
+| **Events detection** | Find structured events (e.g. mergers, IPOs from financial text) |
+
+**Customisation:**
+- **Comprehend Custom Classification** — train a text classifier on your labelled data (support ticket → category)
+- **Comprehend Custom Entity Recognition** — recognise your domain entities (product SKUs, internal codenames)
+
+**Canonical pipelines:**
+
+```
+Customer reviews  → Comprehend (sentiment + entities) → DynamoDB / Redshift → QuickSight
+Support tickets   → Comprehend Custom Classification → route to the right team
+User uploads      → Comprehend PII detection → redact before storing in S3
+Multilingual text → Comprehend (language detect) → Translate → store / process
+```
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Comprehend on clinical text** → use **Comprehend Medical** (knows drugs, conditions, ICD-10/RxNorm/SNOMED)
+- **Building a sentiment classifier from scratch in SageMaker** when Comprehend solves it → use the pre-trained service
+- **Comprehend for translation** → Comprehend *detects* language; **Translate** converts it
+- **Comprehend for full-text search** → use **OpenSearch** (inverted index) or **Kendra** (Q&A)
+
+**Exam triggers:**
+
+- *"sentiment of customer reviews / social media"* → **Comprehend**
+- *"detect language of incoming text"* → **Comprehend**
+- *"extract entities (names, places, organisations) from text"* → **Comprehend**
+- *"find key phrases / topics across a document corpus"* → **Comprehend** (topic modelling)
+- *"detect and redact PII from text before storing"* → **Comprehend PII detection**
+- *"train a custom text classifier on our own labels"* → **Comprehend Custom Classification**
+- *"recognise our domain-specific entities (product names, codenames)"* → **Comprehend Custom Entity Recognition**
+- *"sentiment toward a specific product mentioned in a paragraph"* → **Targeted Sentiment**
+- *"detect events like mergers/IPOs in financial text"* → **Comprehend Events detection**
+- *"clinical text"* → **Comprehend Medical** (NOT Comprehend)
+
+### Amazon Comprehend Medical (HIPAA-eligible clinical NLP)
+
+**Anchored against regular Comprehend.** Same API pattern, but the model understands **medical vocabulary** and links entities to **standard medical ontologies** (ICD-10, RxNorm, SNOMED). Regular Comprehend on a clinical note won't recognise "metoprolol" as a drug or "T2DM" as type-2 diabetes — Comprehend Medical does.
+
+**What it extracts:**
+
+| Category | Examples |
+| -------- | -------- |
+| **Medical conditions** | "diabetes", "hypertension", "T2DM" |
+| **Medications** | Drug name + dosage + frequency + route ("metoprolol 50mg twice daily orally") |
+| **Anatomy** | Body parts, systems ("left ventricle", "cervical spine") |
+| **Tests, treatments, procedures** | "MRI", "appendectomy", "blood glucose test" |
+| **Time expressions** | When things happened ("admitted on 2026-05-10", "post-op day 3") |
+| **Protected Health Information (PHI)** | Names, ages, addresses, IDs, dates — for **de-identification** |
+
+**Ontology linking — the differentiator:**
+
+Comprehend Medical doesn't just extract — it **links to standard codes**:
+
+| Linker | Codes returned | What for |
+| ------ | -------------- | -------- |
+| **ICD-10-CM** | International Classification of Diseases | Billing and diagnoses |
+| **RxNorm** | Standard drug identifiers | Medication reconciliation |
+| **SNOMED CT** | Comprehensive clinical terminology | EHR interoperability |
+
+Extracting "diabetes" returns `E11.9` (ICD-10); "metoprolol" returns the RxNorm code linking to every system using it.
+
+**Canonical pipelines:**
+
+```
+Spoken doctor dictation:
+  Audio → Transcribe Medical → text → Comprehend Medical → structured EHR fields
+                                                          → ICD-10 / RxNorm codes
+
+Scanned clinical document:
+  PDF → Textract → text → Comprehend Medical → structured fields + ontology codes
+
+De-identification for research:
+  Clinical notes → Comprehend Medical → detect PHI → redact → S3 (research-safe corpus)
+
+Clinical trial matching:
+  Patient records → Comprehend Medical → conditions + medications
+                                       → match against trial inclusion criteria
+```
+
+**HIPAA + compliance:**
+
+- **HIPAA-eligible** — covered under AWS's BAA (Business Associate Addendum)
+- Data isn't used to train AWS models
+- Standard AWS encryption (in transit + at rest with KMS)
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Using regular Comprehend on clinical text** — won't recognise medical entities or link to ontologies. Use **Comprehend Medical**.
+- **Using Comprehend Medical for general text** — overkill, tuned for clinical vocab. Use regular **Comprehend** for sentiment / entities in customer reviews etc.
+- **Using Textract alone for clinical documents** — Textract extracts text + form structure; it doesn't understand medical meaning. Pipeline: **Textract → Comprehend Medical**.
+- **Forgetting Transcribe Medical for spoken input** — for dictated notes the pipeline is **Transcribe Medical → Comprehend Medical**, not generic Transcribe.
+- **Storing PHI in plaintext after extraction** — use Comprehend Medical's PHI detection to **de-identify** before research storage.
+
+**Exam triggers:**
+
+- *"extract medical entities from clinical notes / EHR / discharge summaries"* → **Comprehend Medical**
+- *"HIPAA-compliant NLP"* → **Comprehend Medical**
+- *"de-identify / redact PHI in medical text"* → **Comprehend Medical** (PHI detection)
+- *"link medications to RxNorm"* → **Comprehend Medical**
+- *"link conditions to ICD-10 codes for billing"* → **Comprehend Medical**
+- *"link to SNOMED CT for EHR interoperability"* → **Comprehend Medical**
+- *"transcribe a doctor's dictation and extract structured data"* → **Transcribe Medical → Comprehend Medical**
+- *"scanned medical document → structured medical fields"* → **Textract → Comprehend Medical**
+- *"clinical trial patient matching"* → **Comprehend Medical**
+- *"medical coding automation"* → **Comprehend Medical** (ICD-10 linking)
+
+**The 80/20:** *Comprehend Medical = HIPAA-eligible NLP for clinical text. Extracts conditions, medications, anatomy, tests, PHI — and links to ICD-10, RxNorm, SNOMED. Pairs: **Transcribe Medical → Comprehend Medical** (dictation pipeline), **Textract → Comprehend Medical** (scanned docs). Regular Comprehend won't recognise medical vocabulary; Comprehend Medical is overkill for non-clinical text.*
+
+### Amazon Kendra
+
+Enterprise search powered by ML. Natural-language search across documents (PDFs, Word, Confluence, SharePoint, Salesforce, S3, ServiceNow…). Different from **OpenSearch** which is for log analytics + Lucene queries — **Kendra is for "ask a question, get a precise answer"** from enterprise content.
+
+**Exam triggers:**
+- *"natural-language search across internal documents / knowledge base"* → **Kendra**
+- *"build an enterprise search for SharePoint / Confluence / S3 content"* → **Kendra** (pre-built connectors)
+- *"return a precise answer to an employee's natural-language question"* → **Kendra**
+- *"chatbot answering questions from internal docs"* → **Kendra** (often paired with Lex or Bedrock)
+- *"FAQ / customer self-service"* → **Kendra**
+- *"full-text search on logs / dashboards"* → **OpenSearch** (NOT Kendra)
+
+### Amazon Personalize
+
+Real-time recommendation engine — the same ML used internally by Amazon.com for product recs. Feed it user-interaction data (clicks, views, purchases); get back personalised recommendations, ranked results, or trending items.
+
+**Exam triggers:**
+- *"personalised product / content recommendations"* → **Personalize**
+- *"users who bought X also bought Y"* → **Personalize**
+- *"Netflix-style recommendation engine"* → **Personalize**
+- *"personalised email campaigns"* → **Personalize**
+- *"rank a search result list for a specific user"* → **Personalize** (Personalized Ranking)
+- *"recommendation engine but we have **no** historical interaction data"* → not Personalize alone — it needs interaction data to learn from
+
+### Amazon Textract
+
+Extract text **and structure** from documents — forms, tables, receipts, invoices. Beyond OCR: recognises form fields, table cells, key-value pairs, signatures. HIPAA-eligible. Anchored against **Rekognition**: Rekognition's text detection is OCR-lite for signs/license plates; **Textract is for documents with layout**.
+
+**Exam triggers:**
+- *"extract text and structured fields from PDFs / forms / invoices / receipts"* → **Textract**
+- *"OCR that preserves table structure and key-value pairs"* → **Textract**
+- *"automate invoice / mortgage application / ID document processing"* → **Textract** (specialised APIs: AnalyzeExpense, AnalyzeID, AnalyzeLending)
+- *"extract signatures from scanned documents"* → **Textract**
+- *"scanned medical document → structured fields"* → **Textract → Comprehend Medical**
+- *"read text from a photo of a license plate / sign"* → **Rekognition** (NOT Textract — that's OCR-lite, not document layout)
+
+### Amazon Forecast
+
+Time-series forecasting service — feed it historical numeric data (sales, demand, web traffic, energy usage); get back probabilistic forecasts. Uses ML behind the scenes — you don't pick the algorithm. Different from **Timestream** (which *stores* time-series data) — Forecast *predicts* future values from it.
+
+**Exam triggers:**
+- *"forecast future demand / sales / metrics from historical time-series"* → **Forecast**
+- *"capacity planning, predict next quarter's sales"* → **Forecast**
+- *"predict web traffic / energy usage / inventory needs"* → **Forecast**
+- *"need probabilistic forecasts with confidence intervals"* → **Forecast**
+- *"store time-series data"* → **Timestream** (NOT Forecast)
+
+### Amazon Fraud Detector
+
+Pre-trained fraud detection — feed it event data (account signups, online payments) and your historical fraud labels; it builds a model that scores incoming events for fraud risk in real time. Built on the same ML Amazon.com uses internally.
+
+**Exam triggers:**
+- *"detect fraudulent account signups / online payments / promo abuse"* → **Fraud Detector**
+- *"real-time fraud scoring without building an ML model from scratch"* → **Fraud Detector**
+- *"identify suspicious transactions as they happen"* → **Fraud Detector**
+- *"build a custom fraud model in SageMaker"* — possible, but **Fraud Detector** is the managed pre-built answer when one exists
+
+### Amazon Augmented AI (A2I)
+
+**Human review of low-confidence ML predictions.** Wraps Rekognition / Textract / Comprehend (or your own SageMaker model) so that when the model's confidence is low, the output is routed to a **human reviewer** (your private workforce, vendors, or Mechanical Turk) before being trusted. Closes the "ML is 95% accurate but I need 100% for compliance" loop.
+
+**Exam triggers:**
+- *"human-in-the-loop review for low-confidence ML predictions"* → **Augmented AI (A2I)**
+- *"route uncertain Textract / Rekognition / Comprehend results to a human"* → **A2I**
+- *"compliance requires manual review of any prediction below X% confidence"* → **A2I**
+- *"send low-confidence model outputs to Mechanical Turk for verification"* → **A2I**
+
+### When to Pick SageMaker Over Pre-trained Services
+
+| Scenario | Pick |
+| -------- | ---- |
+| "Detect objects in user photos" | **Rekognition** (don't train your own) |
+| "Detect *very specific* defects in our widgets that Rekognition doesn't know" | **Rekognition Custom Labels** if ~100 images is enough; **SageMaker** for full control |
+| "Analyse medical X-rays / satellite imagery" | **SageMaker** — fundamentally different domain than Rekognition's training data |
+| "Sentiment of customer reviews" | **Comprehend** |
+| "Custom domain-specific NLP classifier" | **Comprehend Custom** or **SageMaker** |
+| "Forecast next quarter's sales" | **Forecast** (pre-trained) — or **SageMaker** for bespoke models |
+| "Build a chatbot for our website" | **Lex** (or **Bedrock** for LLM-powered) |
+| "End-to-end ML platform — training, hyperparameter tuning, deployment, monitoring" | **SageMaker** |
+
+### Amazon SageMaker — Deep Dive
+
+SageMaker isn't one service — it's a **family of components** covering every stage of building ML. Anchored against the pre-trained AI/ML services: those are *call-an-API*, AWS owns the model. **SageMaker is what you reach for when no pre-trained service fits** — you bring training data, choose / write the algorithm, own the model lifecycle.
+
+#### The ML Lifecycle SageMaker Covers
+
+```
+1. PREPARE DATA      → Data Wrangler, Feature Store, Ground Truth
+2. BUILD             → Studio (IDE), Notebooks, JumpStart (pre-built models)
+3. TRAIN             → Training Jobs, Autopilot (AutoML), HPO tuning
+4. DEPLOY            → Endpoints (real-time / serverless / async), Batch Transform, Edge
+5. MONITOR + GOVERN  → Model Monitor (drift), Clarify (bias/explainability), Pipelines (CI/CD)
+```
+
+#### Components to Know
+
+| Component | What it does |
+| --------- | ------------ |
+| **SageMaker Studio** | Browser-based IDE for ML (Jupyter + ML-specific tooling) |
+| **SageMaker Notebooks** | Managed Jupyter on EC2 — no infra setup |
+| **SageMaker Canvas** | **No-code** ML for business analysts (point-and-click) |
+| **SageMaker Data Wrangler** | Visual data prep — 300+ transformations, generates code |
+| **SageMaker Ground Truth** | **Data labelling** — humans label, models learn. Auto-labelling reduces cost over time |
+| **SageMaker Feature Store** | Central store for engineered features, shared across teams and models |
+| **SageMaker Training Jobs** | Managed training on EC2/GPU — bring your own code or use built-in algorithms |
+| **SageMaker Autopilot** | **AutoML** — picks algorithm + hyperparameters automatically from a tabular CSV |
+| **Hyperparameter Tuning (HPO)** | Search hyperparameter space to maximise a metric |
+| **SageMaker JumpStart** | One-click deploy of pre-built / foundation models (Hugging Face, Stable Diffusion, Llama, etc.) |
+| **SageMaker Endpoints (real-time)** | Always-on hosted model for low-latency inference |
+| **SageMaker Serverless Inference** | Auto-scaling, scale-to-zero endpoint — pay per request |
+| **SageMaker Async Inference** | Queue-based for **long-running** or **large-payload** inferences |
+| **SageMaker Batch Transform** | One-off / scheduled batch inference — no endpoint needed |
+| **Multi-model endpoints** | Host many models on **one endpoint** — load on demand from S3 |
+| **SageMaker Model Monitor** | Detect **drift** in production (data, model quality, bias) |
+| **SageMaker Clarify** | **Bias detection** + explainability (SHAP values) |
+| **SageMaker Debugger** | Profile + debug training jobs |
+| **SageMaker Pipelines** | **CI/CD for ML** — orchestrated training/deploy workflows |
+| **SageMaker Model Registry** | Versioning + approval workflow for models before deployment |
+| **SageMaker Neo** | **Compile models** for specific hardware (edge devices, custom CPUs) |
+| **SageMaker Edge Manager** | Deploy + monitor models on **edge devices** (IoT, factory equipment) |
+
+#### Endpoint Types — Pick the Right One (exam favourite)
+
+| Type | When |
+| ---- | ---- |
+| **Real-time endpoint** | Sub-second predictions, steady traffic, latency-critical (default) |
+| **Serverless Inference** | Spiky / unpredictable traffic, OK with cold starts, scale-to-zero needed |
+| **Async Inference** | **Large payloads** (>6 MB), **long inference times** (>60s), queue-based |
+| **Batch Transform** | One-off or scheduled batch — no endpoint to keep alive |
+| **Multi-model endpoint** | Host many models cheaply — load on demand from S3 |
+
+```
+"Predict in real time at scale"             → Real-time endpoint
+"Sporadic predictions, pay only when used"  → Serverless Inference
+"Process 100 MB image with a 5-min model"   → Async Inference
+"Predict for 10M rows nightly"              → Batch Transform
+"Host 500 small per-customer models"        → Multi-model endpoint
+```
+
+#### Training Cost Optimisation
+
+- **Managed Spot Training** — save up to 90% on training compute (with checkpointing in case Spot is reclaimed)
+- **Distributed training** — data parallel (split data across GPUs) or model parallel (split model across GPUs) for large models
+- **Built-in algorithms** — pre-optimised (XGBoost, K-Means, Linear Learner, Image Classification, BlazingText, etc.) — cheaper than custom containers
+- **Warm pools** — keep training instances warm between back-to-back jobs
+
+#### Canonical Architecture
+
+```
+S3 (training data)
+   ↓
+SageMaker Data Wrangler (clean, transform, engineer features)
+   ↓
+SageMaker Ground Truth (label data if supervised)
+   ↓
+SageMaker Feature Store (share features; offline + online sync)
+   ↓
+SageMaker Training Job (with Spot for cost; or Autopilot for AutoML)
+   ↓
+SageMaker Model Registry (version + approve)
+   ↓
+SageMaker Pipelines (orchestrate the whole flow as CI/CD)
+   ↓
+SageMaker Endpoint (real-time) / Batch Transform / Async / Serverless
+   ↓
+SageMaker Model Monitor (drift) + Clarify (bias) + CloudWatch (metrics)
+```
+
+#### SageMaker Anti-patterns (exam wrong answers)
+
+- **SageMaker when a pre-trained service would solve it** — building a sentiment classifier from scratch when Comprehend exists. Always check the pre-trained family first.
+- **Real-time endpoint for nightly batch predictions** — wasteful. Use **Batch Transform**.
+- **Real-time endpoint for spiky / sporadic traffic** — pays for idle. Use **Serverless Inference**.
+- **Real-time endpoint for 5-minute inferences or 100 MB payloads** — endpoints have payload and timeout limits. Use **Async Inference**.
+- **Hosting 100 small models on 100 separate endpoints** — wildly expensive. Use **multi-model endpoints**.
+- **Manual data labelling at scale** — use **Ground Truth** (auto-labelling reduces human effort over time).
+- **Picking Canvas for engineers** — Canvas is no-code for analysts; engineers want Studio + Notebooks.
+- **Forgetting Model Monitor** when the question mentions *drift* / *retrain* / *model accuracy degrading in production*.
+- **Deploying a model to a Raspberry Pi without optimisation** — use **SageMaker Neo** to compile for the target hardware.
+- **Skipping Spot training** for non-critical training jobs — leaves 90% savings on the table.
+
+#### SageMaker Exam Triggers
+
+**Service-specific:**
+
+- *"build, train, deploy ML model end-to-end"* → **SageMaker**
+- *"AutoML — pick model + hyperparameters automatically"* → **SageMaker Autopilot**
+- *"data labelling for supervised learning"* → **SageMaker Ground Truth**
+- *"detect drift in a production model"* → **SageMaker Model Monitor**
+- *"bias detection / explainability / SHAP values"* → **SageMaker Clarify**
+- *"no-code ML for business analysts"* → **SageMaker Canvas**
+- *"CI/CD pipeline for ML"* → **SageMaker Pipelines**
+- *"pre-built foundation models / Hugging Face / Llama / Stable Diffusion"* → **SageMaker JumpStart**
+- *"share engineered features across multiple models / teams"* → **SageMaker Feature Store**
+- *"visual data prep with 300+ transformations"* → **SageMaker Data Wrangler**
+- *"version + approve models before deployment"* → **SageMaker Model Registry**
+- *"compile model for an IoT / edge device"* → **SageMaker Neo** + **Edge Manager**
+- *"reduce training cost"* → **Managed Spot Training**
+- *"distributed training across multiple GPUs"* → **SageMaker distributed training**
+
+**Endpoint-type:**
+
+- *"low-latency real-time predictions"* → **Real-time endpoint**
+- *"sporadic traffic, scale-to-zero, pay only when used"* → **Serverless Inference**
+- *"large payload (>6 MB) or long inference time (>60s)"* → **Async Inference**
+- *"score millions of rows nightly, no endpoint needed"* → **Batch Transform**
+- *"host hundreds of per-customer models cost-efficiently"* → **Multi-model endpoint**
+
+**The SageMaker 80/20:** *Five lifecycle stages (Prepare → Build → Train → Deploy → Monitor) with named components for each. The exam tests two things hardest: (1) **picking the right endpoint type** (real-time / serverless / async / batch / multi-model) — match payload, latency, traffic pattern; (2) **knowing the named components** — Autopilot for AutoML, Ground Truth for labelling, Model Monitor for drift, Clarify for bias, Pipelines for CI/CD, JumpStart for pre-built models. Always check pre-trained services first — only reach for SageMaker when they don't fit.*
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Rekognition for documents with structured fields (forms, tables, receipts)** → **Textract** (designed for documents with layout). Rekognition's text detection is just OCR-lite.
+- **SageMaker when a pre-trained service would do** — building a sentiment classifier from scratch when Comprehend solves it.
+- **Comprehend for translation** → Comprehend detects language, **Translate** translates it.
+- **Calling Rekognition synchronously on a 2-hour video** → use the async video API; output goes to SNS.
+- **Personalize for "what to show next" without user-event history** → Personalize needs interaction data to learn from.
+- **Lex without thinking about LLM alternatives** → for natural conversational AI, **Bedrock + Claude / Llama** is often a better fit than rigid intent/slot Lex flows.
+
+### Exam Triggers
+
+**Input type → service:**
+
+- *"detect objects / faces / text / inappropriate content in images or video"* → **Rekognition**
+- *"extract structured data from invoices / forms / receipts / PDFs"* → **Textract**
+- *"sentiment / entities / key phrases / language detection in text"* → **Comprehend**
+- *"detect PII in text and redact it"* → **Comprehend** (PII detection)
+- *"translate text between languages"* → **Translate**
+- *"transcribe a podcast / meeting / call recording"* → **Transcribe**
+- *"convert text to natural-sounding speech"* → **Polly**
+- *"build a chatbot with intents and slots"* → **Lex**
+- *"chatbot using a foundation model (Claude / Llama / Titan)"* → **Bedrock**
+- *"product recommendations based on user behaviour"* → **Personalize**
+- *"forecast future demand / metrics from historical time-series"* → **Forecast**
+- *"build/train/deploy a custom ML model end-to-end"* → **SageMaker**
+
+**Service-specific giveaways:**
+
+- *"compare two faces / face match against a collection"* → **Rekognition** (`CompareFaces`, face collections)
+- *"detect helmets / masks / PPE in images"* → **Rekognition** PPE detection
+- *"identify celebrities in a photo"* → **Rekognition** celebrity recognition
+- *"train a custom image classifier with a small labelled dataset"* → **Rekognition Custom Labels** (low effort) or **SageMaker** (more control)
+- *"OCR on a complex form keeping the table/field structure"* → **Textract** (NOT Rekognition's text detection)
+
+**The 80/20:** *Pre-trained services pick by input type — Rekognition (images/video), Textract (documents), Comprehend (text NLP), Transcribe/Polly (speech), Translate (translation), Lex/Bedrock (chatbots), Personalize (recommendations), Forecast (time-series). SageMaker only when nothing pre-trained fits. The exam exploits Rekognition vs Textract confusion — Rekognition is "what's in this picture?", Textract is "extract the form fields and table cells from this PDF".*
+
+### AI/ML Cheat Sheet
+
+The whole AI/ML map on one card. Two layers, two decisions, eight pairings.
+
+**The two-tier mental model:**
+
+```
+Layer 1: PRE-TRAINED API services    ← pick by input type, call an API, done
+Layer 2: SAGEMAKER                    ← only when no pre-trained service fits
+```
+
+**Layer 1 — pick by input type:**
+
+| Input | Service | Headline use |
+| ----- | ------- | ------------ |
+| **Images / video** | **Rekognition** | Objects, faces, content moderation, PPE, celebrities |
+| **Documents (PDFs/forms/receipts)** | **Textract** | OCR with layout — keys, values, table cells |
+| **Text (general)** | **Comprehend** | Sentiment, entities, key phrases, language detection, PII |
+| **Text (clinical)** | **Comprehend Medical** | Medical entities + ICD-10 / RxNorm / SNOMED linking |
+| **Text → audio** | **Polly** | Text-to-speech (natural voices) |
+| **Audio → text** | **Transcribe** | Speech-to-text (general or Medical) |
+| **Translate text between languages** | **Translate** | 75+ languages, formality, custom terminology |
+| **Build a chatbot** | **Lex** | Intents + slots (rigid) / **Bedrock** (free-form LLM) |
+| **Cloud call center** | **Connect** (+ Lex + Polly + Contact Lens) | Phone system, IVR, sentiment analytics |
+| **Recommend products / content** | **Personalize** | Real-time personalisation |
+| **Forecast time-series** | **Forecast** | Demand / metric forecasting |
+| **Enterprise document search** | **Kendra** | Natural-language Q&A across docs (NOT log analytics — that's OpenSearch) |
+| **Call a foundation model (LLM)** | **Bedrock** | Claude / Llama / Titan / Stable Diffusion via one API |
+
+**Layer 2 — reach for SageMaker when:**
+
+- No pre-trained service matches your domain (medical imagery, satellite, defects, fraud, custom NLP)
+- You need to **train, tune, deploy, monitor** your own model end-to-end
+- You need CI/CD for ML (Pipelines), bias detection (Clarify), drift monitoring (Model Monitor)
+
+**SageMaker lifecycle in one glance:**
+
+```
+1. PREPARE  → Data Wrangler · Feature Store · Ground Truth (labelling)
+2. BUILD    → Studio · Notebooks · JumpStart (pre-built models)
+3. TRAIN    → Training Jobs · Autopilot (AutoML) · HPO · Spot training (-90%)
+4. DEPLOY   → Real-time / Serverless / Async / Batch / Multi-model endpoints · Neo (edge)
+5. GOVERN   → Model Monitor (drift) · Clarify (bias) · Pipelines (CI/CD) · Model Registry
+```
+
+**SageMaker endpoint type — the most-tested decision:**
+
+| Workload | Endpoint |
+| -------- | -------- |
+| Sub-second predictions, steady traffic | **Real-time** |
+| Sporadic / spiky traffic, OK with cold starts | **Serverless Inference** |
+| Large payload (>6 MB) or long inference (>60s) | **Async Inference** |
+| Score millions of rows nightly | **Batch Transform** |
+| Host hundreds of small models cheaply | **Multi-model endpoint** |
+
+**Common pairings — memorise (they appear together constantly):**
+
+```
+Connect + Lex + Polly + Lambda + Contact Lens   = intelligent IVR / cloud call center
+Lex + Polly                                      = voice chatbot
+Transcribe + Comprehend                          = analyse call recordings
+Transcribe Medical + Comprehend Medical          = clinical dictation pipeline
+Textract + Comprehend                            = extract + understand documents
+Textract + Comprehend Medical                    = scanned clinical docs → structured EHR
+Kendra + Lex (or Bedrock)                        = chatbot answering from internal docs
+Personalize + Pinpoint/SES                       = personalised email campaigns
+```
+
+**Top anti-pattern traps:**
+
+- **SageMaker for something pre-trained solves** — always check Layer 1 first
+- **Rekognition for documents** — use **Textract** (OCR with layout)
+- **Comprehend on clinical text** — use **Comprehend Medical**
+- **Lex for free-form conversation** — use **Bedrock** (LLM)
+- **Kendra for log analytics** — use **OpenSearch**
+- **Polly vs Transcribe** confusion — Polly = text→audio; Transcribe = audio→text
+- **Comprehend vs Translate** — Comprehend *understands* text; Translate *converts* between languages
+- **Real-time endpoint for batch / spiky / large-payload** workloads — pick **Batch Transform / Serverless / Async** instead
+
+**The two decisions that crack most exam questions:**
+
+1. **What's the input?** → identify the pre-trained service. Done if one fits.
+2. **If no pre-trained service fits → SageMaker.** Then pick the **endpoint type** by latency / payload / traffic shape.
 
 ## Serverless
 
@@ -4748,14 +7726,96 @@ Cost benefit of Provisioned (cheaper per unit) with some flexibility (scales up 
 
 RCU = Read Capacity Unit (4 KB strongly consistent read/s). WCU = Write Capacity Unit (1 KB write/s).
 
-**Indexes:**
+**Indexes — GSI vs LSI:**
+
+By default DynamoDB only lets you query by the **table's** partition key (+ sort key). Want to query by a different attribute? You need a secondary index.
 
 | | Global Secondary Index (GSI) | Local Secondary Index (LSI) |
 | - | ---------------------------- | --------------------------- |
-| When to create | Any time | At table creation only |
-| Key | Different partition key + sort key | Same partition key, different sort key |
-| Reads | Eventually consistent only | Strongly or eventually consistent |
-| Use case | Query by a completely different attribute | Query same partition key with a different sort |
+| When to create | Any time, after table creation | **At table creation only** — can't add later |
+| Limit | 20 GSIs per table (soft limit) | 5 LSIs per table (hard limit) |
+| Partition key | **Different** from the table's | **Same** as the table's |
+| Sort key | Anything (or none) | Different from the table's |
+| Reads | **Eventually consistent only** | Strongly or eventually consistent |
+| Throughput | **Own RCU/WCU**, separate from the table | Shares the table's RCU/WCU |
+| Storage | Separate physical storage | Stored alongside table partitions |
+| Use case | Query by a totally different attribute | Different sort order within the same partition |
+
+**Worked example — orders table:**
+
+```
+Table primary key: PK = customer_id, SK = order_date
+Default queries:   "all orders for customer X" / "customer X's orders in Jan 2026"
+```
+
+- *Want: "find an order by order_id"* → **GSI** with PK = `order_id` (different partition key)
+- *Want: "customer X's orders sorted by total_amount"* → **LSI** with PK = `customer_id`, SK = `total_amount`
+- *Want: "all orders with status PENDING"* → **GSI** with PK = `status` (different partition key)
+
+**Common GSI/LSI gotchas (exam favourites):**
+
+- **GSI reads are eventually consistent only** — if a question says *"strongly consistent reads on a secondary attribute"*, the answer is LSI, not GSI.
+- **LSI must be defined at table creation** — once the table exists you can't add an LSI. GSIs can be added/dropped any time.
+- **GSI has its own throughput** — a GSI can be **throttled independently** of the base table. If the GSI WCU is too low, writes to the base table fail (because DynamoDB has to update the GSI synchronously and runs out of WCU).
+- **Attribute projection** — choose what to copy into the index: `KEYS_ONLY`, `INCLUDE` (specific attributes), or `ALL`. Smaller projection = cheaper but more requests need a follow-up `GetItem` on the base table.
+- **LSI shares the partition** with the base table — a "hot partition" on the base also hits the LSI; a GSI uses separate partitioning and can dodge that.
+
+**Decision rule:**
+
+| Need | Pick |
+| ---- | ---- |
+| Same partition key, different sort order, strongly consistent reads | **LSI** |
+| Different partition key | **GSI** |
+| Added after table already exists | **GSI** (LSI is impossible) |
+| Independent throughput from the base table | **GSI** |
+
+**DynamoDB Transactions (`TransactWriteItems` / `TransactGetItems`):**
+
+Up to **100 items across multiple tables** in one all-or-nothing operation. If any item fails (conditional check, capacity, validation), the whole transaction rolls back.
+
+```
+TransactWriteItems:
+  ├── Put     order:abc into Orders table
+  ├── Update  user:42 in Users table (decrement balance)
+  └── Update  inventory:widget in Stock table (decrement count)
+  All succeed, or none do.
+```
+
+- **2× the WCU/RCU cost** of normal operations (transactions are billed double)
+- **One AWS region only** — no cross-region transactions
+- **Up to 4 MB total** for the whole transaction
+- Supports **idempotency tokens** to safely retry
+
+| | Conditional write | TransactWriteItems |
+| - | ----------------- | ------------------ |
+| Scope | One item | Up to 100 items, multiple tables |
+| Atomicity | Single item | All-or-nothing across all items |
+| Cost | Normal | 2× |
+| Use case | "Update only if version = N" optimistic locking | Banking-style multi-record updates |
+
+**Conditional writes:**
+
+Every `PutItem`, `UpdateItem`, and `DeleteItem` can carry a `ConditionExpression` that must be true for the write to succeed. The check + write is **atomic at the item level**.
+
+```
+UpdateItem on user:42
+  SET balance = balance - 100
+  ConditionExpression: balance >= 100
+  → Succeeds only if the current balance is ≥ 100; otherwise fails with no change
+```
+
+Common patterns:
+- **Optimistic locking** — `attribute_not_exists(id)` to prevent overwrite of an existing item
+- **Compare-and-swap** — `version = :expected_version` to detect concurrent updates
+- **Conditional delete** — only delete if the item is in a specific state
+
+**Exam triggers:**
+- *"all-or-nothing update across multiple DynamoDB items"* → `TransactWriteItems`
+- *"strongly consistent reads on a non-key attribute"* → LSI, not GSI
+- *"add an index on an existing table"* → GSI (LSI can't be added after creation)
+- *"GSI is throttling writes to the base table"* → increase the GSI's WCU
+- *"prevent overwriting an existing item"* → conditional write with `attribute_not_exists`
+- *"optimistic locking on DynamoDB"* → conditional write with a version attribute
 
 **DynamoDB Streams:**
 
