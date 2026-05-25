@@ -161,7 +161,7 @@
   - [Redshift Key Properties](#redshift-key-properties)
   - [Loading Data into Redshift](#loading-data-into-redshift)
   - [Redshift vs Athena](#redshift-vs-athena)
-  - [Redshift Snapshots](#redshift-snapshots)
+  - [Redshift Snapshots and Disaster Recovery](#redshift-snapshots-and-disaster-recovery)
 - [AWS Glue](#aws-glue)
   - [The Five Pieces of Glue](#the-five-pieces-of-glue)
   - [Where Glue Sits in the Analytics Stack](#where-glue-sits-in-the-analytics-stack)
@@ -187,6 +187,10 @@
 - [Amazon OpenSearch Service](#amazon-opensearch-service)
   - [When OpenSearch, Anchored in What You Know](#when-opensearch-anchored-in-what-you-know)
   - [Key Properties](#key-properties-1)
+  - [Where Does OpenSearch Actually Store the Data?](#where-does-opensearch-actually-store-the-data)
+  - [Three Storage Tiers (cost optimisation)](#three-storage-tiers-cost-optimisation)
+  - [Is OpenSearch a Database?](#is-opensearch-a-database)
+  - [The Canonical Architecture](#the-canonical-architecture)
   - [Classic Use Cases](#classic-use-cases)
   - [OpenSearch vs CloudWatch Logs Insights](#opensearch-vs-cloudwatch-logs-insights)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-2)
@@ -211,6 +215,27 @@
   - [Which Service at Each Stage](#which-service-at-each-stage)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-7)
   - [Exam Triggers](#exam-triggers-7)
+- [AWS AI/ML Services](#aws-aiml-services)
+  - [The Family at a Glance](#the-family-at-a-glance)
+  - [Amazon Rekognition (the headliner for computer vision)](#amazon-rekognition-the-headliner-for-computer-vision)
+  - [Amazon Transcribe (the headliner for speech-to-text)](#amazon-transcribe-the-headliner-for-speech-to-text)
+  - [Amazon Polly (the headliner for text-to-speech)](#amazon-polly-the-headliner-for-text-to-speech)
+  - [Amazon Translate (the headliner for machine translation)](#amazon-translate-the-headliner-for-machine-translation)
+  - [Amazon Lex and Amazon Connect (chatbot brain + contact center)](#amazon-lex-and-amazon-connect-chatbot-brain--contact-center)
+  - [Amazon Bedrock (the headliner for generative AI / foundation models)](#amazon-bedrock-the-headliner-for-generative-ai--foundation-models)
+  - [Amazon Comprehend (the headliner for general NLP)](#amazon-comprehend-the-headliner-for-general-nlp)
+  - [Amazon Comprehend Medical (HIPAA-eligible clinical NLP)](#amazon-comprehend-medical-hipaa-eligible-clinical-nlp)
+  - [Amazon Kendra](#amazon-kendra)
+  - [Amazon Personalize](#amazon-personalize)
+  - [Amazon Textract](#amazon-textract)
+  - [Amazon Forecast](#amazon-forecast)
+  - [Amazon Fraud Detector](#amazon-fraud-detector)
+  - [Amazon Augmented AI (A2I)](#amazon-augmented-ai-a2i)
+  - [When to Pick SageMaker Over Pre-trained Services](#when-to-pick-sagemaker-over-pre-trained-services)
+  - [Amazon SageMaker — Deep Dive](#amazon-sagemaker--deep-dive)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-8)
+  - [Exam Triggers](#exam-triggers-8)
+  - [AI/ML Cheat Sheet](#aiml-cheat-sheet)
 - [Serverless](#serverless-1)
   - [AWS Lambda](#aws-lambda)
   - [DynamoDB](#dynamodb)
@@ -5587,21 +5612,92 @@ Both query data in S3 with SQL, but for different use cases:
 
 **Exam shortcut:** "data warehouse", "BI dashboards", "complex analytics on petabytes" → **Redshift**. "Ad-hoc SQL on S3 data, no infrastructure" → **Athena**.
 
-### Redshift Snapshots
+### Redshift Snapshots and Disaster Recovery
 
-- Automated snapshots with configurable retention (1–35 days)
-- Manual snapshots persist indefinitely
-- Snapshots can be **copied to another region** for DR
-- Restore creates a new cluster
+Snapshots are the **cornerstone of Redshift's DR story**. Yes — Redshift supports snapshots (common confusion: people sometimes think of Redshift like Athena where there's nothing to back up). Redshift's cluster storage is real and the snapshot system is how you protect it.
 
-**Exam triggers:**
-- *"data warehouse for analytics and reporting"* → Redshift
-- *"run complex SQL across petabytes of data"* → Redshift
-- *"connect BI tools like Tableau to AWS"* → Redshift
-- *"query S3 data with SQL, no infrastructure"* → Athena
-- *"query S3 data from within Redshift"* → Redshift Spectrum
-- *"OLAP workload"* → Redshift
-- *"OLTP workload"* → RDS/Aurora
+**Two types of snapshots:**
+
+| | Automated | Manual |
+| - | --------- | ------ |
+| Frequency | Every **8 hours** OR every **5 GB** of data change, whichever first | On-demand, when you trigger |
+| Retention | **1–35 days** (configurable) | **Indefinite** — until you delete |
+| What it captures | Incremental — only blocks changed since last snapshot | Same incremental mechanism |
+| Use case | Day-to-day recovery (last few weeks) | Long-term retention, pre-upgrade safety, end-of-project archive |
+| Cost | Storage of changed blocks | Same |
+
+**Snapshots are stored in S3 internally** (AWS-managed) — that's why they're incremental and cheap. Restoring a snapshot creates a **new cluster** (you can't restore in-place).
+
+### The Standard Redshift DR Plan
+
+```
+Primary region (eu-west-1)                          DR region (us-east-1)
+──────────────────────────                          ────────────────────
+Redshift cluster
+   ↓ automated snapshots (every 8h / 5GB)
+S3 (internal, AWS-managed)
+   ↓ cross-region snapshot copy (configurable)
+                            ─────────────────→     Snapshot stored in DR region
+                                                       ↓ on disaster
+                                                   Restore → new Redshift cluster
+                                                       ↓
+                                                   Update DNS / app config to point at new cluster
+```
+
+**Steps to implement:**
+
+1. **Automated snapshots are on by default** — verify retention is set to enough days for your RPO (default is 1 day; bump to e.g. 7–14 days for production).
+2. **Configure cross-region snapshot copy** — pick the destination region and the retention for copied snapshots (can differ from primary).
+3. **Take manual snapshots** for milestones (pre-upgrade, end of fiscal quarter, before risky migration) — these persist beyond the 35-day automated cap.
+4. **In the DR region, periodically test restore** — confirm a snapshot actually restores cleanly to a new cluster.
+
+### Additional Resilience Features
+
+**Multi-AZ for Redshift (RA3 nodes only):**
+
+Newer feature — deploy a single Redshift cluster across **two AZs in the same region**. Synchronous replication, automatic failover if one AZ fails, no manual recovery. Reduces RTO from "restore from snapshot" to near-zero for AZ failures.
+
+- Multi-AZ does NOT protect against **region** failure — still need cross-region snapshot copy for true DR
+- Only available on RA3 node types
+
+**AWS Backup integration:**
+
+Redshift snapshots can be managed via **AWS Backup** for centralised policy-based backup across all your AWS resources (RDS, DynamoDB, EFS, EBS, etc.) — one backup vault, one retention policy, cross-region copy, cross-account copy, audit reports.
+
+| Approach | When |
+| -------- | ---- |
+| Direct Redshift snapshot management | Single cluster, simple needs |
+| **AWS Backup** | Multiple AWS resources, centralised policy, compliance/audit requirements |
+
+**Cross-account snapshot sharing:**
+
+Share a snapshot with another AWS account — useful for giving the security/audit team access to a frozen copy, or recovering into a separate "DR account."
+
+### Common Anti-patterns (exam wrong answers)
+
+- **"Redshift doesn't support snapshots"** — yes it does. They're the primary DR mechanism. (Common knowledge gap.)
+- **Relying only on automated snapshots for long-term backup** — they max at 35 days. Use **manual snapshots** for longer retention, or AWS Backup with a long-retention policy.
+- **Multi-AZ alone as your DR strategy** — Multi-AZ protects against AZ failure within a region, not region failure. You still need **cross-region snapshot copy** for true DR.
+- **Copying snapshots manually as a DR strategy** — error-prone. Use the built-in **cross-region snapshot copy** feature; it runs automatically on every new snapshot.
+- **Forgetting the new cluster cost on restore** — restoring creates a new cluster with its own compute cost. Build the DR cost into your plan.
+
+### Exam Triggers
+
+- *"data warehouse for analytics and reporting"* → **Redshift**
+- *"run complex SQL across petabytes of data"* → **Redshift**
+- *"connect BI tools like Tableau to AWS"* → **Redshift**
+- *"query S3 data with SQL, no infrastructure"* → **Athena**
+- *"query S3 data from within Redshift"* → **Redshift Spectrum**
+- *"OLAP workload"* → **Redshift**
+- *"OLTP workload"* → **RDS / Aurora**
+- *"Redshift disaster recovery plan"* → **enable cross-region snapshot copy**
+- *"Redshift backup retention beyond 35 days"* → **manual snapshots** (or AWS Backup with long retention)
+- *"recover Redshift cluster in another region after disaster"* → **restore from cross-region copied snapshot**
+- *"centralised backup policy across Redshift + other AWS resources"* → **AWS Backup**
+- *"protect Redshift cluster against single-AZ failure with automatic failover"* → **Multi-AZ for RA3** (no manual recovery needed)
+- *"share Redshift snapshot with another AWS account"* → **cross-account snapshot sharing**
+
+**The 80/20:** *Redshift HAS snapshots (don't doubt this). Automated = up to 35 days; manual = forever. DR = cross-region snapshot copy → restore in the DR region creates a new cluster. Multi-AZ (RA3 only) handles AZ failures; cross-region snapshot copy handles region failures. AWS Backup is the centralised alternative.*
 
 ## AWS Glue
 
@@ -5647,7 +5743,45 @@ Athena / Redshift Spectrum / EMR / QuickSight all read using the Catalog's schem
 
 ### Job Bookmarks (exam favourite)
 
-Glue jobs remember which data they've already processed. The next run only handles new files — no reprocessing the same S3 prefix every night.
+State that Glue maintains *between* runs of an ETL job, recording which data has already been processed. The next run picks up only the new data.
+
+```
+Run 1, Monday:    Process orders_2026-05-19.csv, orders_2026-05-20.csv
+                  Bookmark: "processed up to 2026-05-20"
+Run 2, Tuesday:   Bookmark exists → read only orders_2026-05-21.csv
+                  Bookmark advances to "2026-05-21"
+Run 3, Wednesday: Read only orders_2026-05-22.csv
+```
+
+**Three modes:**
+
+| Mode | What it does | When to pick |
+| ---- | ------------ | ------------ |
+| **Enable** | Track processed data, skip it next run | Default for incremental ETL (daily/hourly batches) |
+| **Disable** | Reprocess everything on every run | Full reload, dev/test, when you want every run to be from scratch |
+| **Pause** | Track but don't apply | One-off reprocessing without losing the existing bookmark state |
+
+**Source support:**
+
+| Source | Bookmark tracking |
+| ------ | ----------------- |
+| **S3** | By file timestamp / key — new files since last run |
+| **JDBC** (RDS, on-prem DBs) | By a monotonically increasing column (e.g. `id`, `last_updated`) — you specify which column |
+| **Streaming sources** (Kinesis, Kafka) | Different mechanism (checkpoints), **not** bookmarks |
+| **DynamoDB** | Not supported via bookmarks |
+
+**Anti-pattern trap (exam):**
+
+- **Source data is updated in place** (rows modified rather than new rows added) → bookmarks **don't help**; they only track *additions*. Use **DMS CDC** to capture updates, or do a full reload.
+- **Filenames keep getting rewritten with the same name** → bookmarks may miss changes; pick a partition scheme that makes new data appear as new keys.
+
+**Exam triggers:**
+
+- *"avoid reprocessing data already handled by a previous Glue run"* → **Job Bookmarks**
+- *"incremental ETL from S3 to Redshift via Glue"* → enable **Job Bookmarks**
+- *"track data already processed during a previous run of a Glue ETL job"* → **Job Bookmarks** (this is the exam's literal phrasing)
+- *"Glue is reprocessing the same files every night"* → enable **Job Bookmarks**
+- *"one-off full reload without losing the existing bookmark state"* → set bookmarks to **Pause**
 
 ### Common Anti-patterns (exam wrong answers)
 
@@ -5945,6 +6079,82 @@ OpenSearch indexes documents on **every field**, builds an **inverted index** fo
 - **OpenSearch Serverless** — pay-per-OCU (OpenSearch Compute Unit), no cluster management
 - **Auth:** Cognito, IAM, fine-grained access control, security groups (lives in VPC)
 - **Cross-cluster replication** for multi-region
+
+### Where Does OpenSearch Actually Store the Data?
+
+A genuine source of confusion. Two clear answers:
+
+1. **Yes, OpenSearch stores the logs itself.** Each data node has **EBS volumes** holding the indexed documents.
+2. **But don't treat it as a primary database.** The production pattern is: **raw logs land in S3 (source of truth), and OpenSearch holds the indexed copy for search**. If the cluster dies, you rebuild from S3.
+
+**How it stores each document:**
+
+```
+Document: {"timestamp":"...","user":"alice","action":"login_failed","ip":"1.2.3.4"}
+       ↓
+OpenSearch stores:
+  - The raw JSON document (on disk via EBS)
+  - An inverted index alongside:
+        "login_failed" → [doc-id-1, doc-id-7, doc-id-22, ...]
+        "alice"        → [doc-id-1, doc-id-9, ...]
+        "1.2.3.4"      → [doc-id-1, doc-id-3, ...]
+  - Distributed across shards, replicated for resilience
+```
+
+Search is fast because looking up "login_failed" gives you doc IDs immediately — no scanning every document.
+
+### Three Storage Tiers (cost optimisation)
+
+OpenSearch has built-in tiering so you don't keep everything on expensive hot nodes:
+
+| Tier | Where data lives | Performance | Cost | Use for |
+| ---- | ---------------- | ----------- | ---- | ------- |
+| **Hot** | EBS on data nodes | Fast (ms) | $$$ | Recent logs queried daily |
+| **UltraWarm** | Backed by **S3** under the hood | Slower (seconds) | ~10% of hot | Older logs queried occasionally |
+| **Cold** | Also backed by S3; must "attach" indices before querying | Slowest | Cheapest | Compliance retention, rarely queried |
+
+Typical pattern: **hot for last 30 days, UltraWarm for last 90 days, cold for everything older**.
+
+### Is OpenSearch a Database?
+
+**Technically yes** — it persists data, indexes it, replicates it. But categorise it as a **search engine / analytics store**, not a traditional database:
+
+| | OpenSearch | DynamoDB / RDS (true primary DBs) |
+| - | ---------- | --------------------------------- |
+| Persistent storage | Yes | Yes |
+| ACID transactions | ❌ No | ✅ Yes |
+| Joins | ❌ Limited / not at scale | ✅ Yes (RDS) |
+| Source of truth | **No — typically not** | **Yes** |
+| Built for | Search + analytics over documents | Operational reads/writes by key/query |
+| Loses data if cluster dies | Possible — treat as rebuildable | No — durable by design |
+
+### The Canonical Architecture
+
+```
+Apps  ──→  Kinesis Firehose  ──┬──→  S3 (raw logs, cheap, durable, source of truth)
+                                │         retention: months / years for compliance
+                                │
+                                └──→  OpenSearch (indexed copy for search + dashboards)
+                                          retention: days / weeks — short, hot
+```
+
+**Why both:**
+- **S3** — effectively infinite, ~$0.023/GB/month, durable. The perfect cold archive.
+- **OpenSearch** — expensive per GB, but searches in milliseconds. Terrible as a cold archive, unbeatable for live querying.
+
+If OpenSearch fails or you blow away the cluster, **S3 still has every log**. Rebuild OpenSearch from S3 via Firehose, Logstash, or OpenSearch Ingestion.
+
+**Anti-patterns (exam wrong answers):**
+
+- *"Store 7 years of logs in OpenSearch for compliance"* — wildly expensive. Use S3 for long retention; OpenSearch for short hot retention only.
+- *"OpenSearch as our single source of truth for orders / users / payments"* — wrong shape; no ACID, no joins. Use RDS / DynamoDB; index them in OpenSearch for search.
+- *"Skip S3, ship logs straight to OpenSearch only"* — cluster failure or misconfigured index lifecycle = logs gone. Always keep S3 in the pipeline.
+
+**Exam triggers:**
+
+- *"long-term log retention for compliance"* → **S3** (paired with OpenSearch for the hot portion)
+- *"reduce OpenSearch cost for older log data"* → **UltraWarm / Cold storage tiers**
+- *"rebuild OpenSearch index from raw logs"* → **replay from S3** via Firehose / OpenSearch Ingestion
 
 ### Classic Use Cases
 
@@ -6317,6 +6527,903 @@ Source → Buffer/Transport → Process → Store → Query/Consume
 ```
 
 Five questions, one per stage. Identify each from the exam scenario and the answer falls out. The three most common pipelines: **logs → Firehose → OpenSearch**, **events → Kinesis → Lambda/Flink → S3 + DynamoDB**, and **operational DB → DMS → S3 → Glue → Redshift**.
+
+## AWS AI/ML Services
+
+AWS splits AI/ML into two layers:
+
+1. **Pre-trained services** — call an API, get an answer. You don't train anything. Each service targets one input type (images, text, speech, video, documents).
+2. **Build-your-own platform** — **SageMaker** for the full ML lifecycle when no pre-trained service fits.
+
+The exam shortcut: **pick the pre-built service that matches your input type before reaching for SageMaker.**
+
+### The Family at a Glance
+
+| Service | Input | What it does | Anchor |
+| ------- | ----- | ------------ | ------ |
+| **Rekognition** | Images & video | Computer vision — detect objects, faces, text, content moderation, PPE | "AWS for image/video AI" |
+| **Comprehend** | Text | NLP — sentiment, entities, key phrases, language detection, PII detection | "Rekognition for text" |
+| **Translate** | Text | Language translation | "Google Translate API" |
+| **Transcribe** | Audio | Speech-to-text | "audio → text" |
+| **Polly** | Text | Text-to-speech (lifelike voices) | "text → audio" |
+| **Textract** | Documents (PDFs, scans) | Extract text **+ structure** from forms, tables, receipts | "OCR with layout" |
+| **Lex** | Text/voice | Build chatbots (powers Alexa) | "build a chatbot" |
+| **Personalize** | User events | Recommendation engine | "Netflix-style recommendations" |
+| **Forecast** | Time-series data | Demand / metric forecasting | "predict future numbers" |
+| **Bedrock** | Anything (LLMs) | Foundation models / GenAI — call Claude, Llama, Titan via one API | "AWS gateway to LLMs" |
+| **SageMaker** | Anything | Build/train/deploy **your own** ML models — end-to-end platform | "DIY ML" |
+
+### Amazon Rekognition (the headliner for computer vision)
+
+**Capabilities:**
+
+| Capability | What you get back |
+| ---------- | ----------------- |
+| **Object & scene detection** | "cat (98%)", "beach (94%)" with bounding boxes |
+| **Facial analysis** | Age range, emotion, gender, glasses/beard, smile, eyes-open |
+| **Face comparison** | Similarity score between two faces |
+| **Face search** in a face collection | "Does this face match anyone in our DB of 100k stored faces?" |
+| **Celebrity recognition** | Identify well-known people |
+| **Content moderation** | Flag explicit / suggestive / violent imagery |
+| **Text detection** | OCR-lite — signs, license plates, screenshots (use **Textract** for documents) |
+| **PPE detection** | Helmets, masks, gloves — safety/compliance use |
+| **Custom Labels** | Train your own image classifier with ~10–100 images per class |
+| **Video analysis** | Stored video (S3) or live video (Kinesis Video Streams) — async output to SNS |
+
+**Classic Rekognition pipelines:**
+
+```
+User uploads photo → S3 → S3 event → Lambda → Rekognition.DetectLabels()
+                                              → store JSON tags in DynamoDB
+                                              → moderation flag? → SNS alert
+```
+
+- **Content moderation** — S3 upload → Lambda → `DetectModerationLabels` → block or quarantine
+- **User photo tagging** — auto-tag uploaded photos for search
+- **Identity verification (KYC)** — selfie + ID photo → `CompareFaces` → match score
+- **Smart camera** — Kinesis Video Streams → Rekognition Video → real-time person detection
+- **Safety compliance** — factory camera → `DetectProtectiveEquipment` → flag missing helmet
+
+### Amazon Transcribe (the headliner for speech-to-text)
+
+**Anchored against Rekognition.** Rekognition is "what's in this image/video?"; Transcribe is "what was said in this audio/video?" — both pre-trained APIs, you call them and get JSON back.
+
+**Two execution modes:**
+
+| Mode | How it works | Use case |
+| ---- | ------------ | -------- |
+| **Batch** | Audio file in S3 → start a job → output transcript JSON to S3 | Podcasts, recorded meetings, call recordings, archived video |
+| **Streaming** | Open a websocket / HTTP/2 stream → push audio chunks → receive partial transcripts in real time | Live captions, voice assistants, real-time call monitoring |
+
+**Key features (exam-relevant):**
+
+| Feature | What it does |
+| ------- | ------------ |
+| **Speaker diarization** | Identifies who said what — `"Speaker 1: ...", "Speaker 2: ..."`. Up to 10 speakers |
+| **Channel identification** | For stereo audio (call recordings), left = caller, right = agent — separate transcripts per channel |
+| **Custom vocabulary** | Teach Transcribe your brand names, product names, jargon — *"Magnetar"* instead of *"magnet are"* |
+| **Custom language models** | Train on domain-specific corpora for higher accuracy on niche vocabulary |
+| **PII redaction** | Built-in: redact SSN, credit-card numbers, names, addresses from transcripts |
+| **Vocabulary filtering** | Block profanity or sensitive terms |
+| **Subtitle output** | Generate **WebVTT** or **SubRip (SRT)** subtitle files directly |
+| **Automatic language identification** | Detect the spoken language when you don't know in advance |
+| **Call Analytics** | Special mode for call centers — sentiment, talk time, interruptions, issue categorisation |
+
+**Specialised variants:**
+
+- **Transcribe Medical** — trained on medical terminology (clinical notes, doctor-patient dialogue). HIPAA-eligible.
+- **Transcribe Call Analytics** — call-center-specific output (sentiment per channel, talk-time ratio, non-talk time)
+
+**Common pipelines:**
+
+```
+Call center recording → S3 → Lambda → Transcribe (Call Analytics + PII redaction)
+                                          → Comprehend (sentiment / topics)
+                                          → QuickSight (dashboards)
+
+Live meeting audio → Transcribe Streaming → real-time captions in the UI
+
+Video uploaded → S3 → Transcribe → SRT/WebVTT subtitles → CloudFront delivers video + subs
+```
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Polly for transcription** — Polly is text → audio (the opposite direction). Transcribe is audio → text.
+- **Using a generic transcriber for medical dictation** — accuracy is poor on clinical vocab; use **Transcribe Medical**.
+- **Trying to find sentiment with Transcribe alone** — Transcribe outputs text. Pair with **Comprehend** for sentiment (or use **Transcribe Call Analytics** which has sentiment built in).
+- **Building real-time captions with batch Transcribe** — batch is async, latency in minutes. Use **Transcribe Streaming** for live captions.
+- **Hoping Transcribe will magically know brand/product names** — use **Custom Vocabulary** for known proper nouns.
+
+**Exam triggers:**
+
+- *"transcribe a podcast / meeting / call recording"* → **Transcribe** (batch)
+- *"real-time captions for a live event / stream"* → **Transcribe Streaming**
+- *"identify which speaker said what in a recording"* → **Transcribe** with **speaker diarization**
+- *"call-center recording with caller on left channel, agent on right"* → **Transcribe** with **channel identification** (or **Call Analytics**)
+- *"redact credit-card numbers / PII from transcripts"* → **Transcribe PII redaction**
+- *"generate subtitles for a video library"* → **Transcribe** with WebVTT/SRT output
+- *"transcribe a doctor's dictation accurately"* → **Transcribe Medical**
+- *"sentiment + talk-time analytics from call recordings"* → **Transcribe Call Analytics** (+ optionally Comprehend)
+- *"my transcripts misspell our product name"* → **Custom Vocabulary**
+
+### Amazon Polly (the headliner for text-to-speech)
+
+**Anchored against Transcribe.** Transcribe is audio → text (recognition). **Polly is text → audio** (synthesis). Same pre-trained API pattern; opposite direction. They often pair for voice apps.
+
+```
+"Hello, Bobby. Your delivery has arrived." → Polly → audio bytes (MP3/OGG/PCM)
+```
+
+**Voice engine tiers (matters for cost + quality):**
+
+| Engine | Quality | Cost | Use for |
+| ------ | ------- | ---- | ------- |
+| **Standard** | Concatenative; "fine" — robotic in places | Cheapest | Quick prototypes, IVR menus where naturalness isn't critical |
+| **Neural (NTTS)** | Neural-network synthesis — much more natural | Higher | Production apps, customer-facing voice |
+| **Long-form** | Tuned for long content (articles, books) — natural pacing over paragraphs | Higher | Article narration, audiobooks |
+| **Generative** | Newest tier; most natural, conversational, emotionally expressive | Highest | Premium experiences, lifelike chatbots |
+
+**Key features:**
+
+| Feature | What it does |
+| ------- | ------------ |
+| **30+ languages, many voices per language** | Male/female, regional accents, age ranges |
+| **SSML** (Speech Synthesis Markup Language) | XML markup to control pronunciation, emphasis, pauses, whispering, breathing, speed |
+| **Pronunciation lexicons** | Define custom pronunciation for industry terms / brand names / proper nouns |
+| **Speech marks** | Word/sentence/viseme timing metadata — for **lip-syncing**, karaoke, subtitle alignment |
+| **Brand Voice** | Custom voice trained on a brand's recordings (enterprise; long lead time) |
+| **Real-time streaming** | Synthesise + stream audio chunks as produced (low-latency voice) |
+| **Save to S3** | Async synthesis for long inputs — output stored as an S3 object |
+
+**Canonical pipelines:**
+
+```
+Chatbot voice:     User text/voice → Lex (or Bedrock) → response text → Polly → audio reply
+
+Article narration: Article text → Polly (Long-form voice) → S3 → CloudFront → mobile app
+                                                            (synthesise once, replay forever)
+
+IVR / call center: Caller → Amazon Connect → Lex understands intent
+                                           → Polly speaks the response
+
+Accessibility:     Page text → Polly streaming → audio playback for visually impaired users
+```
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Polly for transcription** — Polly does TTS, not STT. **Transcribe** is the right service for audio → text.
+- **Standard voices for production customer-facing audio** — sounds robotic. Use **Neural** (or **Generative** for premium).
+- **Synthesising the same content on every request** — for static text (articles, menus, FAQ), synthesise once and cache in **S3** behind CloudFront. Don't pay per request when output never changes.
+- **Trying to fix awkward pronunciation by misspelling the input text** — use **SSML** (`<phoneme>` tag) or a **pronunciation lexicon** for proper nouns and brand names.
+- **Using Polly for on-demand voice cloning** — that's **Brand Voice** (enterprise, long lead time); not a self-service feature.
+
+**Exam triggers:**
+
+- *"text-to-speech with natural-sounding voices"* → **Polly**
+- *"convert articles / news / books into audio"* → **Polly** (Long-form voice)
+- *"voice responses for a chatbot"* → **Lex + Polly** (or **Bedrock + Polly**)
+- *"build an IVR / interactive voice response system"* → **Connect + Lex + Polly**
+- *"screen reader / accessibility audio for a website"* → **Polly**
+- *"control pronunciation, emphasis, pauses programmatically"* → **Polly with SSML**
+- *"fix the way Polly says our brand name"* → **pronunciation lexicon** (or SSML `<phoneme>`)
+- *"lip-sync animated character with Polly's audio"* → **Polly speech marks** (visemes)
+- *"low-latency conversational voice for an AI assistant"* → **Polly Neural / Generative** with real-time streaming
+- *"transcribe audio"* → **Transcribe** (NOT Polly — opposite direction)
+
+### Amazon Translate (the headliner for machine translation)
+
+**Anchored against Polly / Transcribe.** Another single-purpose pre-trained API: Polly synthesises speech, Transcribe recognises speech, **Translate converts text between languages**. Text in language A → text in language B.
+
+```
+"The package will arrive tomorrow" (en)
+            ↓ Translate
+"Le colis arrivera demain" (fr)
+"El paquete llegará mañana" (es)
+"パッケージは明日届きます" (ja)
+```
+
+- **75+ languages** supported
+- **Pay per character** translated
+- **Auto language detection** if source unknown (uses Comprehend under the hood)
+- **Real-time** API + **batch / async** for large S3 jobs
+- **Document translation** preserves formatting for PDF / DOCX / HTML
+
+**Key features:**
+
+| Feature | What it does |
+| ------- | ------------ |
+| **Custom Terminology** | Define exact translations for terms — *"Magnetar always translates as Magnetar"*, not "magnet are". Brand names, product names, jargon |
+| **Active Custom Translation (ACT)** | Provide parallel data (your own translation pairs) to influence the model's style/word choice for your domain |
+| **Profanity masking** | Mask profanity in the output |
+| **Formality setting** | For pairs that distinguish (German `du`/`Sie`, Spanish `tú`/`usted`) — choose formal or informal |
+| **Document translation** | Submit a PDF/DOCX/HTML, get translated output with formatting preserved |
+| **Real-time API + Batch jobs** | Sync call for chat; async batch for thousands of S3 documents |
+
+**Canonical pipelines:**
+
+```
+Multilingual customer support:
+  Customer writes in any language → Translate to agent's language
+                                  → Agent replies → Translate to customer's language
+
+User-generated content:
+  User posts in their language → store original + Translate to viewer's language on read
+
+Website localisation (batch):
+  Source content in S3 → Translate (batch) → translated content in S3 per locale
+
+Mixed-language analytics:
+  Unknown-language input → Comprehend (detect language)
+                         → Translate to English
+                         → Comprehend (sentiment / entities)
+                         → store
+
+Document translation:
+  Contract.pdf → Translate document API → Contract_fr.pdf (formatting intact)
+```
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Translate for content *generation*** — Translate converts between languages, it doesn't write new content. Use **Bedrock** for generation.
+- **Not using Custom Terminology when you have brand names / proper nouns** — outputs get weird. Define a glossary once.
+- **Calling Translate without detecting source language first** when the source is unknown — pair with **Comprehend** for language detection.
+- **Using Translate on code or structured data** — it's for natural language. Translating JSON keys or code identifiers breaks things.
+- **Confusing Translate with Comprehend** — Comprehend *understands* text (sentiment, entities, language detection). Translate *converts* text between languages.
+
+**Exam triggers:**
+
+- *"translate text between languages, real-time"* → **Translate**
+- *"localise a website / mobile app into multiple languages"* → **Translate** (batch jobs from S3)
+- *"customer support across languages"* → **Translate** (often paired with Lex/Connect)
+- *"translate PDF / DOCX preserving formatting"* → **Translate document translation**
+- *"brand names must translate consistently"* → **Translate Custom Terminology**
+- *"adapt translation style to our domain with our own parallel data"* → **Active Custom Translation (ACT)**
+- *"formal vs informal tone in target language"* → **Translate formality setting**
+- *"detect language then translate"* → **Comprehend + Translate**
+- *"translate user-generated reviews into the viewer's language"* → **Translate**
+- *"redact / mask profanity in translated output"* → **Translate profanity masking**
+
+### Amazon Lex and Amazon Connect (chatbot brain + contact center)
+
+Often paired but solving different parts of the problem. **Lex is the NLU engine** (same one that powers Alexa). **Connect is the cloud call center.** They're not alternatives — Connect *calls* Lex for the natural-language understanding inside an IVR.
+
+#### Amazon Lex — the chatbot brain
+
+Build conversational interfaces (voice **or** text). You define:
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Intent** | What the user wants — "BookHotel", "CheckBalance", "TrackOrder" |
+| **Utterances** | Example phrases for each intent — "I want to book a room", "Reserve a hotel" |
+| **Slots** | Parameters the intent needs — `date`, `city`, `room_type` |
+| **Prompts** | What Lex asks to fill missing slots — *"Which city?"* |
+| **Fulfillment** | A **Lambda** function that executes the intent once slots are filled |
+
+```
+User: "Book me a hotel in Paris for Friday"
+Lex picks: Intent=BookHotel, slots={city:"Paris", date:"Friday"}
+            ↓
+        Lambda fulfillment → reservation system → confirmation
+            ↓
+Lex/Polly: "Your hotel in Paris is booked for Friday, confirmation ABC123."
+```
+
+- **Multi-language**, voice **or** text — same definition works for both
+- **Lex v2** is current (v1 is legacy)
+- Integrates with **Lambda**, **Connect**, mobile/web SDKs
+
+#### Amazon Connect — the cloud contact center
+
+Pay-per-use cloud call center. Replaces traditional on-prem PBX / contact-center systems. No per-seat licensing, no hardware.
+
+| Capability | What it does |
+| ---------- | ------------ |
+| **Phone numbers** (toll-free, local) | Inbound and outbound calls |
+| **Contact flows** | Visual designer for routing, IVR, branching logic |
+| **Queues + routing** | Skills-based routing, priority queues |
+| **Agent workspace** | Browser-based UI — no software install for agents |
+| **Call recording** | Stored in your S3 |
+| **Real-time + historical metrics** | Dashboards for ops |
+| **Outbound campaigns** | Predictive / preview / progressive dialers |
+
+**Contact Lens for Amazon Connect** — the built-in analytics layer:
+
+- Real-time and post-call **sentiment analysis**
+- **Transcription** with PII redaction
+- **Issue / category detection** ("customer mentioned cancellation 3 times")
+- **Talk-time ratios**, silence detection
+- **Agent screen alerts** when sentiment turns negative
+
+#### The Canonical Pipeline (exam-favourite architecture)
+
+```
+Caller dials phone number
+       ↓
+Amazon Connect (cloud contact center)
+       ↓
+Contact Flow (visual routing logic)
+       ↓
+Amazon Lex (NLU — "what does the caller want?")
+       ↓
+AWS Lambda fulfillment (look up account in DynamoDB / RDS, place order, etc.)
+       ↓
+Amazon Polly (synthesise the spoken response)
+       ↓
+Caller hears the answer
+       ↓ if escalation needed
+Route to human agent → Connect agent workspace shows full context
+       ↓ after call
+Contact Lens (sentiment, issues, transcription)
+       ↓
+S3 (recording) + Comprehend / QuickSight (analytics dashboards)
+```
+
+This stack — **Connect + Lex + Polly + Lambda + Contact Lens** — is the AWS answer to "modernise a call center" and appears constantly in exam questions.
+
+#### Where Each Service Fits
+
+| Layer | Service |
+| ----- | ------- |
+| **Phone system / call routing / agents** | **Connect** |
+| **Understand what the caller wants** (NLU) | **Lex** |
+| **Speak responses naturally** | **Polly** |
+| **Execute business logic** (lookup, transact) | **Lambda** + databases |
+| **Transcribe + analyse calls** | **Contact Lens** (or **Transcribe Call Analytics** outside Connect) |
+| **Free-form generative conversation** (LLM-style) | **Bedrock** (Lex is intent/slot-based) |
+
+#### Common Anti-patterns (exam wrong answers)
+
+- **Lex for free-form open-ended conversation** — Lex is built around intents + slots. For true natural conversational AI, **Bedrock + Claude/Llama** is the right answer.
+- **Building a traditional rigid menu IVR ("press 1 for sales")** when Lex could understand natural language — Lex elevates IVR from menus to "tell me what you need".
+- **Connect for non-phone scenarios** — Connect is contact-center / telephony. For internal video meetings → **Chime SDK**. For chat-only support → **Lex + a web widget**, not Connect.
+- **Skipping Contact Lens** when the question mentions sentiment / analytics / transcription inside a call center — Contact Lens is the in-Connect answer.
+- **Picking Transcribe alone** when the question is about a *call center* — inside Connect, **Contact Lens** is the integrated path.
+- **Confusing Lex with Polly** — Lex understands input; Polly speaks output. They pair, not interchange.
+
+#### Exam Triggers
+
+- *"build a chatbot"* → **Lex**
+- *"voice chatbot / voice assistant"* → **Lex + Polly**
+- *"natural-language chatbot with intents and slots"* → **Lex**
+- *"cloud contact center / call center on AWS"* → **Connect**
+- *"replace on-prem PBX / call center"* → **Connect**
+- *"intelligent IVR that understands natural language"* → **Connect + Lex + Polly**
+- *"call center with agent assistance and screen pops"* → **Connect** with Lambda integration
+- *"real-time call sentiment / agent alerts"* → **Contact Lens for Amazon Connect**
+- *"transcribe + analyse customer calls inside the call center"* → **Contact Lens**
+- *"store call recordings"* → **Connect → S3**
+- *"chatbot that holds free-form conversation, no rigid intents"* → **Bedrock** (NOT Lex)
+- *"Alexa-like skill / the engine that powers Alexa"* → **Lex** (same NLU engine)
+- *"chatbot for a website with text + voice"* → **Lex** (web/mobile SDKs)
+
+**The 80/20:** *Lex = chatbot brain (intents + slots + NLU; powers Alexa). Connect = cloud call center (phone numbers, routing, agents). They pair: Connect handles the call, Lex understands the caller, Polly speaks back, Lambda executes business logic, Contact Lens analyses sentiment + transcribes. For free-form conversational AI use Bedrock instead of Lex.*
+
+### Amazon Bedrock (the headliner for generative AI / foundation models)
+
+**Anchored against Lex.** Lex is intent/slot-based — rigid conversation flows you design in advance. **Bedrock is the opposite end** — call a foundation model (LLM) and get free-form generation, summarisation, Q&A, or chat. One API across many models from Anthropic, Meta, Mistral, AI21, Cohere, Stability AI, and AWS Titan.
+
+```
+You: "Summarise this 50-page contract in 5 bullet points"
+   ↓
+Bedrock (InvokeModel) — pick the model (Claude / Llama / Titan / etc.)
+   ↓
+LLM response — bullets generated on the fly, no intents, no slots
+```
+
+**Why Bedrock matters on the exam:**
+
+- **Fully managed**, no infrastructure — call an API, get a response
+- **Multi-model marketplace**: Anthropic Claude, Meta Llama, Mistral, Cohere Command, AI21 Jurassic, Stability Diffusion (images), AWS Titan
+- **Serverless inference** — no endpoint to provision (unlike SageMaker)
+- **Data stays in your account** — Bedrock doesn't train on your prompts
+- **VPC endpoints** — keep traffic off the internet
+
+**Key Bedrock features (each is a likely exam trigger):**
+
+| Feature | What it does |
+| ------- | ------------ |
+| **InvokeModel / Converse APIs** | Call any supported foundation model |
+| **Knowledge Bases** | **RAG (Retrieval-Augmented Generation)** — point Bedrock at your S3 docs, vector store (OpenSearch / Aurora pgvector / Pinecone), and the model answers using *your* data |
+| **Agents** | LLM that can call APIs / Lambda functions to take actions, not just generate text |
+| **Guardrails** | Policy layer — block sensitive topics, redact PII, enforce safety rules |
+| **Prompt management + flows** | Versioned prompts, reusable prompt templates, visual prompt-chaining |
+| **Model evaluation** | Compare models side-by-side on your task |
+| **Provisioned Throughput** | Reserved capacity for predictable workloads at lower per-token cost |
+| **Custom Models** | Fine-tune a foundation model on your data (continued pre-training or fine-tuning) |
+
+**Canonical Bedrock pipelines:**
+
+```
+Document Q&A (RAG):
+  S3 (your PDFs) → Knowledge Base (vector embeddings) → Bedrock model → answer with citations
+
+Chatbot with actions:
+  User → Bedrock Agent → calls Lambda → updates DynamoDB → returns confirmation
+
+Content generation:
+  Lambda → Bedrock InvokeModel → generated copy / summaries / translations → S3
+
+Image generation:
+  API call → Bedrock (Stable Diffusion / Titan Image) → image → S3 → CloudFront
+```
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Lex for free-form conversational AI** — Lex is rigid intents/slots. Use **Bedrock** for natural chat.
+- **SageMaker JumpStart when Bedrock would do** — Bedrock is fully managed, no endpoints. JumpStart is for when you need to host the model yourself or fine-tune deeply.
+- **Asking Bedrock to "search our docs" without Knowledge Bases** — without RAG, the model has no access to your private data. Use **Bedrock Knowledge Bases**.
+- **Skipping Guardrails for customer-facing GenAI** — PII leaks, off-topic responses, jailbreaks. Bedrock Guardrails block them centrally.
+- **Provisioning a SageMaker endpoint for a foundation model when Bedrock supports it** — Bedrock is cheaper and managed; reach for SageMaker JumpStart only for models Bedrock doesn't host.
+
+**Exam triggers:**
+
+- *"call a foundation model (Claude / Llama / Titan / Stable Diffusion) via one API"* → **Bedrock**
+- *"build a chatbot with free-form conversation, no rigid intents"* → **Bedrock** (NOT Lex)
+- *"summarise / generate / translate text with an LLM"* → **Bedrock**
+- *"generate images from text prompts"* → **Bedrock** (Stable Diffusion / Titan Image)
+- *"build a Q&A bot over our private documents in S3"* → **Bedrock Knowledge Bases** (RAG)
+- *"LLM that can take actions / call APIs"* → **Bedrock Agents**
+- *"block PII / off-topic / unsafe responses in a GenAI app"* → **Bedrock Guardrails**
+- *"fine-tune a foundation model on our domain data"* → **Bedrock Custom Models**
+- *"reserved capacity for predictable LLM workloads"* → **Bedrock Provisioned Throughput**
+- *"compare multiple foundation models on our task"* → **Bedrock Model Evaluation**
+
+**The 80/20:** *Bedrock = managed API to foundation models (Claude/Llama/Titan/Stable Diffusion etc.). Five named features: **Knowledge Bases** (RAG over your data), **Agents** (LLM that takes actions), **Guardrails** (safety/PII), **Custom Models** (fine-tuning), **Provisioned Throughput** (reserved capacity). For free-form GenAI use Bedrock; for rigid intents/slots use Lex; for self-hosting a model use SageMaker JumpStart.*
+
+### Amazon Comprehend (the headliner for general NLP)
+
+**Anchored against Comprehend Medical.** Same API pattern, but tuned for **general text** — customer reviews, social media, support tickets, emails — not clinical content. Comprehend Medical is anchored against *this* service; here's the parent.
+
+**What it extracts:**
+
+| Capability | Output |
+| ---------- | ------ |
+| **Sentiment** | Positive / negative / neutral / mixed + confidence scores |
+| **Targeted Sentiment** | Sentiment toward a *specific entity* in a paragraph |
+| **Entity recognition** | People, places, organisations, dates, quantities, commercial items |
+| **Key phrases** | The noun phrases that matter in the text |
+| **Language detection** | 100+ languages with confidence |
+| **Syntax** | Parts of speech, tokenisation |
+| **Topic modelling** | Discover themes across a corpus of documents |
+| **PII detection** | Identify + redact names, addresses, SSN, credit cards, etc. |
+| **Events detection** | Find structured events (e.g. mergers, IPOs from financial text) |
+
+**Customisation:**
+- **Comprehend Custom Classification** — train a text classifier on your labelled data (support ticket → category)
+- **Comprehend Custom Entity Recognition** — recognise your domain entities (product SKUs, internal codenames)
+
+**Canonical pipelines:**
+
+```
+Customer reviews  → Comprehend (sentiment + entities) → DynamoDB / Redshift → QuickSight
+Support tickets   → Comprehend Custom Classification → route to the right team
+User uploads      → Comprehend PII detection → redact before storing in S3
+Multilingual text → Comprehend (language detect) → Translate → store / process
+```
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Comprehend on clinical text** → use **Comprehend Medical** (knows drugs, conditions, ICD-10/RxNorm/SNOMED)
+- **Building a sentiment classifier from scratch in SageMaker** when Comprehend solves it → use the pre-trained service
+- **Comprehend for translation** → Comprehend *detects* language; **Translate** converts it
+- **Comprehend for full-text search** → use **OpenSearch** (inverted index) or **Kendra** (Q&A)
+
+**Exam triggers:**
+
+- *"sentiment of customer reviews / social media"* → **Comprehend**
+- *"detect language of incoming text"* → **Comprehend**
+- *"extract entities (names, places, organisations) from text"* → **Comprehend**
+- *"find key phrases / topics across a document corpus"* → **Comprehend** (topic modelling)
+- *"detect and redact PII from text before storing"* → **Comprehend PII detection**
+- *"train a custom text classifier on our own labels"* → **Comprehend Custom Classification**
+- *"recognise our domain-specific entities (product names, codenames)"* → **Comprehend Custom Entity Recognition**
+- *"sentiment toward a specific product mentioned in a paragraph"* → **Targeted Sentiment**
+- *"detect events like mergers/IPOs in financial text"* → **Comprehend Events detection**
+- *"clinical text"* → **Comprehend Medical** (NOT Comprehend)
+
+### Amazon Comprehend Medical (HIPAA-eligible clinical NLP)
+
+**Anchored against regular Comprehend.** Same API pattern, but the model understands **medical vocabulary** and links entities to **standard medical ontologies** (ICD-10, RxNorm, SNOMED). Regular Comprehend on a clinical note won't recognise "metoprolol" as a drug or "T2DM" as type-2 diabetes — Comprehend Medical does.
+
+**What it extracts:**
+
+| Category | Examples |
+| -------- | -------- |
+| **Medical conditions** | "diabetes", "hypertension", "T2DM" |
+| **Medications** | Drug name + dosage + frequency + route ("metoprolol 50mg twice daily orally") |
+| **Anatomy** | Body parts, systems ("left ventricle", "cervical spine") |
+| **Tests, treatments, procedures** | "MRI", "appendectomy", "blood glucose test" |
+| **Time expressions** | When things happened ("admitted on 2026-05-10", "post-op day 3") |
+| **Protected Health Information (PHI)** | Names, ages, addresses, IDs, dates — for **de-identification** |
+
+**Ontology linking — the differentiator:**
+
+Comprehend Medical doesn't just extract — it **links to standard codes**:
+
+| Linker | Codes returned | What for |
+| ------ | -------------- | -------- |
+| **ICD-10-CM** | International Classification of Diseases | Billing and diagnoses |
+| **RxNorm** | Standard drug identifiers | Medication reconciliation |
+| **SNOMED CT** | Comprehensive clinical terminology | EHR interoperability |
+
+Extracting "diabetes" returns `E11.9` (ICD-10); "metoprolol" returns the RxNorm code linking to every system using it.
+
+**Canonical pipelines:**
+
+```
+Spoken doctor dictation:
+  Audio → Transcribe Medical → text → Comprehend Medical → structured EHR fields
+                                                          → ICD-10 / RxNorm codes
+
+Scanned clinical document:
+  PDF → Textract → text → Comprehend Medical → structured fields + ontology codes
+
+De-identification for research:
+  Clinical notes → Comprehend Medical → detect PHI → redact → S3 (research-safe corpus)
+
+Clinical trial matching:
+  Patient records → Comprehend Medical → conditions + medications
+                                       → match against trial inclusion criteria
+```
+
+**HIPAA + compliance:**
+
+- **HIPAA-eligible** — covered under AWS's BAA (Business Associate Addendum)
+- Data isn't used to train AWS models
+- Standard AWS encryption (in transit + at rest with KMS)
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Using regular Comprehend on clinical text** — won't recognise medical entities or link to ontologies. Use **Comprehend Medical**.
+- **Using Comprehend Medical for general text** — overkill, tuned for clinical vocab. Use regular **Comprehend** for sentiment / entities in customer reviews etc.
+- **Using Textract alone for clinical documents** — Textract extracts text + form structure; it doesn't understand medical meaning. Pipeline: **Textract → Comprehend Medical**.
+- **Forgetting Transcribe Medical for spoken input** — for dictated notes the pipeline is **Transcribe Medical → Comprehend Medical**, not generic Transcribe.
+- **Storing PHI in plaintext after extraction** — use Comprehend Medical's PHI detection to **de-identify** before research storage.
+
+**Exam triggers:**
+
+- *"extract medical entities from clinical notes / EHR / discharge summaries"* → **Comprehend Medical**
+- *"HIPAA-compliant NLP"* → **Comprehend Medical**
+- *"de-identify / redact PHI in medical text"* → **Comprehend Medical** (PHI detection)
+- *"link medications to RxNorm"* → **Comprehend Medical**
+- *"link conditions to ICD-10 codes for billing"* → **Comprehend Medical**
+- *"link to SNOMED CT for EHR interoperability"* → **Comprehend Medical**
+- *"transcribe a doctor's dictation and extract structured data"* → **Transcribe Medical → Comprehend Medical**
+- *"scanned medical document → structured medical fields"* → **Textract → Comprehend Medical**
+- *"clinical trial patient matching"* → **Comprehend Medical**
+- *"medical coding automation"* → **Comprehend Medical** (ICD-10 linking)
+
+**The 80/20:** *Comprehend Medical = HIPAA-eligible NLP for clinical text. Extracts conditions, medications, anatomy, tests, PHI — and links to ICD-10, RxNorm, SNOMED. Pairs: **Transcribe Medical → Comprehend Medical** (dictation pipeline), **Textract → Comprehend Medical** (scanned docs). Regular Comprehend won't recognise medical vocabulary; Comprehend Medical is overkill for non-clinical text.*
+
+### Amazon Kendra
+
+Enterprise search powered by ML. Natural-language search across documents (PDFs, Word, Confluence, SharePoint, Salesforce, S3, ServiceNow…). Different from **OpenSearch** which is for log analytics + Lucene queries — **Kendra is for "ask a question, get a precise answer"** from enterprise content.
+
+**Exam triggers:**
+- *"natural-language search across internal documents / knowledge base"* → **Kendra**
+- *"build an enterprise search for SharePoint / Confluence / S3 content"* → **Kendra** (pre-built connectors)
+- *"return a precise answer to an employee's natural-language question"* → **Kendra**
+- *"chatbot answering questions from internal docs"* → **Kendra** (often paired with Lex or Bedrock)
+- *"FAQ / customer self-service"* → **Kendra**
+- *"full-text search on logs / dashboards"* → **OpenSearch** (NOT Kendra)
+
+### Amazon Personalize
+
+Real-time recommendation engine — the same ML used internally by Amazon.com for product recs. Feed it user-interaction data (clicks, views, purchases); get back personalised recommendations, ranked results, or trending items.
+
+**Exam triggers:**
+- *"personalised product / content recommendations"* → **Personalize**
+- *"users who bought X also bought Y"* → **Personalize**
+- *"Netflix-style recommendation engine"* → **Personalize**
+- *"personalised email campaigns"* → **Personalize**
+- *"rank a search result list for a specific user"* → **Personalize** (Personalized Ranking)
+- *"recommendation engine but we have **no** historical interaction data"* → not Personalize alone — it needs interaction data to learn from
+
+### Amazon Textract
+
+Extract text **and structure** from documents — forms, tables, receipts, invoices. Beyond OCR: recognises form fields, table cells, key-value pairs, signatures. HIPAA-eligible. Anchored against **Rekognition**: Rekognition's text detection is OCR-lite for signs/license plates; **Textract is for documents with layout**.
+
+**Exam triggers:**
+- *"extract text and structured fields from PDFs / forms / invoices / receipts"* → **Textract**
+- *"OCR that preserves table structure and key-value pairs"* → **Textract**
+- *"automate invoice / mortgage application / ID document processing"* → **Textract** (specialised APIs: AnalyzeExpense, AnalyzeID, AnalyzeLending)
+- *"extract signatures from scanned documents"* → **Textract**
+- *"scanned medical document → structured fields"* → **Textract → Comprehend Medical**
+- *"read text from a photo of a license plate / sign"* → **Rekognition** (NOT Textract — that's OCR-lite, not document layout)
+
+### Amazon Forecast
+
+Time-series forecasting service — feed it historical numeric data (sales, demand, web traffic, energy usage); get back probabilistic forecasts. Uses ML behind the scenes — you don't pick the algorithm. Different from **Timestream** (which *stores* time-series data) — Forecast *predicts* future values from it.
+
+**Exam triggers:**
+- *"forecast future demand / sales / metrics from historical time-series"* → **Forecast**
+- *"capacity planning, predict next quarter's sales"* → **Forecast**
+- *"predict web traffic / energy usage / inventory needs"* → **Forecast**
+- *"need probabilistic forecasts with confidence intervals"* → **Forecast**
+- *"store time-series data"* → **Timestream** (NOT Forecast)
+
+### Amazon Fraud Detector
+
+Pre-trained fraud detection — feed it event data (account signups, online payments) and your historical fraud labels; it builds a model that scores incoming events for fraud risk in real time. Built on the same ML Amazon.com uses internally.
+
+**Exam triggers:**
+- *"detect fraudulent account signups / online payments / promo abuse"* → **Fraud Detector**
+- *"real-time fraud scoring without building an ML model from scratch"* → **Fraud Detector**
+- *"identify suspicious transactions as they happen"* → **Fraud Detector**
+- *"build a custom fraud model in SageMaker"* — possible, but **Fraud Detector** is the managed pre-built answer when one exists
+
+### Amazon Augmented AI (A2I)
+
+**Human review of low-confidence ML predictions.** Wraps Rekognition / Textract / Comprehend (or your own SageMaker model) so that when the model's confidence is low, the output is routed to a **human reviewer** (your private workforce, vendors, or Mechanical Turk) before being trusted. Closes the "ML is 95% accurate but I need 100% for compliance" loop.
+
+**Exam triggers:**
+- *"human-in-the-loop review for low-confidence ML predictions"* → **Augmented AI (A2I)**
+- *"route uncertain Textract / Rekognition / Comprehend results to a human"* → **A2I**
+- *"compliance requires manual review of any prediction below X% confidence"* → **A2I**
+- *"send low-confidence model outputs to Mechanical Turk for verification"* → **A2I**
+
+### When to Pick SageMaker Over Pre-trained Services
+
+| Scenario | Pick |
+| -------- | ---- |
+| "Detect objects in user photos" | **Rekognition** (don't train your own) |
+| "Detect *very specific* defects in our widgets that Rekognition doesn't know" | **Rekognition Custom Labels** if ~100 images is enough; **SageMaker** for full control |
+| "Analyse medical X-rays / satellite imagery" | **SageMaker** — fundamentally different domain than Rekognition's training data |
+| "Sentiment of customer reviews" | **Comprehend** |
+| "Custom domain-specific NLP classifier" | **Comprehend Custom** or **SageMaker** |
+| "Forecast next quarter's sales" | **Forecast** (pre-trained) — or **SageMaker** for bespoke models |
+| "Build a chatbot for our website" | **Lex** (or **Bedrock** for LLM-powered) |
+| "End-to-end ML platform — training, hyperparameter tuning, deployment, monitoring" | **SageMaker** |
+
+### Amazon SageMaker — Deep Dive
+
+SageMaker isn't one service — it's a **family of components** covering every stage of building ML. Anchored against the pre-trained AI/ML services: those are *call-an-API*, AWS owns the model. **SageMaker is what you reach for when no pre-trained service fits** — you bring training data, choose / write the algorithm, own the model lifecycle.
+
+#### The ML Lifecycle SageMaker Covers
+
+```
+1. PREPARE DATA      → Data Wrangler, Feature Store, Ground Truth
+2. BUILD             → Studio (IDE), Notebooks, JumpStart (pre-built models)
+3. TRAIN             → Training Jobs, Autopilot (AutoML), HPO tuning
+4. DEPLOY            → Endpoints (real-time / serverless / async), Batch Transform, Edge
+5. MONITOR + GOVERN  → Model Monitor (drift), Clarify (bias/explainability), Pipelines (CI/CD)
+```
+
+#### Components to Know
+
+| Component | What it does |
+| --------- | ------------ |
+| **SageMaker Studio** | Browser-based IDE for ML (Jupyter + ML-specific tooling) |
+| **SageMaker Notebooks** | Managed Jupyter on EC2 — no infra setup |
+| **SageMaker Canvas** | **No-code** ML for business analysts (point-and-click) |
+| **SageMaker Data Wrangler** | Visual data prep — 300+ transformations, generates code |
+| **SageMaker Ground Truth** | **Data labelling** — humans label, models learn. Auto-labelling reduces cost over time |
+| **SageMaker Feature Store** | Central store for engineered features, shared across teams and models |
+| **SageMaker Training Jobs** | Managed training on EC2/GPU — bring your own code or use built-in algorithms |
+| **SageMaker Autopilot** | **AutoML** — picks algorithm + hyperparameters automatically from a tabular CSV |
+| **Hyperparameter Tuning (HPO)** | Search hyperparameter space to maximise a metric |
+| **SageMaker JumpStart** | One-click deploy of pre-built / foundation models (Hugging Face, Stable Diffusion, Llama, etc.) |
+| **SageMaker Endpoints (real-time)** | Always-on hosted model for low-latency inference |
+| **SageMaker Serverless Inference** | Auto-scaling, scale-to-zero endpoint — pay per request |
+| **SageMaker Async Inference** | Queue-based for **long-running** or **large-payload** inferences |
+| **SageMaker Batch Transform** | One-off / scheduled batch inference — no endpoint needed |
+| **Multi-model endpoints** | Host many models on **one endpoint** — load on demand from S3 |
+| **SageMaker Model Monitor** | Detect **drift** in production (data, model quality, bias) |
+| **SageMaker Clarify** | **Bias detection** + explainability (SHAP values) |
+| **SageMaker Debugger** | Profile + debug training jobs |
+| **SageMaker Pipelines** | **CI/CD for ML** — orchestrated training/deploy workflows |
+| **SageMaker Model Registry** | Versioning + approval workflow for models before deployment |
+| **SageMaker Neo** | **Compile models** for specific hardware (edge devices, custom CPUs) |
+| **SageMaker Edge Manager** | Deploy + monitor models on **edge devices** (IoT, factory equipment) |
+
+#### Endpoint Types — Pick the Right One (exam favourite)
+
+| Type | When |
+| ---- | ---- |
+| **Real-time endpoint** | Sub-second predictions, steady traffic, latency-critical (default) |
+| **Serverless Inference** | Spiky / unpredictable traffic, OK with cold starts, scale-to-zero needed |
+| **Async Inference** | **Large payloads** (>6 MB), **long inference times** (>60s), queue-based |
+| **Batch Transform** | One-off or scheduled batch — no endpoint to keep alive |
+| **Multi-model endpoint** | Host many models cheaply — load on demand from S3 |
+
+```
+"Predict in real time at scale"             → Real-time endpoint
+"Sporadic predictions, pay only when used"  → Serverless Inference
+"Process 100 MB image with a 5-min model"   → Async Inference
+"Predict for 10M rows nightly"              → Batch Transform
+"Host 500 small per-customer models"        → Multi-model endpoint
+```
+
+#### Training Cost Optimisation
+
+- **Managed Spot Training** — save up to 90% on training compute (with checkpointing in case Spot is reclaimed)
+- **Distributed training** — data parallel (split data across GPUs) or model parallel (split model across GPUs) for large models
+- **Built-in algorithms** — pre-optimised (XGBoost, K-Means, Linear Learner, Image Classification, BlazingText, etc.) — cheaper than custom containers
+- **Warm pools** — keep training instances warm between back-to-back jobs
+
+#### Canonical Architecture
+
+```
+S3 (training data)
+   ↓
+SageMaker Data Wrangler (clean, transform, engineer features)
+   ↓
+SageMaker Ground Truth (label data if supervised)
+   ↓
+SageMaker Feature Store (share features; offline + online sync)
+   ↓
+SageMaker Training Job (with Spot for cost; or Autopilot for AutoML)
+   ↓
+SageMaker Model Registry (version + approve)
+   ↓
+SageMaker Pipelines (orchestrate the whole flow as CI/CD)
+   ↓
+SageMaker Endpoint (real-time) / Batch Transform / Async / Serverless
+   ↓
+SageMaker Model Monitor (drift) + Clarify (bias) + CloudWatch (metrics)
+```
+
+#### SageMaker Anti-patterns (exam wrong answers)
+
+- **SageMaker when a pre-trained service would solve it** — building a sentiment classifier from scratch when Comprehend exists. Always check the pre-trained family first.
+- **Real-time endpoint for nightly batch predictions** — wasteful. Use **Batch Transform**.
+- **Real-time endpoint for spiky / sporadic traffic** — pays for idle. Use **Serverless Inference**.
+- **Real-time endpoint for 5-minute inferences or 100 MB payloads** — endpoints have payload and timeout limits. Use **Async Inference**.
+- **Hosting 100 small models on 100 separate endpoints** — wildly expensive. Use **multi-model endpoints**.
+- **Manual data labelling at scale** — use **Ground Truth** (auto-labelling reduces human effort over time).
+- **Picking Canvas for engineers** — Canvas is no-code for analysts; engineers want Studio + Notebooks.
+- **Forgetting Model Monitor** when the question mentions *drift* / *retrain* / *model accuracy degrading in production*.
+- **Deploying a model to a Raspberry Pi without optimisation** — use **SageMaker Neo** to compile for the target hardware.
+- **Skipping Spot training** for non-critical training jobs — leaves 90% savings on the table.
+
+#### SageMaker Exam Triggers
+
+**Service-specific:**
+
+- *"build, train, deploy ML model end-to-end"* → **SageMaker**
+- *"AutoML — pick model + hyperparameters automatically"* → **SageMaker Autopilot**
+- *"data labelling for supervised learning"* → **SageMaker Ground Truth**
+- *"detect drift in a production model"* → **SageMaker Model Monitor**
+- *"bias detection / explainability / SHAP values"* → **SageMaker Clarify**
+- *"no-code ML for business analysts"* → **SageMaker Canvas**
+- *"CI/CD pipeline for ML"* → **SageMaker Pipelines**
+- *"pre-built foundation models / Hugging Face / Llama / Stable Diffusion"* → **SageMaker JumpStart**
+- *"share engineered features across multiple models / teams"* → **SageMaker Feature Store**
+- *"visual data prep with 300+ transformations"* → **SageMaker Data Wrangler**
+- *"version + approve models before deployment"* → **SageMaker Model Registry**
+- *"compile model for an IoT / edge device"* → **SageMaker Neo** + **Edge Manager**
+- *"reduce training cost"* → **Managed Spot Training**
+- *"distributed training across multiple GPUs"* → **SageMaker distributed training**
+
+**Endpoint-type:**
+
+- *"low-latency real-time predictions"* → **Real-time endpoint**
+- *"sporadic traffic, scale-to-zero, pay only when used"* → **Serverless Inference**
+- *"large payload (>6 MB) or long inference time (>60s)"* → **Async Inference**
+- *"score millions of rows nightly, no endpoint needed"* → **Batch Transform**
+- *"host hundreds of per-customer models cost-efficiently"* → **Multi-model endpoint**
+
+**The SageMaker 80/20:** *Five lifecycle stages (Prepare → Build → Train → Deploy → Monitor) with named components for each. The exam tests two things hardest: (1) **picking the right endpoint type** (real-time / serverless / async / batch / multi-model) — match payload, latency, traffic pattern; (2) **knowing the named components** — Autopilot for AutoML, Ground Truth for labelling, Model Monitor for drift, Clarify for bias, Pipelines for CI/CD, JumpStart for pre-built models. Always check pre-trained services first — only reach for SageMaker when they don't fit.*
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Rekognition for documents with structured fields (forms, tables, receipts)** → **Textract** (designed for documents with layout). Rekognition's text detection is just OCR-lite.
+- **SageMaker when a pre-trained service would do** — building a sentiment classifier from scratch when Comprehend solves it.
+- **Comprehend for translation** → Comprehend detects language, **Translate** translates it.
+- **Calling Rekognition synchronously on a 2-hour video** → use the async video API; output goes to SNS.
+- **Personalize for "what to show next" without user-event history** → Personalize needs interaction data to learn from.
+- **Lex without thinking about LLM alternatives** → for natural conversational AI, **Bedrock + Claude / Llama** is often a better fit than rigid intent/slot Lex flows.
+
+### Exam Triggers
+
+**Input type → service:**
+
+- *"detect objects / faces / text / inappropriate content in images or video"* → **Rekognition**
+- *"extract structured data from invoices / forms / receipts / PDFs"* → **Textract**
+- *"sentiment / entities / key phrases / language detection in text"* → **Comprehend**
+- *"detect PII in text and redact it"* → **Comprehend** (PII detection)
+- *"translate text between languages"* → **Translate**
+- *"transcribe a podcast / meeting / call recording"* → **Transcribe**
+- *"convert text to natural-sounding speech"* → **Polly**
+- *"build a chatbot with intents and slots"* → **Lex**
+- *"chatbot using a foundation model (Claude / Llama / Titan)"* → **Bedrock**
+- *"product recommendations based on user behaviour"* → **Personalize**
+- *"forecast future demand / metrics from historical time-series"* → **Forecast**
+- *"build/train/deploy a custom ML model end-to-end"* → **SageMaker**
+
+**Service-specific giveaways:**
+
+- *"compare two faces / face match against a collection"* → **Rekognition** (`CompareFaces`, face collections)
+- *"detect helmets / masks / PPE in images"* → **Rekognition** PPE detection
+- *"identify celebrities in a photo"* → **Rekognition** celebrity recognition
+- *"train a custom image classifier with a small labelled dataset"* → **Rekognition Custom Labels** (low effort) or **SageMaker** (more control)
+- *"OCR on a complex form keeping the table/field structure"* → **Textract** (NOT Rekognition's text detection)
+
+**The 80/20:** *Pre-trained services pick by input type — Rekognition (images/video), Textract (documents), Comprehend (text NLP), Transcribe/Polly (speech), Translate (translation), Lex/Bedrock (chatbots), Personalize (recommendations), Forecast (time-series). SageMaker only when nothing pre-trained fits. The exam exploits Rekognition vs Textract confusion — Rekognition is "what's in this picture?", Textract is "extract the form fields and table cells from this PDF".*
+
+### AI/ML Cheat Sheet
+
+The whole AI/ML map on one card. Two layers, two decisions, eight pairings.
+
+**The two-tier mental model:**
+
+```
+Layer 1: PRE-TRAINED API services    ← pick by input type, call an API, done
+Layer 2: SAGEMAKER                    ← only when no pre-trained service fits
+```
+
+**Layer 1 — pick by input type:**
+
+| Input | Service | Headline use |
+| ----- | ------- | ------------ |
+| **Images / video** | **Rekognition** | Objects, faces, content moderation, PPE, celebrities |
+| **Documents (PDFs/forms/receipts)** | **Textract** | OCR with layout — keys, values, table cells |
+| **Text (general)** | **Comprehend** | Sentiment, entities, key phrases, language detection, PII |
+| **Text (clinical)** | **Comprehend Medical** | Medical entities + ICD-10 / RxNorm / SNOMED linking |
+| **Text → audio** | **Polly** | Text-to-speech (natural voices) |
+| **Audio → text** | **Transcribe** | Speech-to-text (general or Medical) |
+| **Translate text between languages** | **Translate** | 75+ languages, formality, custom terminology |
+| **Build a chatbot** | **Lex** | Intents + slots (rigid) / **Bedrock** (free-form LLM) |
+| **Cloud call center** | **Connect** (+ Lex + Polly + Contact Lens) | Phone system, IVR, sentiment analytics |
+| **Recommend products / content** | **Personalize** | Real-time personalisation |
+| **Forecast time-series** | **Forecast** | Demand / metric forecasting |
+| **Enterprise document search** | **Kendra** | Natural-language Q&A across docs (NOT log analytics — that's OpenSearch) |
+| **Call a foundation model (LLM)** | **Bedrock** | Claude / Llama / Titan / Stable Diffusion via one API |
+
+**Layer 2 — reach for SageMaker when:**
+
+- No pre-trained service matches your domain (medical imagery, satellite, defects, fraud, custom NLP)
+- You need to **train, tune, deploy, monitor** your own model end-to-end
+- You need CI/CD for ML (Pipelines), bias detection (Clarify), drift monitoring (Model Monitor)
+
+**SageMaker lifecycle in one glance:**
+
+```
+1. PREPARE  → Data Wrangler · Feature Store · Ground Truth (labelling)
+2. BUILD    → Studio · Notebooks · JumpStart (pre-built models)
+3. TRAIN    → Training Jobs · Autopilot (AutoML) · HPO · Spot training (-90%)
+4. DEPLOY   → Real-time / Serverless / Async / Batch / Multi-model endpoints · Neo (edge)
+5. GOVERN   → Model Monitor (drift) · Clarify (bias) · Pipelines (CI/CD) · Model Registry
+```
+
+**SageMaker endpoint type — the most-tested decision:**
+
+| Workload | Endpoint |
+| -------- | -------- |
+| Sub-second predictions, steady traffic | **Real-time** |
+| Sporadic / spiky traffic, OK with cold starts | **Serverless Inference** |
+| Large payload (>6 MB) or long inference (>60s) | **Async Inference** |
+| Score millions of rows nightly | **Batch Transform** |
+| Host hundreds of small models cheaply | **Multi-model endpoint** |
+
+**Common pairings — memorise (they appear together constantly):**
+
+```
+Connect + Lex + Polly + Lambda + Contact Lens   = intelligent IVR / cloud call center
+Lex + Polly                                      = voice chatbot
+Transcribe + Comprehend                          = analyse call recordings
+Transcribe Medical + Comprehend Medical          = clinical dictation pipeline
+Textract + Comprehend                            = extract + understand documents
+Textract + Comprehend Medical                    = scanned clinical docs → structured EHR
+Kendra + Lex (or Bedrock)                        = chatbot answering from internal docs
+Personalize + Pinpoint/SES                       = personalised email campaigns
+```
+
+**Top anti-pattern traps:**
+
+- **SageMaker for something pre-trained solves** — always check Layer 1 first
+- **Rekognition for documents** — use **Textract** (OCR with layout)
+- **Comprehend on clinical text** — use **Comprehend Medical**
+- **Lex for free-form conversation** — use **Bedrock** (LLM)
+- **Kendra for log analytics** — use **OpenSearch**
+- **Polly vs Transcribe** confusion — Polly = text→audio; Transcribe = audio→text
+- **Comprehend vs Translate** — Comprehend *understands* text; Translate *converts* between languages
+- **Real-time endpoint for batch / spiky / large-payload** workloads — pick **Batch Transform / Serverless / Async** instead
+
+**The two decisions that crack most exam questions:**
+
+1. **What's the input?** → identify the pre-trained service. Done if one fits.
+2. **If no pre-trained service fits → SageMaker.** Then pick the **endpoint type** by latency / payload / traffic shape.
 
 ## Serverless
 
