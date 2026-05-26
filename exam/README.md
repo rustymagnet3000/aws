@@ -167,6 +167,7 @@
   - [Amazon Managed Service for Apache Flink](#amazon-managed-service-for-apache-flink)
   - [How MSK and Flink Fit Together](#how-msk-and-flink-fit-together)
   - [Kafka vs SNS vs Redis pub/sub](#kafka-vs-sns-vs-redis-pubsub)
+  - [Amazon EventBridge](#amazon-eventbridge)
 - [Amazon Redshift](#amazon-redshift)
   - [When People Reach for Redshift](#when-people-reach-for-redshift)
   - [OLTP vs OLAP](#oltp-vs-olap)
@@ -5868,6 +5869,136 @@ Looks similar from above. Behaves very differently when you need replay, late-jo
 - *"late-joining consumer needs to replay all historical events"* → **Kafka / Kinesis** (not SNS)
 
 **The 80/20:** *SNS is a telegraph (delivered or lost), Redis pub/sub is a walkie-talkie (only people listening now hear it), Kafka is a tape recorder (everything stored, anyone can rewind). Pick Kafka when you need a durable replayable log with multiple independent consumer groups — typical of event-driven architectures and stream-processing pipelines.*
+
+### Amazon EventBridge
+
+**Anchored against SNS + CloudWatch Events.** EventBridge is the **AWS-native event bus**: routes JSON events from many sources to many targets, with content-based filtering. It's the **rebrand of CloudWatch Events**, with two big additions:
+
+1. **Custom and Partner event buses** — not just AWS-emitted events; bring in your own + 100+ SaaS sources (Datadog, Zendesk, Shopify, MongoDB Atlas, PagerDuty, etc.)
+2. **Schema registry**, **Archive + Replay**, **Pipes**, and **Scheduler** — features that don't exist in plain SNS or CloudWatch Events
+
+**Two-word mental model:** *content-routed event bus*.
+
+#### Four Event-Bus Types
+
+| Bus type | What it receives | Use for |
+| -------- | ---------------- | ------- |
+| **Default bus** | AWS service events (EC2 state change, S3 PutObject, RDS failover, etc.) | React to anything AWS does |
+| **Custom bus** | Your own application events | Decouple microservices internally |
+| **Partner bus** | Events from SaaS (Datadog, Zendesk, Shopify, Auth0, etc.) | React to events from outside AWS |
+| **Scheduler** (separate service, but family) | Cron / one-time schedules | Replaces scheduled CloudWatch Events rules |
+
+#### Rules + Targets + Filtering (the core mechanic)
+
+```
+Source emits event → matches against rules (JSON pattern) → routed to target(s)
+```
+
+A **rule** has:
+- An **event pattern** — JSON filter on event fields. *Only* matching events trigger targets
+- One or more **targets** — Lambda, SQS, SNS, Step Functions, Kinesis Firehose, ECS task, API Gateway, another event bus, etc. (**18+ supported target types**)
+- Optional **input transformer** — reshape the event before delivery to a target
+
+```json
+{
+  "source": ["aws.s3"],
+  "detail-type": ["Object Created"],
+  "detail": {
+    "bucket": { "name": ["prod-uploads"] },
+    "object": { "size": [{ "numeric": [">", 1048576] }] }
+  }
+}
+```
+
+That rule fires only on **S3 object creations in `prod-uploads` larger than 1 MB**. Content-based filtering is the headline differentiator from SNS (SNS does filter-by-attribute but is less expressive).
+
+#### Archive + Replay (unique feature)
+
+EventBridge can **archive every event** that lands on a bus (with optional filtering on what to keep). Later you can **replay** archived events back through the bus — useful for:
+
+- **Disaster recovery** — replay events lost during a downstream outage
+- **Bug fix replay** — replay a window of events after fixing a buggy consumer
+- **Testing** — replay production events into a staging bus
+
+Retention: up to **indefinite** if you choose. Replay can target any date range.
+
+Neither SNS nor CloudWatch Events can do this — replay is an EventBridge-only superpower.
+
+#### Schema Registry
+
+Discover the schema of events flowing through a bus (auto-discovered or registered manually), version them, and **code-generate typed bindings** in Java / Python / TypeScript so consumers get autocomplete + compile-time safety on event payloads.
+
+Pairs nicely with **EventBridge Pipes** — typed event handlers across microservices.
+
+#### EventBridge Pipes (newer feature)
+
+A **point-to-point** integration between an event source and a target — with optional filtering and enrichment — **without writing Lambda glue**.
+
+```
+Source ──→ Filter ──→ Enrichment ──→ Target
+(SQS, Kinesis,        (Lambda /        (Lambda, SQS,
+ DynamoDB Streams,    Step Functions,  EventBridge bus,
+ MSK, MQ, etc.)       API destination) Step Functions, etc.)
+```
+
+Use case: *"every change in DynamoDB Streams → enrich with user profile via API → write to EventBridge bus → fan out to 5 consumers"*. Without Pipes you'd build a Lambda for the glue. With Pipes it's configuration.
+
+| | EventBridge Rules | EventBridge Pipes |
+| - | ----------------- | ----------------- |
+| Pattern | One source bus → N targets | One source → one target (with optional enrichment) |
+| Sources | EventBridge bus events | SQS, Kinesis, DynamoDB Streams, MSK, MQ, SelfManaged Kafka |
+| Use for | Event bus fan-out | Replacing the "Lambda as glue" pattern |
+
+#### EventBridge Scheduler (the cron service)
+
+Originally scheduled tasks lived inside CloudWatch Events (rate / cron expressions). EventBridge Scheduler is the **dedicated cron service** — supports **millions of schedules**, **one-time** schedules, time-zone awareness, flexible time windows, and direct invocation of **270+ AWS API actions** (no Lambda glue).
+
+| Old way | New way |
+| ------- | ------- |
+| CloudWatch Events scheduled rule → Lambda → action | **EventBridge Scheduler** → action directly |
+
+Exam phrasing: *"schedule a one-time invocation of a Lambda 3 hours from now"* → **EventBridge Scheduler** (CloudWatch Events scheduled rules only support recurring patterns).
+
+#### EventBridge vs SNS (the exam decision)
+
+| | SNS | EventBridge |
+| - | --- | ----------- |
+| Pattern | Pub/sub topic — fan-out to N subscribers | Event bus — content-routed to many targets |
+| Filtering | Attribute-based filter policies (limited) | **Content-based** JSON pattern matching (rich) |
+| SaaS sources | No | **100+ partner integrations** |
+| AWS-emitted events | No (you publish manually) | **Yes** — default bus auto-receives from many services |
+| Archive + replay | No | **Yes** |
+| Schema registry | No | **Yes** |
+| Latency | Sub-100ms (faster) | Slightly higher (~ hundreds of ms) |
+| Target types | SQS, Lambda, HTTP/S, SMS, email, mobile push | 18+ AWS targets, API destinations (HTTP), cross-account buses |
+| Throughput | Massive | High but with per-rule and per-target limits |
+| Best for | Simple, fast fan-out | Complex routing, SaaS events, replay, schemas |
+
+**The shortcut:** simple fan-out, lowest latency, AWS-only → **SNS**. Routing logic, SaaS sources, replay, schemas → **EventBridge**.
+
+#### Common Anti-patterns (exam wrong answers)
+
+- **"CloudWatch Events"** in a current question → recognise it as **EventBridge** (same service, rebrand). Same exam answer.
+- **EventBridge for simple ultra-low-latency fan-out** — SNS is faster and cheaper for pure fan-out.
+- **Writing a Lambda just to ferry events from SQS / Kinesis to EventBridge** — use **EventBridge Pipes** instead.
+- **CloudWatch Events scheduled rule for a one-time future invocation** — only supports recurring patterns. Use **EventBridge Scheduler** for one-off / cron-at-scale.
+- **Custom database table to log every event for replay** — EventBridge **Archive + Replay** does this natively.
+- **SNS for events that originate at a SaaS vendor** — SaaS partners deliver into EventBridge **partner event buses**, not SNS.
+
+#### Exam Triggers
+
+- *"AWS-native event bus with content-based routing"* → **EventBridge**
+- *"react to events from Datadog / Zendesk / Shopify / Auth0 / etc."* → **EventBridge partner event bus**
+- *"replay events from last week through the same pipeline"* → **EventBridge Archive + Replay**
+- *"point-to-point integration from SQS/Kinesis/DynamoDB Streams to a target without writing Lambda glue"* → **EventBridge Pipes**
+- *"schedule a one-time future invocation"* → **EventBridge Scheduler** (NOT CloudWatch Events scheduled rules)
+- *"cron at massive scale (millions of schedules)"* → **EventBridge Scheduler**
+- *"version + auto-discover event schemas, code-gen bindings"* → **EventBridge Schema Registry**
+- *"route events differently based on JSON payload content"* → **EventBridge event patterns** (richer than SNS filter policies)
+- *"cross-account / cross-region event routing"* → **EventBridge cross-account / cross-region buses**
+- *"the service formerly known as CloudWatch Events"* → **EventBridge**
+
+**The 80/20:** *EventBridge = content-routed event bus = CloudWatch Events rebrand + custom + partner buses + Archive/Replay + Pipes + Scheduler + Schema Registry. Pick EventBridge over SNS when you need content-based filtering, SaaS sources, or replay. Pick SNS when you need simple, fastest fan-out. The exam tests the rebrand trap ("CloudWatch Events" → EventBridge), the SaaS-source angle, Archive+Replay uniqueness, and Pipes for "no Lambda glue".*
 
 ## Amazon Redshift
 
