@@ -45,6 +45,17 @@
   - [Health Checks](#health-checks)
   - [ALB and EC2 Security Groups](#alb-and-ec2-security-groups)
   - [EC2 without a Public IP](#ec2-without-a-public-ip)
+- [Amazon CloudWatch](#amazon-cloudwatch)
+  - [The Five Core Concepts](#the-five-core-concepts)
+  - [The Monitoring Granularity Trap (exam favourite)](#the-monitoring-granularity-trap-exam-favourite)
+  - [The CloudWatch Agent — the OS-level fact most miss](#the-cloudwatch-agent--the-os-level-fact-most-miss)
+  - [Alarms + Auto Scaling — the classic pattern](#alarms--auto-scaling--the-classic-pattern)
+  - [CloudWatch Alarms vs Datadog Monitors (mental anchor)](#cloudwatch-alarms-vs-datadog-monitors-mental-anchor)
+  - [CloudWatch Logs — the cost trap](#cloudwatch-logs--the-cost-trap)
+  - [Logs Insights vs OpenSearch](#logs-insights-vs-opensearch)
+  - [Specialised Variants (exam-relevant names)](#specialised-variants-exam-relevant-names)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-9)
+  - [Exam Triggers](#exam-triggers-9)
 - [ECS (Elastic Container Service)](#ecs-elastic-container-service)
   - [ECS vs ASG + EC2](#ecs-vs-asg--ec2)
   - [Key concepts](#key-concepts)
@@ -1138,6 +1149,148 @@ Internet → ALB (public subnet, public IP) → EC2 (private subnet, no public I
 | EC2 with public IP, SG locked to your IP on port 22, open on 80/443 | ~$0.005/hr | Dev or personal projects |
 
 For a cost-conscious personal project, a single EC2 instance with a public IP and a tight security group is perfectly reasonable — no ALB needed.
+
+## Amazon CloudWatch
+
+**Anchored against services you know.** CloudWatch is AWS's observability layer (metrics + logs + alarms + dashboards) — the AWS-native answer to what Datadog does in one product. Most other AWS services emit metrics/logs *into* CloudWatch automatically; you query, alarm, visualise, and react from there.
+
+### The Five Core Concepts
+
+| Component | What it does |
+| --------- | ------------ |
+| **Metrics** | Time-series numeric data (CPU, request count, custom values). Per-AWS-service metrics are free; **custom metrics** cost per metric per month |
+| **Alarms** | Threshold-based triggers on metrics (or composite of multiple) — states: `OK` / `INSUFFICIENT_DATA` / `ALARM` |
+| **Logs** | Application + service logs collected into log groups / log streams. **Retention is per-log-group** (default = never expire → cost trap) |
+| **Logs Insights** | Query language for searching/aggregating logs — pay per GB scanned |
+| **Dashboards** | Visualisations across metrics + logs |
+
+### The Monitoring Granularity Trap (exam favourite)
+
+| | **Basic monitoring** | **Detailed monitoring** |
+| - | -------------------- | ----------------------- |
+| Granularity | **5-minute** | **1-minute** |
+| EC2 cost | Free | Paid (per instance) |
+| Default? | Yes for EC2 | No — opt-in |
+
+**Custom metrics** can be even finer — down to **1-second** (high-resolution custom metrics).
+
+Exam phrasing: *"need faster autoscaling response than 5 minutes"* → **enable Detailed Monitoring** (1-minute) or **publish a custom metric**.
+
+### The CloudWatch Agent — the OS-level fact most miss
+
+By default, EC2 metrics include **CPU, network, disk I/O**, but **NOT memory** or **disk usage**. To get those, install the **CloudWatch Agent** on the instance — it pushes OS-level metrics (RAM, disk free, custom application metrics) into CloudWatch as custom metrics.
+
+Exam triggers:
+- *"can't alarm on EC2 memory usage"* → **install the CloudWatch Agent** (memory is not a default metric)
+- *"can't alarm on disk free space"* → **CloudWatch Agent**
+
+### Alarms + Auto Scaling — the classic pattern
+
+```
+EC2 CPU > 70% for 5 min → CloudWatch Alarm → Auto Scaling Group → add instances
+SQS queue depth > 1000  → CloudWatch Alarm → Auto Scaling Group → add consumers
+RDS connections > 80%   → CloudWatch Alarm → SNS → email/page ops
+```
+
+**Composite alarms** combine multiple alarms with AND/OR logic — reduce noise (only alarm if "high CPU AND high error rate").
+
+### CloudWatch Alarms vs Datadog Monitors (mental anchor)
+
+If you use Datadog at work, a **Datadog "monitor" ≈ CloudWatch Alarm**. Same idea: watch a condition, evaluate continuously, notify on breach. The vocabulary differs but the model is identical.
+
+| Datadog | CloudWatch equivalent |
+| ------- | --------------------- |
+| Monitor (metric) | **CloudWatch Alarm** on a metric |
+| Anomaly monitor | **CloudWatch Alarm** with **Anomaly Detection** |
+| Log monitor (count matches) | **Metric Filter** → **CloudWatch Alarm** |
+| Composite monitor (AND/OR) | **Composite Alarm** |
+| Notification channels (Slack, PagerDuty, email) | **SNS topic** → AWS Chatbot / Lambda / email subscribers |
+
+**Worked example — "alert Slack when more than 10 errors in 5 minutes":**
+
+```
+Datadog:    Log query: status:error → Monitor: count > 10 over 5 min → #ops-alerts Slack
+
+CloudWatch: Logs → Metric Filter (pattern { status = "error" }) → custom metric ErrorCount
+                  → CloudWatch Alarm (ErrorCount > 10 over 5 min)
+                  → SNS topic
+                  → AWS Chatbot → Slack channel
+```
+
+Two things that trip people up when translating from Datadog mental model:
+
+1. **AWS Chatbot is the bridge to Slack / MS Teams.** SNS can't post to Slack directly. **AWS Chatbot** subscribes to an SNS topic and posts to a channel — no Lambda needed. Exam phrasing: *"send CloudWatch alarms to a Slack channel"* → **SNS + AWS Chatbot**.
+
+2. **Log-based alerts need the Metric Filter step.** Datadog lets you alarm directly on a log query. In CloudWatch you first turn the log pattern into a metric (the **Metric Filter**), then alarm on that metric. Exam phrasing: *"alert when more than N errors appear in logs"* → **Metric Filter + CloudWatch Alarm**.
+
+**Alarm states** also differ:
+
+| Datadog | CloudWatch |
+| ------- | ---------- |
+| OK / Warn / Alert / No Data | **OK / INSUFFICIENT_DATA / ALARM** (3 states only) |
+
+**Exam triggers:**
+
+- *"send CloudWatch alarm to a Slack channel"* → **SNS topic + AWS Chatbot**
+- *"alert when log pattern X appears more than N times"* → **Metric Filter → CloudWatch Alarm → SNS**
+- *"reduce alarm noise by combining conditions (AND/OR)"* → **Composite Alarm**
+- *"alarm on unusual behaviour rather than a fixed threshold"* → **CloudWatch Anomaly Detection**
+
+### CloudWatch Logs — the cost trap
+
+- Default retention: **never expire** — your logs grow forever and bill forever
+- Fix: set retention per log group (1 day → 10 years) or use **subscription filters** to ship to S3 (cheaper) and trim CloudWatch
+- **Subscription filters** stream log events in real time to **Kinesis / Lambda / OpenSearch / Firehose**
+
+### Logs Insights vs OpenSearch
+
+| | Logs Insights | OpenSearch |
+| - | ------------- | ---------- |
+| Setup | Zero — logs already in CloudWatch | Provision cluster |
+| Cost | Pay per GB scanned per query | Cluster running cost |
+| Query language | CloudWatch Insights syntax | Lucene / OpenSearch query DSL |
+| Best for | Occasional log search | Heavy day-to-day log analytics + dashboards |
+
+### Specialised Variants (exam-relevant names)
+
+| Service | What it does |
+| ------- | ------------ |
+| **CloudWatch Synthetics** | **Canary** scripts that periodically hit your endpoints; alarm on failure |
+| **CloudWatch RUM** | Real User Monitoring — frontend performance from real browsers |
+| **CloudWatch Container Insights** | Auto-collected ECS / EKS / Fargate metrics + logs |
+| **CloudWatch Lambda Insights** | Per-function metrics with cold start, memory, init time |
+| **CloudWatch Application Insights** | Automated detection of problems in apps (.NET / SQL / Java) |
+| **CloudWatch Anomaly Detection** | ML-based dynamic thresholds — alarm on "unusual" not just "above X" |
+| **CloudWatch ServiceLens** | Combine metrics + X-Ray traces for service map view |
+| **CloudWatch Contributor Insights** | Top-N analyses (top users, top IPs, top errors) |
+
+### Common Anti-patterns (exam wrong answers)
+
+- **"Can't alarm on memory"** → install **CloudWatch Agent** (memory isn't a default EC2 metric)
+- **Default-monitoring then asking why autoscaling is slow** → enable **Detailed Monitoring** for 1-min granularity
+- **No log retention set** — logs grow forever; cost balloons
+- **Logs Insights for daily dashboards on TBs of logs** → use **OpenSearch** instead (cluster pays off at that volume)
+- **CloudWatch Events** when the question says "EventBridge" — same service, EventBridge is the rebrand + adds SaaS integrations
+- **Picking QuickSight to "monitor latency"** — QuickSight is BI, not monitoring. Use CloudWatch (or third-party Datadog).
+
+### Exam Triggers
+
+- *"monitor AWS resources / alarm on metrics"* → **CloudWatch**
+- *"alarm on EC2 CPU > X for autoscaling"* → **CloudWatch Alarm + ASG**
+- *"alarm on memory or disk usage"* → **CloudWatch Agent** (default metrics don't include these)
+- *"need 1-minute autoscaling granularity"* → **Detailed Monitoring**
+- *"sub-minute custom metrics"* → **High-resolution custom metrics**
+- *"query logs with SQL-like syntax, occasionally"* → **Logs Insights**
+- *"ship logs to a SIEM / analytics destination"* → **Subscription filter → Kinesis / Lambda / OpenSearch / Firehose**
+- *"periodically test that our API endpoint is up"* → **CloudWatch Synthetics canaries**
+- *"frontend performance monitoring from real users"* → **CloudWatch RUM**
+- *"ML-based anomaly detection on a metric"* → **CloudWatch Anomaly Detection**
+- *"combine multiple alarms with AND/OR to reduce noise"* → **Composite Alarms**
+- *"auto-collect ECS/EKS container metrics"* → **Container Insights**
+- *"single dashboard combining metrics + traces"* → **ServiceLens**
+- *"top-N contributors (top users / IPs / errors)"* → **Contributor Insights**
+
+**The 80/20:** *CloudWatch = metrics + logs + alarms + dashboards. Three exam traps: (1) **memory/disk need the CloudWatch Agent**; (2) **basic monitoring is 5-min** — enable Detailed for 1-min; (3) **logs never expire by default** — set retention. Logs Insights for ad-hoc log queries; OpenSearch when log analytics is constant. Alarms drive ASG, SNS, Lambda. CloudWatch Synthetics for endpoint canaries, RUM for frontend, ServiceLens for traces.*
 
 ## ECS (Elastic Container Service)
 
