@@ -51,6 +51,9 @@
   - [The CloudWatch Agent — the OS-level fact most miss](#the-cloudwatch-agent--the-os-level-fact-most-miss)
   - [Alarms + Auto Scaling — the classic pattern](#alarms--auto-scaling--the-classic-pattern)
   - [CloudWatch Alarms vs Datadog Monitors (mental anchor)](#cloudwatch-alarms-vs-datadog-monitors-mental-anchor)
+  - [Composite Alarms (deep dive)](#composite-alarms-deep-dive)
+  - [Testing Alarms](#testing-alarms)
+  - [CloudWatch Synthetics (deep dive)](#cloudwatch-synthetics-deep-dive)
   - [CloudWatch Logs — the cost trap](#cloudwatch-logs--the-cost-trap)
   - [Logs Insights vs OpenSearch](#logs-insights-vs-opensearch)
   - [Specialised Variants (exam-relevant names)](#specialised-variants-exam-relevant-names)
@@ -1235,6 +1238,224 @@ Two things that trip people up when translating from Datadog mental model:
 - *"alert when log pattern X appears more than N times"* → **Metric Filter → CloudWatch Alarm → SNS**
 - *"reduce alarm noise by combining conditions (AND/OR)"* → **Composite Alarm**
 - *"alarm on unusual behaviour rather than a fixed threshold"* → **CloudWatch Anomaly Detection**
+
+### Composite Alarms (deep dive)
+
+A **composite alarm** has no metric of its own — its state is computed from a boolean **rule expression** over other alarms. Two reasons to use them: **reduce noise** (combine conditions) and **suppress flood** (silence children when a parent is in alarm).
+
+**Rule expression syntax:**
+
+The expression uses three state functions over the child alarms:
+
+```
+ALARM("alarm-name")              ← true when that alarm is in ALARM state
+OK("alarm-name")                 ← true when that alarm is in OK state
+INSUFFICIENT_DATA("alarm-name")  ← true when that alarm has no data
+```
+
+Combine with `AND`, `OR`, `NOT` and parentheses.
+
+**Worked examples:**
+
+```
+# Page only if BOTH high CPU and high error rate
+ALARM("high-cpu") AND ALARM("high-error-rate")
+
+# Alert on either symptom
+ALARM("p99-latency") OR ALARM("5xx-rate")
+
+# High CPU, but only if the underlying disk isn't full (different root cause)
+ALARM("high-cpu") AND NOT ALARM("disk-full")
+
+# Treat missing data as healthy, not as a problem
+(ALARM("api-error-rate")) AND (NOT INSUFFICIENT_DATA("api-error-rate"))
+```
+
+**Suppressor alarms — the noise-flood killer:**
+
+A composite alarm can designate another alarm as a **suppressor**. While the suppressor is in ALARM, the composite alarm **does not publish state-change notifications** for its children — preventing alert storms when one root cause triggers many downstream effects.
+
+Classic scenario:
+
+```
+                    ┌──────────────────────────────────────────────┐
+                    │ Region-wide outage = page once, not 50 times │
+                    └──────────────────────────────────────────────┘
+
+Region-Down alarm (suppressor)  ──→  composite alarm tracking 50 service-level alarms
+                                     suppresses notifications while Region-Down is ALARM
+```
+
+Without the suppressor: a region-wide outage triggers 50 downstream service alarms → 50 pages → on-call overload.
+With the suppressor: only the region-down page fires; the 50 noisy children are gagged for the duration.
+
+You can configure how long the suppression lasts and what happens on edge timing (suppressor extension period, wait period).
+
+**Cost:**
+
+Composite alarms are billed **per alarm-month**, same model as regular alarms. They're cheap, but each child also counts as its own alarm — composite ≠ free.
+
+**Anti-patterns (exam wrong answers):**
+
+- **Composite alarm with a metric expression** — composite alarms don't observe metrics directly; that's what *metric math* + regular alarms are for. Composites operate on alarm *states*, not metric values.
+- **Trying to suppress with `OK("parent-alarm")`** — suppressor logic uses the dedicated **ActionsSuppressor** field, not an OR/AND clause. Use the suppressor mechanism, not the rule expression, for flood-killing.
+- **Using composite to chain alarms with no logic gain** — if you just want "fire if A OR B", a Composite makes sense. If you have *one* condition, just use a regular alarm.
+- **Forgetting that children still publish independently** — composite suppression only silences the *composite's* actions. Child alarms still fire their own actions unless reconfigured. Disable child actions if the composite is meant to be the sole notifier.
+
+**Exam triggers:**
+
+- *"alarm only when high CPU AND high error rate occur together"* → **Composite Alarm with AND**
+- *"alert on either of two symptoms"* → **Composite Alarm with OR**
+- *"prevent alert flood when a parent infrastructure failure triggers many downstream alarms"* → **Composite Alarm with a suppressor**
+- *"reduce noise from chatty monitoring without disabling alerts entirely"* → **Composite Alarm**
+- *"alarm logic that depends on the state of other alarms, not raw metrics"* → **Composite Alarm**
+
+### Testing Alarms
+
+Three CLI tools for testing and operating alarms without waiting for real conditions to trigger.
+
+**`set-alarm-state` — manually flip alarm state to test downstream actions:**
+
+```bash
+aws cloudwatch set-alarm-state \
+  --alarm-name "high-error-rate" \
+  --state-value ALARM \
+  --state-reason "Testing Slack integration"
+```
+
+- Flips state to `ALARM` / `OK` / `INSUFFICIENT_DATA` immediately
+- **Triggers every configured action** — SNS notifications, Auto Scaling, Lambda — as if the threshold was breached
+- **State auto-reverts** at the next evaluation period when CloudWatch reads the real metric (no manual cleanup)
+- Doesn't touch underlying metric data
+- Requires `cloudwatch:SetAlarmState` IAM permission
+
+**`put-metric-data` — drive the real evaluation logic with a fake value:**
+
+```bash
+aws cloudwatch put-metric-data \
+  --namespace "MyApp" \
+  --metric-name "ErrorCount" \
+  --value 999
+```
+
+- Publishes a real metric value — alarm evaluates as it normally would
+- More realistic than `set-alarm-state` (exercises the threshold logic, datapoints-to-alarm, etc.)
+- Useful for testing **anomaly detection** alarms where the logic depends on the metric distribution
+
+**`disable-alarm-actions` — mute during maintenance without deleting:**
+
+```bash
+aws cloudwatch disable-alarm-actions --alarm-names "high-cpu" "high-errors"
+# ... do disruptive maintenance ...
+aws cloudwatch enable-alarm-actions --alarm-names "high-cpu" "high-errors"
+```
+
+- Alarm state still updates (you can see it in the console) but **no actions fire**
+- Use during planned maintenance windows to silence false pages without losing the alarm config
+
+**Side-by-side:**
+
+| Tool | What it does | Real metric data? | Triggers actions? | Use for |
+| ---- | ------------ | ----------------- | ----------------- | ------- |
+| `set-alarm-state` | Manually flip state | No | Yes | Quick end-to-end test of SNS / Chatbot / autoscaling wiring |
+| `put-metric-data` | Push a fake metric value | Yes | Yes (if threshold exceeded) | Realistic testing including evaluation logic |
+| `disable-alarm-actions` | Mute actions | Yes | **No** | Maintenance windows — keep alarm logic, silence pages |
+
+**Gotchas:**
+
+- **`set-alarm-state` notifies for real** — if you run it in prod, ops will get paged. Test in non-prod, or warn the team / mute Slack first.
+- **State reverts on next evaluation** — useful auto-cleanup, but you can't pin a state with this command.
+- **`set-alarm-state` doesn't bypass disabled actions** — flips state but actions stay silent if you've disabled them.
+- **No `set-alarm-state` on a composite alarm directly** — composite state is *computed* from children. Drive it by setting child alarm states.
+
+**Exam triggers:**
+
+- *"verify a CloudWatch alarm triggers the right SNS notification end-to-end"* → `set-alarm-state`
+- *"test autoscaling policy without waiting for real load"* → `set-alarm-state` (quick) or `put-metric-data` (realistic)
+- *"silence alarms during planned maintenance without losing them"* → `disable-alarm-actions`
+- *"test a composite alarm's logic"* → set the *child* alarm states (composite has no direct setter)
+
+### CloudWatch Synthetics (deep dive)
+
+**Scripted probes that run on a schedule from AWS-managed infrastructure**, hitting your endpoints (or full user flows) and recording success / failure / latency. The AWS-native equivalent of the synthetic monitoring you'd build with Datadog Synthetics, Pingdom, or New Relic.
+
+```
+Every 1 min: AWS Synthetics → HTTP GET https://api.example.com/health
+             → check status 200, response body contains "ok"
+             → record success / latency to CloudWatch metrics
+             → screenshot + HAR file on failure → S3
+             → trigger CloudWatch Alarm if 3 consecutive failures
+```
+
+**Five canary blueprints (you don't write all of them from scratch):**
+
+| Blueprint | What it does |
+| --------- | ------------ |
+| **Heartbeat monitor** | Single URL probe — quick health check |
+| **API canary** | Multi-step REST API workflow with assertions on response |
+| **Broken link checker** | Crawl a page, follow all links, report 404s |
+| **Visual monitoring** | Pixel-diff a page against a baseline — detect visual regressions |
+| **GUI workflow builder / canary recorder** | Record a real user flow (login → add to cart → checkout), replay it on schedule |
+
+Under the hood: **Node.js or Python running headless Chromium** (Puppeteer/Selenium). You can write fully custom scripts when blueprints don't fit.
+
+**What gets recorded:**
+
+- **Metrics** in CloudWatch — `SuccessPercent`, `Duration`, `Failed`, per canary
+- **Screenshots + HAR files** on failure → stored in S3
+- **CloudWatch Logs** with detailed step-by-step output
+- **X-Ray traces** (optional)
+
+You then **alarm** on those metrics — *"if `SuccessPercent < 90` over 5 min → SNS → Slack"*.
+
+**Where it sits in the observability stack:**
+
+| Probe type | Service |
+| ---------- | ------- |
+| **Synthetic** — AWS-run scripted probe of your endpoint | **CloudWatch Synthetics** |
+| **Real User Monitoring** — actual browsers in the wild reporting back | **CloudWatch RUM** |
+| **Distributed tracing** — follow a request across services | **X-Ray** |
+| **Metrics + Alarms** | **CloudWatch** core |
+| **Logs** | **CloudWatch Logs** |
+
+Synthetics + RUM are **complementary**: Synthetics tells you *"is the site up from AWS's vantage?"*, RUM tells you *"are real users actually having a good experience?"*
+
+**When to reach for it:**
+
+- **Public API / website uptime monitoring** — the most common use
+- **SLA verification** — measurable proof that endpoints meet uptime targets
+- **Multi-step flow validation** — login + key action + logout, end-to-end
+- **Catch issues before users do** — failures alarm before customer reports
+- **Detect SSL cert expiry / TLS errors** — Synthetics fails on cert problems
+
+**Synthetics vs Route 53 health checks (exam trap):**
+
+| | CloudWatch Synthetics | Route 53 health checks |
+| - | --------------------- | ---------------------- |
+| What it tests | Full HTTP behaviour, multi-step flows, browser flows, content assertions | Simple "is the endpoint responding?" |
+| Granularity | 1-min to once-per-hour, scripted | Every 10s or 30s |
+| Failure trigger | Alarm + SNS + screenshot + HAR | DNS failover, alarm |
+| Cost | Per canary run | Per health check per month |
+| Use for | Behavioural / SLA / flow monitoring | DNS failover, simple uptime |
+
+If the question says *"DNS failover when an endpoint is unhealthy"* → **Route 53 health check**. If it says *"alert when login flow breaks"* or *"check API returns expected JSON"* → **Synthetics**.
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Synthetics for real-user performance** → wrong tool; use **RUM** for real-user data
+- **Synthetics from a public endpoint to monitor internal-only VPC endpoints** → canaries run on AWS infra; configure **VPC-attached canaries** to reach internal endpoints
+- **Route 53 health checks for multi-step flows** → too simple. Synthetics is the right tool for "login → click → assert".
+
+**Exam triggers:**
+
+- *"periodically probe a public API endpoint and alarm on failures"* → **CloudWatch Synthetics** (heartbeat / API canary)
+- *"test a multi-step user workflow (login → action → logout) on a schedule"* → **Synthetics** (GUI workflow blueprint)
+- *"detect broken links across a website"* → **Synthetics** (broken link checker blueprint)
+- *"visual regression testing — alert when a page's appearance changes"* → **Synthetics** (visual monitoring blueprint)
+- *"real user performance from actual browsers"* → **CloudWatch RUM** (NOT Synthetics)
+- *"simple uptime probe with DNS failover"* → **Route 53 health check** (lighter than Synthetics)
+
+**The 80/20:** *Synthetics = AWS-managed scripted probes (Node/Python + headless Chromium). Five blueprints: heartbeat, API, broken-link, visual, GUI workflow. Use it for public API liveness, SLA verification, multi-step flow validation. Pairs with RUM (real-user data) and X-Ray (tracing). For simple "is the IP responding" use Route 53 health checks; for "is the user journey working" use Synthetics.*
 
 ### CloudWatch Logs — the cost trap
 
