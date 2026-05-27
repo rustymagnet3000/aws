@@ -51,11 +51,36 @@
   - [The CloudWatch Agent — the OS-level fact most miss](#the-cloudwatch-agent--the-os-level-fact-most-miss)
   - [Alarms + Auto Scaling — the classic pattern](#alarms--auto-scaling--the-classic-pattern)
   - [CloudWatch Alarms vs Datadog Monitors (mental anchor)](#cloudwatch-alarms-vs-datadog-monitors-mental-anchor)
+  - [Composite Alarms (deep dive)](#composite-alarms-deep-dive)
+  - [Testing Alarms](#testing-alarms)
+  - [CloudWatch Synthetics (deep dive)](#cloudwatch-synthetics-deep-dive)
   - [CloudWatch Logs — the cost trap](#cloudwatch-logs--the-cost-trap)
   - [Logs Insights vs OpenSearch](#logs-insights-vs-opensearch)
   - [Specialised Variants (exam-relevant names)](#specialised-variants-exam-relevant-names)
+  - [CloudWatch Contributor Insights (short deep dive)](#cloudwatch-contributor-insights-short-deep-dive)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-9)
   - [Exam Triggers](#exam-triggers-9)
+- [AWS CloudTrail](#aws-cloudtrail)
+  - [What CloudTrail is NOT](#what-cloudtrail-is-not)
+  - [Main Part vs the Extras](#main-part-vs-the-extras)
+  - [What CloudTrail Records](#what-cloudtrail-records)
+  - [Three Event Types (each tested)](#three-event-types-each-tested)
+  - [Event History vs Trails](#event-history-vs-trails)
+  - [Standard Architecture (the exam-favourite pattern)](#standard-architecture-the-exam-favourite-pattern)
+  - [Key Features (each shows up on the exam)](#key-features-each-shows-up-on-the-exam)
+  - [CloudTrail + CloudWatch + EventBridge (the trio in action)](#cloudtrail--cloudwatch--eventbridge-the-trio-in-action)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-10)
+  - [Exam Triggers](#exam-triggers-10)
+- [AWS Config](#aws-config)
+  - [What AWS Config is NOT](#what-aws-config-is-not)
+  - [Core Concepts](#core-concepts)
+  - [Worked Example: "No S3 bucket should ever be public"](#worked-example-no-s3-bucket-should-ever-be-public)
+  - [Standard Architecture](#standard-architecture)
+  - [Config + CloudTrail (the audit pair)](#config--cloudtrail-the-audit-pair)
+  - [Pricing — Why It Matters on the Exam](#pricing--why-it-matters-on-the-exam)
+  - [Privileges — Who Needs What](#privileges--who-needs-what)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-11)
+  - [Exam Triggers](#exam-triggers-11)
 - [ECS (Elastic Container Service)](#ecs-elastic-container-service)
   - [ECS vs ASG + EC2](#ecs-vs-asg--ec2)
   - [Key concepts](#key-concepts)
@@ -164,6 +189,7 @@
   - [Amazon Managed Service for Apache Flink](#amazon-managed-service-for-apache-flink)
   - [How MSK and Flink Fit Together](#how-msk-and-flink-fit-together)
   - [Kafka vs SNS vs Redis pub/sub](#kafka-vs-sns-vs-redis-pubsub)
+  - [Amazon EventBridge](#amazon-eventbridge)
 - [Amazon Redshift](#amazon-redshift)
   - [When People Reach for Redshift](#when-people-reach-for-redshift)
   - [OLTP vs OLAP](#oltp-vs-olap)
@@ -1236,6 +1262,224 @@ Two things that trip people up when translating from Datadog mental model:
 - *"reduce alarm noise by combining conditions (AND/OR)"* → **Composite Alarm**
 - *"alarm on unusual behaviour rather than a fixed threshold"* → **CloudWatch Anomaly Detection**
 
+### Composite Alarms (deep dive)
+
+A **composite alarm** has no metric of its own — its state is computed from a boolean **rule expression** over other alarms. Two reasons to use them: **reduce noise** (combine conditions) and **suppress flood** (silence children when a parent is in alarm).
+
+**Rule expression syntax:**
+
+The expression uses three state functions over the child alarms:
+
+```
+ALARM("alarm-name")              ← true when that alarm is in ALARM state
+OK("alarm-name")                 ← true when that alarm is in OK state
+INSUFFICIENT_DATA("alarm-name")  ← true when that alarm has no data
+```
+
+Combine with `AND`, `OR`, `NOT` and parentheses.
+
+**Worked examples:**
+
+```
+# Page only if BOTH high CPU and high error rate
+ALARM("high-cpu") AND ALARM("high-error-rate")
+
+# Alert on either symptom
+ALARM("p99-latency") OR ALARM("5xx-rate")
+
+# High CPU, but only if the underlying disk isn't full (different root cause)
+ALARM("high-cpu") AND NOT ALARM("disk-full")
+
+# Treat missing data as healthy, not as a problem
+(ALARM("api-error-rate")) AND (NOT INSUFFICIENT_DATA("api-error-rate"))
+```
+
+**Suppressor alarms — the noise-flood killer:**
+
+A composite alarm can designate another alarm as a **suppressor**. While the suppressor is in ALARM, the composite alarm **does not publish state-change notifications** for its children — preventing alert storms when one root cause triggers many downstream effects.
+
+Classic scenario:
+
+```
+                    ┌──────────────────────────────────────────────┐
+                    │ Region-wide outage = page once, not 50 times │
+                    └──────────────────────────────────────────────┘
+
+Region-Down alarm (suppressor)  ──→  composite alarm tracking 50 service-level alarms
+                                     suppresses notifications while Region-Down is ALARM
+```
+
+Without the suppressor: a region-wide outage triggers 50 downstream service alarms → 50 pages → on-call overload.
+With the suppressor: only the region-down page fires; the 50 noisy children are gagged for the duration.
+
+You can configure how long the suppression lasts and what happens on edge timing (suppressor extension period, wait period).
+
+**Cost:**
+
+Composite alarms are billed **per alarm-month**, same model as regular alarms. They're cheap, but each child also counts as its own alarm — composite ≠ free.
+
+**Anti-patterns (exam wrong answers):**
+
+- **Composite alarm with a metric expression** — composite alarms don't observe metrics directly; that's what *metric math* + regular alarms are for. Composites operate on alarm *states*, not metric values.
+- **Trying to suppress with `OK("parent-alarm")`** — suppressor logic uses the dedicated **ActionsSuppressor** field, not an OR/AND clause. Use the suppressor mechanism, not the rule expression, for flood-killing.
+- **Using composite to chain alarms with no logic gain** — if you just want "fire if A OR B", a Composite makes sense. If you have *one* condition, just use a regular alarm.
+- **Forgetting that children still publish independently** — composite suppression only silences the *composite's* actions. Child alarms still fire their own actions unless reconfigured. Disable child actions if the composite is meant to be the sole notifier.
+
+**Exam triggers:**
+
+- *"alarm only when high CPU AND high error rate occur together"* → **Composite Alarm with AND**
+- *"alert on either of two symptoms"* → **Composite Alarm with OR**
+- *"prevent alert flood when a parent infrastructure failure triggers many downstream alarms"* → **Composite Alarm with a suppressor**
+- *"reduce noise from chatty monitoring without disabling alerts entirely"* → **Composite Alarm**
+- *"alarm logic that depends on the state of other alarms, not raw metrics"* → **Composite Alarm**
+
+### Testing Alarms
+
+Three CLI tools for testing and operating alarms without waiting for real conditions to trigger.
+
+**`set-alarm-state` — manually flip alarm state to test downstream actions:**
+
+```bash
+aws cloudwatch set-alarm-state \
+  --alarm-name "high-error-rate" \
+  --state-value ALARM \
+  --state-reason "Testing Slack integration"
+```
+
+- Flips state to `ALARM` / `OK` / `INSUFFICIENT_DATA` immediately
+- **Triggers every configured action** — SNS notifications, Auto Scaling, Lambda — as if the threshold was breached
+- **State auto-reverts** at the next evaluation period when CloudWatch reads the real metric (no manual cleanup)
+- Doesn't touch underlying metric data
+- Requires `cloudwatch:SetAlarmState` IAM permission
+
+**`put-metric-data` — drive the real evaluation logic with a fake value:**
+
+```bash
+aws cloudwatch put-metric-data \
+  --namespace "MyApp" \
+  --metric-name "ErrorCount" \
+  --value 999
+```
+
+- Publishes a real metric value — alarm evaluates as it normally would
+- More realistic than `set-alarm-state` (exercises the threshold logic, datapoints-to-alarm, etc.)
+- Useful for testing **anomaly detection** alarms where the logic depends on the metric distribution
+
+**`disable-alarm-actions` — mute during maintenance without deleting:**
+
+```bash
+aws cloudwatch disable-alarm-actions --alarm-names "high-cpu" "high-errors"
+# ... do disruptive maintenance ...
+aws cloudwatch enable-alarm-actions --alarm-names "high-cpu" "high-errors"
+```
+
+- Alarm state still updates (you can see it in the console) but **no actions fire**
+- Use during planned maintenance windows to silence false pages without losing the alarm config
+
+**Side-by-side:**
+
+| Tool | What it does | Real metric data? | Triggers actions? | Use for |
+| ---- | ------------ | ----------------- | ----------------- | ------- |
+| `set-alarm-state` | Manually flip state | No | Yes | Quick end-to-end test of SNS / Chatbot / autoscaling wiring |
+| `put-metric-data` | Push a fake metric value | Yes | Yes (if threshold exceeded) | Realistic testing including evaluation logic |
+| `disable-alarm-actions` | Mute actions | Yes | **No** | Maintenance windows — keep alarm logic, silence pages |
+
+**Gotchas:**
+
+- **`set-alarm-state` notifies for real** — if you run it in prod, ops will get paged. Test in non-prod, or warn the team / mute Slack first.
+- **State reverts on next evaluation** — useful auto-cleanup, but you can't pin a state with this command.
+- **`set-alarm-state` doesn't bypass disabled actions** — flips state but actions stay silent if you've disabled them.
+- **No `set-alarm-state` on a composite alarm directly** — composite state is *computed* from children. Drive it by setting child alarm states.
+
+**Exam triggers:**
+
+- *"verify a CloudWatch alarm triggers the right SNS notification end-to-end"* → `set-alarm-state`
+- *"test autoscaling policy without waiting for real load"* → `set-alarm-state` (quick) or `put-metric-data` (realistic)
+- *"silence alarms during planned maintenance without losing them"* → `disable-alarm-actions`
+- *"test a composite alarm's logic"* → set the *child* alarm states (composite has no direct setter)
+
+### CloudWatch Synthetics (deep dive)
+
+**Scripted probes that run on a schedule from AWS-managed infrastructure**, hitting your endpoints (or full user flows) and recording success / failure / latency. The AWS-native equivalent of the synthetic monitoring you'd build with Datadog Synthetics, Pingdom, or New Relic.
+
+```
+Every 1 min: AWS Synthetics → HTTP GET https://api.example.com/health
+             → check status 200, response body contains "ok"
+             → record success / latency to CloudWatch metrics
+             → screenshot + HAR file on failure → S3
+             → trigger CloudWatch Alarm if 3 consecutive failures
+```
+
+**Five canary blueprints (you don't write all of them from scratch):**
+
+| Blueprint | What it does |
+| --------- | ------------ |
+| **Heartbeat monitor** | Single URL probe — quick health check |
+| **API canary** | Multi-step REST API workflow with assertions on response |
+| **Broken link checker** | Crawl a page, follow all links, report 404s |
+| **Visual monitoring** | Pixel-diff a page against a baseline — detect visual regressions |
+| **GUI workflow builder / canary recorder** | Record a real user flow (login → add to cart → checkout), replay it on schedule |
+
+Under the hood: **Node.js or Python running headless Chromium** (Puppeteer/Selenium). You can write fully custom scripts when blueprints don't fit.
+
+**What gets recorded:**
+
+- **Metrics** in CloudWatch — `SuccessPercent`, `Duration`, `Failed`, per canary
+- **Screenshots + HAR files** on failure → stored in S3
+- **CloudWatch Logs** with detailed step-by-step output
+- **X-Ray traces** (optional)
+
+You then **alarm** on those metrics — *"if `SuccessPercent < 90` over 5 min → SNS → Slack"*.
+
+**Where it sits in the observability stack:**
+
+| Probe type | Service |
+| ---------- | ------- |
+| **Synthetic** — AWS-run scripted probe of your endpoint | **CloudWatch Synthetics** |
+| **Real User Monitoring** — actual browsers in the wild reporting back | **CloudWatch RUM** |
+| **Distributed tracing** — follow a request across services | **X-Ray** |
+| **Metrics + Alarms** | **CloudWatch** core |
+| **Logs** | **CloudWatch Logs** |
+
+Synthetics + RUM are **complementary**: Synthetics tells you *"is the site up from AWS's vantage?"*, RUM tells you *"are real users actually having a good experience?"*
+
+**When to reach for it:**
+
+- **Public API / website uptime monitoring** — the most common use
+- **SLA verification** — measurable proof that endpoints meet uptime targets
+- **Multi-step flow validation** — login + key action + logout, end-to-end
+- **Catch issues before users do** — failures alarm before customer reports
+- **Detect SSL cert expiry / TLS errors** — Synthetics fails on cert problems
+
+**Synthetics vs Route 53 health checks (exam trap):**
+
+| | CloudWatch Synthetics | Route 53 health checks |
+| - | --------------------- | ---------------------- |
+| What it tests | Full HTTP behaviour, multi-step flows, browser flows, content assertions | Simple "is the endpoint responding?" |
+| Granularity | 1-min to once-per-hour, scripted | Every 10s or 30s |
+| Failure trigger | Alarm + SNS + screenshot + HAR | DNS failover, alarm |
+| Cost | Per canary run | Per health check per month |
+| Use for | Behavioural / SLA / flow monitoring | DNS failover, simple uptime |
+
+If the question says *"DNS failover when an endpoint is unhealthy"* → **Route 53 health check**. If it says *"alert when login flow breaks"* or *"check API returns expected JSON"* → **Synthetics**.
+
+**Common anti-patterns (exam wrong answers):**
+
+- **Synthetics for real-user performance** → wrong tool; use **RUM** for real-user data
+- **Synthetics from a public endpoint to monitor internal-only VPC endpoints** → canaries run on AWS infra; configure **VPC-attached canaries** to reach internal endpoints
+- **Route 53 health checks for multi-step flows** → too simple. Synthetics is the right tool for "login → click → assert".
+
+**Exam triggers:**
+
+- *"periodically probe a public API endpoint and alarm on failures"* → **CloudWatch Synthetics** (heartbeat / API canary)
+- *"test a multi-step user workflow (login → action → logout) on a schedule"* → **Synthetics** (GUI workflow blueprint)
+- *"detect broken links across a website"* → **Synthetics** (broken link checker blueprint)
+- *"visual regression testing — alert when a page's appearance changes"* → **Synthetics** (visual monitoring blueprint)
+- *"real user performance from actual browsers"* → **CloudWatch RUM** (NOT Synthetics)
+- *"simple uptime probe with DNS failover"* → **Route 53 health check** (lighter than Synthetics)
+
+**The 80/20:** *Synthetics = AWS-managed scripted probes (Node/Python + headless Chromium). Five blueprints: heartbeat, API, broken-link, visual, GUI workflow. Use it for public API liveness, SLA verification, multi-step flow validation. Pairs with RUM (real-user data) and X-Ray (tracing). For simple "is the IP responding" use Route 53 health checks; for "is the user journey working" use Synthetics.*
+
 ### CloudWatch Logs — the cost trap
 
 - Default retention: **never expire** — your logs grow forever and bill forever
@@ -1264,6 +1508,77 @@ Two things that trip people up when translating from Datadog mental model:
 | **CloudWatch ServiceLens** | Combine metrics + X-Ray traces for service map view |
 | **CloudWatch Contributor Insights** | Top-N analyses (top users, top IPs, top errors) |
 
+### CloudWatch Contributor Insights (short deep dive)
+
+**Mental model:** a continuous *"GROUP BY field ORDER BY count DESC LIMIT 10"* running over a CloudWatch Logs stream. Point a rule at a log group, tell it which field to group by, and it builds a live time-series of the top-N values.
+
+```
+CloudWatch Logs (e.g. ALB access logs)
+       ↓
+Contributor Insights rule:
+  match-pattern: status >= 500
+  group-by:      clientIP
+       ↓
+Live time-series: "Top 10 IPs by 5xx count, last 15 min"
+       ↓ graph on dashboard / alarm on the leader / spot anomalies
+```
+
+**Common use cases:**
+
+| Question | Group-by field |
+| -------- | -------------- |
+| *"Which IPs are hammering my API?"* | `clientIP` (ALB / CloudFront access logs) |
+| *"Which URLs throw the most 5xx?"* | `request.url` |
+| *"Which users make the most API calls?"* | `userIdentity.arn` (CloudTrail logs) |
+| *"What error code dominates right now?"* | `errorCode` |
+| *"Which DynamoDB tables throttle most?"* | `tableName` |
+| *"Which Lambda functions time out?"* | `function.name` |
+
+**Bot / scraper detection pattern (the auto-response loop):**
+
+Contributor Insights gives you *visibility*; pair it with WAF for *blocking*. The full layered defence:
+
+```
+Internet
+   ↓
+CloudFront (edge cache + rate limiting)
+   ↓
+AWS WAF (Bot Control + rate-based rules)   ← inline blocking
+   ↓
+ALB → app
+   ↓ access logs
+CloudWatch Logs
+   ↓
+Contributor Insights rule (top IPs / User-Agents) ← visibility + alerting
+   ↓ alarm when top contributor > N req/min
+SNS → Lambda → WAF UpdateIPSet (add the IP to a block list) ← automated response
+```
+
+CI alone doesn't block — it observes and alerts. **WAF Bot Control + rate-based rules** are the primary inline defence; CI surfaces the slow-burn cases Bot Control might not flag and feeds an automated WAF block via Lambda.
+
+**Two rule types:**
+
+- **Built-in (managed) rules** — pre-built for VPC Flow Logs, DNS query logs, etc. Zero config
+- **Custom rules** — you specify log group + match pattern + group-by keys
+
+**Cost note:** billed per rule per month + per million log events analysed. Don't run rules on log groups you don't care about.
+
+**When NOT to use it:**
+
+- **Inline blocking** — too slow; use **WAF rate-based rules** for sub-second blocking
+- **One-off forensic queries on historical logs** — use **CloudWatch Logs Insights** (ad-hoc SQL) instead; CI is for *continuous* top-N
+- **Low-cardinality fields** (HTTP status with only ~5 values) — create regular per-value metrics instead
+- **Sophisticated bot signatures** (rotating IPs, headless-browser tells, JS fingerprints) — **WAF Bot Control** is purpose-built
+
+**Exam triggers:**
+
+- *"identify the top IPs / users / URLs / resources causing X"* → **Contributor Insights**
+- *"DDoS investigation — which IP sent the most requests last hour?"* → **Contributor Insights** on access logs
+- *"find the heaviest API consumer in CloudTrail"* → **Contributor Insights** on CloudTrail log group
+- *"top contributors to a metric in real time"* → **Contributor Insights**
+- *"detect and **block** bots / scrapers inline"* → **WAF Bot Control + rate-based rules** (NOT Contributor Insights alone)
+- *"detect-and-auto-block pipeline"* → **CI alarm → Lambda → WAF UpdateIPSet**
+
 ### Common Anti-patterns (exam wrong answers)
 
 - **"Can't alarm on memory"** → install **CloudWatch Agent** (memory isn't a default EC2 metric)
@@ -1291,6 +1606,373 @@ Two things that trip people up when translating from Datadog mental model:
 - *"top-N contributors (top users / IPs / errors)"* → **Contributor Insights**
 
 **The 80/20:** *CloudWatch = metrics + logs + alarms + dashboards. Three exam traps: (1) **memory/disk need the CloudWatch Agent**; (2) **basic monitoring is 5-min** — enable Detailed for 1-min; (3) **logs never expire by default** — set retention. Logs Insights for ad-hoc log queries; OpenSearch when log analytics is constant. Alarms drive ASG, SNS, Lambda. CloudWatch Synthetics for endpoint canaries, RUM for frontend, ServiceLens for traces.*
+
+## AWS CloudTrail
+
+**Anchored against CloudWatch.** CloudWatch tells you *"how is my system performing?"* (metrics, logs, alarms). **CloudTrail tells you *"who did what to my AWS account?"*** — every AWS API call across every service, recorded with caller identity, source IP, timestamp, and parameters. Foundational for audit, compliance, and security forensics. Enabled by default for the last 90 days (Event History), with optional Trails for long-term + advanced features.
+
+Mental model: CloudTrail is the `access.log` of the AWS **control plane** — instead of HTTP requests, it records API calls against AWS itself. Source of truth for *"who did this?"* — security forensics, compliance (SOC2, PCI, HIPAA), change tracking.
+
+### What CloudTrail is NOT
+
+The exam loves to swap CloudTrail in where a different observability service belongs. The vocabulary ("logs", "monitoring", "audit") overlaps but the services don't.
+
+| Question | Service | Not CloudTrail because... |
+| -------- | ------- | ------------------------- |
+| *"My app threw a 500 — what did it log?"* | **CloudWatch Logs** | App stdout/stderr is not an AWS API call |
+| *"Is CPU above 80%?"* | **CloudWatch Metrics + Alarms** | Performance telemetry, not API audit |
+| *"What does this resource look like now, and how has its config changed over time?"* | **AWS Config** | Config tracks *resource state*; CloudTrail tracks *the API call that changed it* |
+| *"Trace a request across microservices"* | **X-Ray** | Distributed tracing of app calls, not AWS API calls |
+| *"Who accessed this S3 object?"* | **S3 server access logs** OR **CloudTrail data events** | CloudTrail only logs S3 object access if **data events are explicitly enabled** (off by default) |
+
+**Three-way split worth memorising:**
+
+| Question | Service |
+| -------- | ------- |
+| Who did what to AWS? | **CloudTrail** |
+| How is it performing? | **CloudWatch** |
+| What is the current/historical resource config? | **AWS Config** |
+
+### Main Part vs the Extras
+
+CloudTrail's surface area is wide, but the **core is small**. Most "CloudTrail" exam questions are really about management events; everything else is opt-in. Use this hierarchy to triage what the question is actually asking.
+
+| Tier | Feature | What it is | Default? | Cost |
+| ---- | ------- | ---------- | -------- | ---- |
+| **🟢 The core** | **Management events** | Every control-plane API call (CreateInstance, AttachPolicy, ConsoleLogin, DeleteBucket). **This *is* CloudTrail.** | ✅ Always on — 90 days free in Event History | Free for first trail |
+| **🟡 The audit setup** | **A Trail to S3** | What you create when you want real audit: long-term retention, multi-region, organization-wide, log file integrity validation, delivery to a dedicated log-archive account | ❌ You configure | S3 storage |
+| **🔵 Opt-in extras** | **Data events** | High-volume data-plane events: S3 GetObject/PutObject, Lambda Invoke, DynamoDB item ops | ❌ Off | ~$0.10 per 100k events |
+| **🔵 Opt-in extras** | **Insights events** | ML anomaly detection on API call *rates* (e.g. burst of TerminateInstances at 3am) | ❌ Off | Premium per-event |
+| **🔵 Opt-in extras** | **CloudTrail Lake** | Managed event data store, query with SQL. Alternative to "Trail → S3 → Athena". 7+ year retention | ❌ Separate offering | Per ingested event + retention |
+
+**Mnemonic:** *"CloudTrail" = management events. Everything else is optional.*
+
+If a question doesn't mention "data events", "Insights", or "Lake", it's about the core: **management-event recording delivered to a trail.**
+
+**Where Insights fits — and where it doesn't.** Insights is the smallest tier by real-world usage. Most production setups don't enable it because:
+- It costs extra per analysed event
+- It generates false positives (legitimate batch jobs look anomalous)
+- Many orgs use **GuardDuty** for threat/anomaly detection instead (GuardDuty itself consumes CloudTrail under the hood)
+
+So if an exam question asks about *detecting unusual API patterns specifically using CloudTrail*, the answer is Insights. If the question is more general ("detect suspicious activity"), **GuardDuty** is often the better answer.
+
+### What CloudTrail Records
+
+Every interaction with AWS APIs — whether through:
+- AWS Console (rendered as the underlying API call)
+- AWS CLI / SDK calls
+- Other AWS services calling each other
+- IAM role assumptions
+
+```
+Example event:
+{
+  "eventTime":     "2026-05-26T10:23:14Z",
+  "eventName":     "DeleteBucket",
+  "eventSource":   "s3.amazonaws.com",
+  "userIdentity":  { "userName": "alice", "accountId": "...", "arn": "..." },
+  "sourceIPAddress": "203.0.113.42",
+  "requestParameters": { "bucketName": "prod-data" },
+  "responseElements":  { ... }
+}
+```
+
+### Three Event Types (each tested)
+
+| Event type | What it captures | Default? | Cost |
+| ---------- | ---------------- | -------- | ---- |
+| **Management events** | Control-plane operations — CreateInstance, AttachPolicy, ConsoleLogin, DeleteBucket | **On by default** in Event History (90 days) | First trail's management events free; additional trails charged |
+| **Data events** | High-volume data-plane — **S3 GetObject / PutObject**, **Lambda Invoke**, DynamoDB item-level | **Off by default** — opt in per resource | Charged per event (~$0.10 per 100k events) |
+| **Insights events** | ML-detected unusual API patterns (e.g. burst of TerminateInstances) | Opt-in | Per analysed event |
+
+**Exam trap:** the default trail captures management events only. *"Why didn't CloudTrail log S3 GetObject?"* → **data events weren't enabled**.
+
+### Event History vs Trails
+
+| | Event History (default) | Trail (you create) |
+| - | ----------------------- | ------------------ |
+| Always on | ✅ — every account, automatically | ❌ — you configure |
+| Retention | **90 days** | Indefinite (S3) |
+| Cost | Free | S3 storage + per-event |
+| Search | Web console + CLI lookup | S3 + Athena / CloudWatch Logs / CloudTrail Lake |
+| Data events | ❌ Management only | ✅ If enabled |
+| Multi-region | View only | ✅ Single trail across all regions |
+| Multi-account | ❌ | ✅ **Organization trail** captures all accounts |
+
+For real audit + compliance you always create a **Trail** (with logs delivered to S3); Event History is just the "what just happened?" web view.
+
+### Standard Architecture (the exam-favourite pattern)
+
+```
+All AWS API calls (every region, every account)
+       ↓
+CloudTrail (multi-region, organization-wide)
+       ↓
+  ┌────┴────┐
+  ▼         ▼
+  S3 bucket            CloudWatch Logs (optional)
+  (centralised audit         ↓
+   log archive in a    Metric Filter on suspicious patterns
+   dedicated security  (e.g. RootAccountUsage, DeleteBucket)
+   account)                  ↓
+  + S3 Object Lock      CloudWatch Alarm → SNS → Slack/PagerDuty
+  + Log File Integrity
+    Validation
+       ↓
+  Athena queries       EventBridge rule on CloudTrail event
+  (audit on demand)    (e.g. AssumeRole from unexpected IP)
+                            ↓
+                       Lambda for automated response
+```
+
+### Key Features (each shows up on the exam)
+
+**Multi-region trail** — one trail covers events from all regions. Without this, a global account would need a trail per region.
+
+**Organization trail** — created in the AWS Organizations management account; **captures events from every member account** in a single trail. Member accounts cannot disable or modify it. The standard answer for centralised audit in multi-account architectures.
+
+**Log file integrity validation** — CloudTrail can produce a **digest file** signed with SHA-256 every hour, listing the hashes of log files delivered. Lets you prove logs haven't been tampered with — required for many compliance regimes.
+
+**Cross-account log delivery** — deliver trails from many accounts into a **dedicated security/log archive account's S3 bucket**. Combine with **S3 Object Lock** and bucket policy restrictions to prevent even admins in the source account from tampering.
+
+**CloudTrail Lake** — a fully managed event data store you can **query with SQL** (no S3 + Athena setup). Retention up to 7+ years. Replacement for "trail to S3 → Glue Crawler → Athena" if you want it pre-built.
+
+**CloudTrail Insights** — automatically detect unusual API call patterns. *"Why did `TerminateInstances` spike 10x at 3am?"* → Insights fires an event you can react to via EventBridge.
+
+### CloudTrail + CloudWatch + EventBridge (the trio in action)
+
+These three services compose into AWS's audit-and-react foundation:
+
+```
+CloudTrail records the API call
+  ↓
+delivered to CloudWatch Logs (optional)
+  ↓ Metric Filter on suspicious patterns
+CloudWatch Alarm → SNS → Slack/PagerDuty (slow path — minutes)
+
+OR
+
+CloudTrail event → EventBridge rule (real-time — seconds)
+  ↓
+Lambda / Step Functions / SSM Automation (auto-response)
+```
+
+**Examples:**
+- *"Alert when root account is used"* → CloudTrail → CloudWatch Logs Metric Filter on `userIdentity.type = "Root"` → Alarm → SNS
+- *"Auto-revoke access keys when leaked detection fires"* → CloudTrail Insights event → EventBridge → Lambda calls `DeleteAccessKey`
+- *"Detect IAM policy attachments to a privileged role"* → EventBridge rule on `AttachRolePolicy` to that role → Lambda audits and pages security
+
+### Common Anti-patterns (exam wrong answers)
+
+- **"Why didn't CloudTrail log S3 GetObject?"** → S3 data events were not enabled (management-only by default)
+- **Single-region trail in a global account** → enable **multi-region trail** (one trail, all regions)
+- **Each account has its own trail, audit is fragmented** → create an **organization trail** in the management account; all members reported into one trail
+- **Trail logs sit in the source account, where bad actors could delete them** → deliver to a **dedicated log-archive account** with S3 Object Lock + restrictive bucket policy
+- **No log file integrity validation enabled** → can't prove logs weren't tampered with; compliance requires it
+- **Hunting for events by ad-hoc S3 + Athena every time** → consider **CloudTrail Lake** for native SQL on events
+- **Using CloudTrail for application logs** — wrong layer. CloudTrail is for AWS API calls; app logs go to **CloudWatch Logs**
+- **Using CloudWatch Logs to audit "who did what in AWS"** — wrong direction. **CloudTrail** is the audit source
+
+### Exam Triggers
+
+- *"audit who made which AWS API calls"* → **CloudTrail**
+- *"who deleted this resource?"* → **CloudTrail Event History** (last 90 days) or Trail in S3 (longer)
+- *"log every S3 GetObject for compliance"* → **CloudTrail data events** (must opt in)
+- *"detect unusual API patterns (TerminateInstances spike)"* → **CloudTrail Insights**
+- *"centralise audit logs from all AWS Organizations accounts into one place"* → **Organization trail** delivered to a security account's S3
+- *"tamper-proof audit logs"* → **CloudTrail log file integrity validation** + **S3 Object Lock**
+- *"query CloudTrail events with SQL natively"* → **CloudTrail Lake** (no S3 + Athena setup)
+- *"real-time reaction to a suspicious API call"* → **CloudTrail event → EventBridge → Lambda**
+- *"alarm on root account usage"* → **CloudTrail → CloudWatch Logs → Metric Filter → Alarm**
+- *"prevent member accounts from disabling audit logging"* → **Organization trail** (members can't modify it)
+- *"retain audit logs for 7 years"* → **CloudTrail Lake** (built-in long retention) or **Trail to S3 with Glacier lifecycle**
+
+**The 80/20:** *CloudTrail = audit log of every AWS API call. Three event types: **management** (free, default-on), **data** (opt-in, S3/Lambda/DynamoDB high-volume), **Insights** (anomaly detection). For real audit always create a **multi-region organization trail** delivered to a **dedicated log-archive account's S3 bucket** with **log file integrity validation**. Pairs with CloudWatch (alarm via Metric Filter on log patterns) and EventBridge (real-time reaction to specific events). For SQL-native event queries, use **CloudTrail Lake** instead of S3 + Athena.*
+
+## AWS Config
+
+**Anchored against CloudTrail.** CloudTrail records *the API call* (who, when, what was invoked). **AWS Config records *the resource state* that resulted** — and tracks how that state changes over time. If CloudTrail is the `access.log`, Config is `git log` for your AWS resources: every change produces a new versioned snapshot you can diff.
+
+Foundational for **compliance, configuration drift detection, and "what did this resource look like last Tuesday?"** questions.
+
+### What AWS Config is NOT
+
+| Question | Service | Not Config because... |
+| -------- | ------- | --------------------- |
+| *"Who deleted the bucket?"* | **CloudTrail** | Config sees the state change, not the API caller's identity (though it links to the CloudTrail event) |
+| *"Is CPU above 80%?"* | **CloudWatch** | Performance telemetry, not resource configuration |
+| *"Prevent non-compliant resources from being created in the first place"* | **SCPs / IAM / permissions boundaries / CloudFormation Guard** | Standard Config Rules are **detective** (flag after the fact); for prevention use policies. (Config does now have proactive rules for some resource types via CFN hooks.) |
+| *"Detect a public S3 bucket"* — one-off | **IAM Access Analyzer** | Access Analyzer is purpose-built for resource-policy exposure; Config Rules are the general-purpose compliance engine |
+| *"Inventory of all my EC2 instances"* | **AWS Systems Manager Inventory** OR **Config** | Both work; SSM goes deeper into OS-level inventory (installed packages); Config is broader across all AWS resource types |
+
+**Three-way split (carried over from CloudTrail section):**
+
+| Question | Service |
+| -------- | ------- |
+| Who did what to AWS? | **CloudTrail** |
+| How is it performing? | **CloudWatch** |
+| What is the current/historical resource config? | **AWS Config** |
+
+### Core Concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Configuration Item (CI)** | A point-in-time JSON snapshot of a single resource (e.g. an EC2 instance, an S3 bucket, a security group). Created every time the resource changes. |
+| **Configuration history** | The timeline of CIs for a resource — *"how has this security group changed over the last 6 months?"* |
+| **Configuration snapshot** | Point-in-time export of all recorded resources in the account — delivered to S3 on a schedule |
+| **Config Rule** | A desired-state check evaluated against CIs. Returns **compliant** or **non-compliant**. AWS-managed (200+ pre-built) or custom (Lambda / CloudFormation Guard) |
+| **Conformance pack** | A bundle of rules + remediation, deployable as one unit (e.g. PCI-DSS pack, HIPAA pack, Operational Best Practices pack) |
+| **Remediation action** | An **SSM Automation document** that runs when a rule fires — manual or automatic. E.g. *"if an EBS volume is unencrypted, snapshot + recreate encrypted"* |
+| **Aggregator** | Multi-account, multi-region view. One central account sees compliance state across the whole org |
+
+### Worked Example: "No S3 bucket should ever be public"
+
+The simplest end-to-end Config story — one rule, one violation, one auto-fix.
+
+**The goal:** never let a public S3 bucket appear in your account. (The thing behind every "company X leaks 10M records via misconfigured S3 bucket" headline.)
+
+**Step 1 — Enable the rule (one click).** AWS ships a managed rule called **`s3-bucket-public-read-prohibited`**. You enable it. No code.
+
+**Step 2 — Someone screws up.** A developer debugging a new bucket runs:
+```bash
+aws s3api put-bucket-acl --bucket marketing-assets --acl public-read
+```
+
+**Step 3 — Config catches it automatically.** Within minutes:
+
+1. Config records a new **CI** (Configuration Item — a JSON snapshot of the bucket's state) showing the public ACL
+2. The rule re-evaluates the new CI → **`NON_COMPLIANT`**
+3. The Config dashboard flags `marketing-assets` red
+4. An **EventBridge event** fires because compliance state flipped
+
+**Step 4 — React (two options):**
+
+```
+Option A — just alert:
+EventBridge → SNS → Slack #security
+"🚨 marketing-assets is publicly readable. Compliance failed at 14:07."
+
+Option B — auto-fix:
+EventBridge → SSM Automation → aws s3api put-bucket-acl --acl private
+"Auto-remediated: marketing-assets ACL reverted to private at 14:07."
+```
+
+**Why this is useful — what you'd have to build without Config:**
+- A Lambda that scans every bucket on a schedule (every minute? hour? expensive either way)
+- Pagination, error handling, IAM permissions, retries
+- Your own dashboard for compliance status
+- Your own history tracking
+
+**With Config:** one checkbox enables the rule, it evaluates the moment a bucket changes (not on a poll), and dashboard + history + EventBridge come free.
+
+**The pattern, generalised:**
+```
+1. Pick a rule (managed or custom): "X must be true of resource Y"
+2. Enable it
+3. Wait for a violation
+4. Either alert (SNS) or fix (SSM Automation)
+```
+
+Repeat for every guardrail you care about: *no unencrypted EBS, no SG open to 0.0.0.0/0 on port 22, every resource must have an `Owner` tag, no IAM user without MFA.* Config has managed rules for all of these out of the box.
+
+### Standard Architecture
+
+```
+Resource change (e.g. SG ingress rule modified)
+       ↓
+AWS Config records a Configuration Item (CI)
+       ↓
+  ┌────┴────────────────────────┐
+  ▼                             ▼
+Configuration history       Config Rules evaluated
+(S3 + queryable via         (AWS-managed or custom Lambda)
+ Config Advanced Query)             ↓
+                            Compliant / Non-compliant
+                                    ↓
+                          ┌─────────┴─────────┐
+                          ▼                   ▼
+                  EventBridge event     Auto-remediation
+                  (compliance change)   (SSM Automation doc)
+                          ↓
+                  Lambda / SNS / Slack
+                  (alert security team)
+
+Across many accounts → Config Aggregator (single dashboard)
+```
+
+### Config + CloudTrail (the audit pair)
+
+These two are almost always tested together because they answer different halves of the same question:
+
+```
+"Why is this security group suddenly open to 0.0.0.0/0?"
+
+CloudTrail → AuthorizeSecurityGroupIngress called at 14:03 by user "bob"
+                                  ↓
+AWS Config → SG configuration changed at 14:03; new CI shows 0.0.0.0/0 rule
+                                  ↓
+        Config Rule "restricted-ssh" flips to NON_COMPLIANT
+                                  ↓
+        Auto-remediation: SSM Automation removes the rule
+```
+
+**Mnemonic:** *CloudTrail = the action. Config = the consequence.*
+
+### Pricing — Why It Matters on the Exam
+
+Config bills **per Configuration Item recorded** and **per rule evaluation**. Two traps:
+
+1. **Recording all resource types in all regions** — expensive in a busy account. The fix: scope recording to the resource types you actually care about, or to the regions you use.
+2. **Continuous recording vs daily recording** — Config now offers a cheaper daily-recording mode for resources that don't need real-time tracking.
+
+### Privileges — Who Needs What
+
+Config's IAM story has three distinct layers. Conflating them is a common exam trap (and a real-world security mistake).
+
+| Layer | Who/what | Privilege | Why |
+| ----- | -------- | --------- | --- |
+| **Enabling Config** | Cloud/platform admin (one-time) | **High** — `config:PutConfigurationRecorder`, `iam:PassRole`, create service-linked role | Setup is a privileged action; not an app-team job |
+| **Config service-linked role** (`AWSServiceRoleForConfig`) | The Config service itself | **Very broad read** — `Describe*`/`Get*`/`List*` across nearly every resource type | Read-only, but sees everything — required to record CIs. Cannot modify resources |
+| **Viewing compliance** (consumer) | Auditors, engineers, dashboards | **Low** — `config:Get*`, `config:Describe*`, `config:Select*` | Safe to grant widely; common pattern for `SecurityAuditor` roles via an **Aggregator** |
+| **Custom Config Rule author** | Engineer writing a rule | **Medium** — `lambda:CreateFunction` + `iam:PassRole` for the rule's Lambda execution role | Rule's Lambda only needs read on the resource type it evaluates |
+| **Remediation actions** ← *the dangerous one* | SSM Automation execution role | **HIGH WRITE** — e.g. `s3:PutBucketPolicy`, `ec2:RevokeSecurityGroupIngress`, `kms:CreateKey` | This is where blast radius lives. Auto-remediation must write to AWS. Scope tightly to exact resource ARNs / conditions |
+
+**Mental model:**
+
+```
+Setup        →  high privilege  (admin, one-time)
+Recording    →  broad read      (service-linked role; safe)
+Viewing      →  low privilege   (grant widely)
+Remediation  →  HIGH WRITE      ← scrutinise this
+```
+
+**Exam framing:** *least privilege* in AWS Config usually means **locking down the remediation role**, not the recording role (which is intentionally broad and read-only).
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Who deleted this resource?"* → **CloudTrail**, not Config. Config shows the resource disappeared; CloudTrail shows who called the delete API
+- *"Prevent the creation of unencrypted EBS volumes"* → **SCP / permission boundary / proactive control**, not a standard Config Rule (which is detective — fires after creation)
+- *"Real-time performance dashboards"* → **CloudWatch**, not Config (Config tracks configuration, not performance)
+- *"Use Config to inventory installed OS packages"* → **SSM Inventory** is the right tool; Config is AWS-resource-level
+- *"Centralised compliance dashboard across 200 accounts"* → **Config Aggregator** in a security/audit account (don't try to log in to each account)
+- *"Bundle of HIPAA / PCI / NIST rules"* → **Conformance pack**, not "write 40 individual Config Rules"
+- *"Auto-fix the violation"* → **Config Rule + Remediation action (SSM Automation)**, not a hand-rolled Lambda triggered ad-hoc
+- *"Detect S3 bucket made public"* — both **Config Rule** (`s3-bucket-public-read-prohibited`) and **IAM Access Analyzer** are valid; the exam often prefers the more specific Access Analyzer answer for resource-policy exposure
+
+### Exam Triggers
+
+- *"Track how a resource's configuration changed over time"* → **AWS Config — configuration history**
+- *"Ensure all EBS volumes are encrypted (detect-and-flag)"* → **Config Rule** (e.g. `encrypted-volumes`)
+- *"Auto-remediate non-compliant resources"* → **Config Rule + SSM Automation document**
+- *"Bundle of pre-built compliance rules for HIPAA / PCI / NIST"* → **Conformance pack**
+- *"Compliance dashboard across all AWS Organizations accounts"* → **Config Aggregator**
+- *"Custom compliance check not covered by managed rules"* → **Custom Config Rule** backed by Lambda or CloudFormation Guard
+- *"Detect configuration drift from a baseline"* → **AWS Config** (its core use case)
+- *"React in real time when a resource becomes non-compliant"* → **Config compliance-change event → EventBridge → Lambda / SNS**
+- *"Combine 'who did it' with 'what changed'"* → **CloudTrail + Config together**
+- *"Reduce Config cost in a noisy account"* → scope recorded resource types, exclude unused regions, switch to **daily recording** for low-churn resources
+
+**The 80/20:** *AWS Config = `git log` for AWS resource state. Records a **Configuration Item** every time a resource changes, evaluates **Config Rules** (managed or custom) for compliance, and can **auto-remediate** via SSM Automation. Pairs with CloudTrail (CloudTrail = "who called the API"; Config = "how the resource state changed"). For multi-account compliance use an **Aggregator**; for compliance bundles use a **Conformance pack**. Watch for the detective-vs-preventive distinction — Config flags violations, **SCPs / IAM / permission boundaries** prevent them.*
 
 ## ECS (Elastic Container Service)
 
@@ -5647,6 +6329,221 @@ Looks similar from above. Behaves very differently when you need replay, late-jo
 - *"late-joining consumer needs to replay all historical events"* → **Kafka / Kinesis** (not SNS)
 
 **The 80/20:** *SNS is a telegraph (delivered or lost), Redis pub/sub is a walkie-talkie (only people listening now hear it), Kafka is a tape recorder (everything stored, anyone can rewind). Pick Kafka when you need a durable replayable log with multiple independent consumer groups — typical of event-driven architectures and stream-processing pipelines.*
+
+### Amazon EventBridge
+
+**Anchored against SNS + CloudWatch Events.** EventBridge is the **AWS-native event bus**: routes JSON events from many sources to many targets, with content-based filtering. It's the **rebrand of CloudWatch Events**, with two big additions:
+
+1. **Custom and Partner event buses** — not just AWS-emitted events; bring in your own + 100+ SaaS sources (Datadog, Zendesk, Shopify, MongoDB Atlas, PagerDuty, etc.)
+2. **Schema registry**, **Archive + Replay**, **Pipes**, and **Scheduler** — features that don't exist in plain SNS or CloudWatch Events
+
+**Two-word mental model:** *content-routed event bus*.
+
+#### The Role of an Event Bus
+
+The **event bus is the routing channel** that events land on. **Rules** attached to the bus evaluate every event that arrives and forward matching ones to **targets**. The bus itself doesn't *do* anything — it's just the channel. The behaviour comes from the rules attached to it.
+
+```
+[Source] → PutEvents → [Event Bus] ─→ Rule A (pattern match) ─→ Target(s)
+                                  ─→ Rule B (pattern match) ─→ Target(s)
+                                  ─→ Rule C (no match)         (event discarded
+                                                                unless archived)
+```
+
+**Why multiple buses, not one shared:**
+
+1. **Separation of concerns** — production events on a `prod` bus, dev events on a `dev` bus. Different rules, different targets, different IAM
+2. **Access control** — IAM policies attach *per bus*. Team A can `PutEvents` to their bus but not yours
+3. **Cross-account routing** — Account A's bus can be a *target* of Account B's rule. Standard pattern: each app account publishes locally, routes to a central audit account's bus
+4. **Multi-tenancy** — each customer / tenant has their own bus with their own rules
+
+**Anchored against what you know:**
+
+```
+SNS topic:       Publishers → topic → fan-out to all subscribers (basic filtering)
+Kafka topic:     Publishers → topic → consumers read independently, replay any time
+EventBridge bus: Publishers → bus → rules filter on content → routed to matching targets only
+                                    (no consumer offset / replay unless Archive is configured)
+```
+
+**Concrete walk-through:**
+
+```
+Custom bus "orders-bus" (you create it)
+    │
+    ├── Rule "high-value-orders": pattern { detail.amount > 1000 }
+    │       → Target: SNS topic "vip-alerts"
+    │       → Target: Lambda "fraud-check"
+    │
+    ├── Rule "all-orders-to-warehouse": pattern { detail-type: "OrderPlaced" }
+    │       → Target: SQS queue "warehouse-queue"
+    │
+    └── Rule "eu-orders-only": pattern { detail.region: "EU" }
+            → Target: cross-account bus in eu-compliance-account
+
+App publishes:
+  events:PutEvents({ source: "orders.app", detail: { amount: 1500, region: "US" } })
+
+→ Matches Rule 1 AND Rule 2 → SNS, Lambda, SQS all get the event
+→ Doesn't match Rule 3 (region:"US" not "EU") → that target isn't notified
+```
+
+**Exam-relevant facts about buses specifically:**
+
+- **One event can match multiple rules** — fanned out independently to each rule's targets
+- **Targets per rule: up to 5** — for more, chain rules
+- **Cross-account / cross-region**: an event bus in one account can be a **target** of another account's rule (event federation across an Org)
+- **Default bus is special** — only it receives AWS-service-emitted events automatically; you can't change that
+- **Archive is configured on the bus, not the rule** — retains events on that bus for replay
+- **IAM: `events:PutEvents` is checked against the bus's resource policy**, not the publisher's identity policy alone — critical for cross-account publishing
+
+#### Four Event-Bus Types
+
+| Bus type | What it receives | Use for |
+| -------- | ---------------- | ------- |
+| **Default bus** | AWS service events (EC2 state change, S3 PutObject, RDS failover, etc.) | React to anything AWS does |
+| **Custom bus** | Your own application events | Decouple microservices internally |
+| **Partner bus** | Events from SaaS (Datadog, Zendesk, Shopify, Auth0, etc.) | React to events from outside AWS |
+| **Scheduler** (separate service, but family) | Cron / one-time schedules | Replaces scheduled CloudWatch Events rules |
+
+#### Rules + Targets + Filtering (the core mechanic)
+
+```
+Source emits event → matches against rules (JSON pattern) → routed to target(s)
+```
+
+A **rule** has:
+- An **event pattern** — JSON filter on event fields. *Only* matching events trigger targets
+- One or more **targets** — Lambda, SQS, SNS, Step Functions, Kinesis Firehose, ECS task, API Gateway, another event bus, etc. (**18+ supported target types**)
+- Optional **input transformer** — reshape the event before delivery to a target
+
+```json
+{
+  "source": ["aws.s3"],
+  "detail-type": ["Object Created"],
+  "detail": {
+    "bucket": { "name": ["prod-uploads"] },
+    "object": { "size": [{ "numeric": [">", 1048576] }] }
+  }
+}
+```
+
+That rule fires only on **S3 object creations in `prod-uploads` larger than 1 MB**. Content-based filtering is the headline differentiator from SNS (SNS does filter-by-attribute but is less expressive).
+
+#### Archive + Replay (unique feature)
+
+EventBridge can **archive every event** that lands on a bus (with optional filtering on what to keep). Later you can **replay** archived events back through the bus — useful for:
+
+- **Disaster recovery** — replay events lost during a downstream outage
+- **Bug fix replay** — replay a window of events after fixing a buggy consumer
+- **Testing** — replay production events into a staging bus
+
+Neither SNS nor CloudWatch Events can do this — replay is an EventBridge-only superpower.
+
+**The replay gotcha (exam trap): replays use *current* rules → *current* targets.** A replayed event lands on the bus and is matched against **today's** rules, not the rules that existed when it was archived. So:
+
+- A rule you've added since the archive will fire on replay (even though it didn't exist when the event happened)
+- A rule you've deleted won't fire — those targets get nothing
+- Consumers **must be idempotent** — replay re-invokes every target that matches today
+
+If a question asks *"why did the replay trigger a target that didn't exist before?"* — that's the answer.
+
+**Replay targets a time range, not specific events.** You pick start-time → end-time; you can't replay "just these 12 events". Idempotency on consumers is non-negotiable.
+
+**Archive-time filtering = the cost knob.** You don't have to archive everything. Set an event pattern at archive creation (e.g. only `source: "aws.iam"`) to drop the storage bill. Multiple archives per bus are allowed — each with its own filter + retention. Common "reduce archive cost without losing required events" exam answer.
+
+**Retention + encryption:**
+- Retention: **1 day → indefinite**, configurable per archive
+- Encrypted at rest by default with an AWS-managed key; customer-managed KMS key supported
+- Archives are **per-bus, per-region** — not replicated cross-region
+
+**Replay throughput is bursty.** Delivery happens "as fast as the bus can accept" — replaying millions of events can cause a thundering herd at consumers. Mention if a question is about scale.
+
+#### What Archive is NOT
+
+| Question | Service | Not Archive because... |
+| -------- | ------- | ---------------------- |
+| *"Long-term queryable audit store of events"* | **CloudTrail Lake** or S3 + Athena | Archive can't be queried with SQL — only filtered by time range for replay |
+| *"Dead-letter queue for failed event delivery"* | **EventBridge target DLQ** (an SQS queue per target) | DLQ catches per-target delivery failures; Archive is a passive copy of *everything* on the bus |
+| *"Stream replay with position seeks"* | **Kinesis Data Streams** | Kinesis lets consumers seek to a sequence number; Archive only replays by time window through current rules |
+| *"Cross-region disaster recovery for events"* | **Cross-region bus replication** | Archives are per-bus, per-region — not replicated across regions |
+| *"Long-term audit of who did what in AWS"* | **CloudTrail** | Archive captures bus events (which may include CloudTrail events) but is not the audit source of truth |
+
+#### Schema Registry
+
+Discover the schema of events flowing through a bus (auto-discovered or registered manually), version them, and **code-generate typed bindings** in Java / Python / TypeScript so consumers get autocomplete + compile-time safety on event payloads.
+
+Pairs nicely with **EventBridge Pipes** — typed event handlers across microservices.
+
+#### EventBridge Pipes (newer feature)
+
+A **point-to-point** integration between an event source and a target — with optional filtering and enrichment — **without writing Lambda glue**.
+
+```
+Source ──→ Filter ──→ Enrichment ──→ Target
+(SQS, Kinesis,        (Lambda /        (Lambda, SQS,
+ DynamoDB Streams,    Step Functions,  EventBridge bus,
+ MSK, MQ, etc.)       API destination) Step Functions, etc.)
+```
+
+Use case: *"every change in DynamoDB Streams → enrich with user profile via API → write to EventBridge bus → fan out to 5 consumers"*. Without Pipes you'd build a Lambda for the glue. With Pipes it's configuration.
+
+| | EventBridge Rules | EventBridge Pipes |
+| - | ----------------- | ----------------- |
+| Pattern | One source bus → N targets | One source → one target (with optional enrichment) |
+| Sources | EventBridge bus events | SQS, Kinesis, DynamoDB Streams, MSK, MQ, SelfManaged Kafka |
+| Use for | Event bus fan-out | Replacing the "Lambda as glue" pattern |
+
+#### EventBridge Scheduler (the cron service)
+
+Originally scheduled tasks lived inside CloudWatch Events (rate / cron expressions). EventBridge Scheduler is the **dedicated cron service** — supports **millions of schedules**, **one-time** schedules, time-zone awareness, flexible time windows, and direct invocation of **270+ AWS API actions** (no Lambda glue).
+
+| Old way | New way |
+| ------- | ------- |
+| CloudWatch Events scheduled rule → Lambda → action | **EventBridge Scheduler** → action directly |
+
+Exam phrasing: *"schedule a one-time invocation of a Lambda 3 hours from now"* → **EventBridge Scheduler** (CloudWatch Events scheduled rules only support recurring patterns).
+
+#### EventBridge vs SNS (the exam decision)
+
+| | SNS | EventBridge |
+| - | --- | ----------- |
+| Pattern | Pub/sub topic — fan-out to N subscribers | Event bus — content-routed to many targets |
+| Filtering | Attribute-based filter policies (limited) | **Content-based** JSON pattern matching (rich) |
+| SaaS sources | No | **100+ partner integrations** |
+| AWS-emitted events | No (you publish manually) | **Yes** — default bus auto-receives from many services |
+| Archive + replay | No | **Yes** |
+| Schema registry | No | **Yes** |
+| Latency | Sub-100ms (faster) | Slightly higher (~ hundreds of ms) |
+| Target types | SQS, Lambda, HTTP/S, SMS, email, mobile push | 18+ AWS targets, API destinations (HTTP), cross-account buses |
+| Throughput | Massive | High but with per-rule and per-target limits |
+| Best for | Simple, fast fan-out | Complex routing, SaaS events, replay, schemas |
+
+**The shortcut:** simple fan-out, lowest latency, AWS-only → **SNS**. Routing logic, SaaS sources, replay, schemas → **EventBridge**.
+
+#### Common Anti-patterns (exam wrong answers)
+
+- **"CloudWatch Events"** in a current question → recognise it as **EventBridge** (same service, rebrand). Same exam answer.
+- **EventBridge for simple ultra-low-latency fan-out** — SNS is faster and cheaper for pure fan-out.
+- **Writing a Lambda just to ferry events from SQS / Kinesis to EventBridge** — use **EventBridge Pipes** instead.
+- **CloudWatch Events scheduled rule for a one-time future invocation** — only supports recurring patterns. Use **EventBridge Scheduler** for one-off / cron-at-scale.
+- **Custom database table to log every event for replay** — EventBridge **Archive + Replay** does this natively.
+- **SNS for events that originate at a SaaS vendor** — SaaS partners deliver into EventBridge **partner event buses**, not SNS.
+
+#### Exam Triggers
+
+- *"AWS-native event bus with content-based routing"* → **EventBridge**
+- *"react to events from Datadog / Zendesk / Shopify / Auth0 / etc."* → **EventBridge partner event bus**
+- *"replay events from last week through the same pipeline"* → **EventBridge Archive + Replay**
+- *"point-to-point integration from SQS/Kinesis/DynamoDB Streams to a target without writing Lambda glue"* → **EventBridge Pipes**
+- *"schedule a one-time future invocation"* → **EventBridge Scheduler** (NOT CloudWatch Events scheduled rules)
+- *"cron at massive scale (millions of schedules)"* → **EventBridge Scheduler**
+- *"version + auto-discover event schemas, code-gen bindings"* → **EventBridge Schema Registry**
+- *"route events differently based on JSON payload content"* → **EventBridge event patterns** (richer than SNS filter policies)
+- *"cross-account / cross-region event routing"* → **EventBridge cross-account / cross-region buses**
+- *"the service formerly known as CloudWatch Events"* → **EventBridge**
+
+**The 80/20:** *EventBridge = content-routed event bus = CloudWatch Events rebrand + custom + partner buses + Archive/Replay + Pipes + Scheduler + Schema Registry. Pick EventBridge over SNS when you need content-based filtering, SaaS sources, or replay. Pick SNS when you need simple, fastest fan-out. The exam tests the rebrand trap ("CloudWatch Events" → EventBridge), the SaaS-source angle, Archive+Replay uniqueness, and Pipes for "no Lambda glue".*
 
 ## Amazon Redshift
 
