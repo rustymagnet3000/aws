@@ -1621,6 +1621,29 @@ The exam loves to swap CloudTrail in where a different observability service bel
 | How is it performing? | **CloudWatch** |
 | What is the current/historical resource config? | **AWS Config** |
 
+### Main Part vs the Extras
+
+CloudTrail's surface area is wide, but the **core is small**. Most "CloudTrail" exam questions are really about management events; everything else is opt-in. Use this hierarchy to triage what the question is actually asking.
+
+| Tier | Feature | What it is | Default? | Cost |
+| ---- | ------- | ---------- | -------- | ---- |
+| **🟢 The core** | **Management events** | Every control-plane API call (CreateInstance, AttachPolicy, ConsoleLogin, DeleteBucket). **This *is* CloudTrail.** | ✅ Always on — 90 days free in Event History | Free for first trail |
+| **🟡 The audit setup** | **A Trail to S3** | What you create when you want real audit: long-term retention, multi-region, organization-wide, log file integrity validation, delivery to a dedicated log-archive account | ❌ You configure | S3 storage |
+| **🔵 Opt-in extras** | **Data events** | High-volume data-plane events: S3 GetObject/PutObject, Lambda Invoke, DynamoDB item ops | ❌ Off | ~$0.10 per 100k events |
+| **🔵 Opt-in extras** | **Insights events** | ML anomaly detection on API call *rates* (e.g. burst of TerminateInstances at 3am) | ❌ Off | Premium per-event |
+| **🔵 Opt-in extras** | **CloudTrail Lake** | Managed event data store, query with SQL. Alternative to "Trail → S3 → Athena". 7+ year retention | ❌ Separate offering | Per ingested event + retention |
+
+**Mnemonic:** *"CloudTrail" = management events. Everything else is optional.*
+
+If a question doesn't mention "data events", "Insights", or "Lake", it's about the core: **management-event recording delivered to a trail.**
+
+**Where Insights fits — and where it doesn't.** Insights is the smallest tier by real-world usage. Most production setups don't enable it because:
+- It costs extra per analysed event
+- It generates false positives (legitimate batch jobs look anomalous)
+- Many orgs use **GuardDuty** for threat/anomaly detection instead (GuardDuty itself consumes CloudTrail under the hood)
+
+So if an exam question asks about *detecting unusual API patterns specifically using CloudTrail*, the answer is Insights. If the question is more general ("detect suspicious activity"), **GuardDuty** is often the better answer.
+
 ### What CloudTrail Records
 
 Every interaction with AWS APIs — whether through:
@@ -6403,9 +6426,36 @@ EventBridge can **archive every event** that lands on a bus (with optional filte
 - **Bug fix replay** — replay a window of events after fixing a buggy consumer
 - **Testing** — replay production events into a staging bus
 
-Retention: up to **indefinite** if you choose. Replay can target any date range.
-
 Neither SNS nor CloudWatch Events can do this — replay is an EventBridge-only superpower.
+
+**The replay gotcha (exam trap): replays use *current* rules → *current* targets.** A replayed event lands on the bus and is matched against **today's** rules, not the rules that existed when it was archived. So:
+
+- A rule you've added since the archive will fire on replay (even though it didn't exist when the event happened)
+- A rule you've deleted won't fire — those targets get nothing
+- Consumers **must be idempotent** — replay re-invokes every target that matches today
+
+If a question asks *"why did the replay trigger a target that didn't exist before?"* — that's the answer.
+
+**Replay targets a time range, not specific events.** You pick start-time → end-time; you can't replay "just these 12 events". Idempotency on consumers is non-negotiable.
+
+**Archive-time filtering = the cost knob.** You don't have to archive everything. Set an event pattern at archive creation (e.g. only `source: "aws.iam"`) to drop the storage bill. Multiple archives per bus are allowed — each with its own filter + retention. Common "reduce archive cost without losing required events" exam answer.
+
+**Retention + encryption:**
+- Retention: **1 day → indefinite**, configurable per archive
+- Encrypted at rest by default with an AWS-managed key; customer-managed KMS key supported
+- Archives are **per-bus, per-region** — not replicated cross-region
+
+**Replay throughput is bursty.** Delivery happens "as fast as the bus can accept" — replaying millions of events can cause a thundering herd at consumers. Mention if a question is about scale.
+
+#### What Archive is NOT
+
+| Question | Service | Not Archive because... |
+| -------- | ------- | ---------------------- |
+| *"Long-term queryable audit store of events"* | **CloudTrail Lake** or S3 + Athena | Archive can't be queried with SQL — only filtered by time range for replay |
+| *"Dead-letter queue for failed event delivery"* | **EventBridge target DLQ** (an SQS queue per target) | DLQ catches per-target delivery failures; Archive is a passive copy of *everything* on the bus |
+| *"Stream replay with position seeks"* | **Kinesis Data Streams** | Kinesis lets consumers seek to a sequence number; Archive only replays by time window through current rules |
+| *"Cross-region disaster recovery for events"* | **Cross-region bus replication** | Archives are per-bus, per-region — not replicated across regions |
+| *"Long-term audit of who did what in AWS"* | **CloudTrail** | Archive captures bus events (which may include CloudTrail events) but is not the audit source of truth |
 
 #### Schema Registry
 
