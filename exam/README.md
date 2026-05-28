@@ -81,6 +81,18 @@
   - [Privileges — Who Needs What](#privileges--who-needs-what)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-11)
   - [Exam Triggers](#exam-triggers-11)
+- [AWS Organizations](#aws-organizations)
+  - [What AWS Organizations is NOT](#what-aws-organizations-is-not)
+  - [Core Concepts](#core-concepts-1)
+  - [Standard Multi-Account Topology](#standard-multi-account-topology)
+  - [Consolidated Billing — the Money Bit](#consolidated-billing--the-money-bit)
+  - [SCPs (Service Control Policies) — Deep Dive](#scps-service-control-policies--deep-dive)
+  - [AWS Control Tower — the layer above Organizations](#aws-control-tower--the-layer-above-organizations)
+  - [IAM Identity Center (formerly AWS SSO)](#iam-identity-center-formerly-aws-sso)
+  - [Organization-Aware Services](#organization-aware-services)
+  - [Pricing](#pricing)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-12)
+  - [Exam Triggers](#exam-triggers-12)
 - [ECS (Elastic Container Service)](#ecs-elastic-container-service)
   - [ECS vs ASG + EC2](#ecs-vs-asg--ec2)
   - [Key concepts](#key-concepts)
@@ -1973,6 +1985,183 @@ Remediation  →  HIGH WRITE      ← scrutinise this
 - *"Reduce Config cost in a noisy account"* → scope recorded resource types, exclude unused regions, switch to **daily recording** for low-churn resources
 
 **The 80/20:** *AWS Config = `git log` for AWS resource state. Records a **Configuration Item** every time a resource changes, evaluates **Config Rules** (managed or custom) for compliance, and can **auto-remediate** via SSM Automation. Pairs with CloudTrail (CloudTrail = "who called the API"; Config = "how the resource state changed"). For multi-account compliance use an **Aggregator**; for compliance bundles use a **Conformance pack**. Watch for the detective-vs-preventive distinction — Config flags violations, **SCPs / IAM / permission boundaries** prevent them.*
+
+## AWS Organizations
+
+**Anchored against GitHub Organizations / Active Directory OUs.** One company → many AWS accounts (prod, dev, sandbox, security, log-archive) grouped into a hierarchy with central governance and one consolidated bill. Above ~5 accounts, managing them individually breaks down — Organizations is how you scale.
+
+Two killer features: **consolidated billing** (one invoice, volume discounts pooled, RIs/Savings Plans shared) and **Service Control Policies (SCPs)** — deny-only guardrails that bound what IAM in member accounts can do, even for the root user.
+
+### What AWS Organizations is NOT
+
+| Question | Service | Not Organizations because... |
+| -------- | ------- | ---------------------------- |
+| *"Grant a user permissions to do X"* | **IAM** | SCPs don't grant — only restrict the *ceiling* of what IAM grants |
+| *"Single sign-on across accounts"* | **IAM Identity Center** (formerly AWS SSO) | Organizations is the substrate; Identity Center sits on top for federated login |
+| *"Set up a multi-account landing zone with best practices"* | **AWS Control Tower** | Control Tower is the opinionated wizard built *on top of* Organizations |
+| *"Active Directory for AWS"* | **AWS Managed Microsoft AD** | Directory service for Windows / domain-joined resources; different layer entirely |
+| *"Group IAM users together"* | **IAM Groups** | IAM Groups live inside *one* account; Organizations groups *accounts* themselves |
+| *"Cross-account resource sharing"* | **AWS Resource Access Manager (RAM)** | RAM shares specific resources (subnets, TGWs, Resolver rules) across accounts |
+
+### Core Concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Management account** (was "master") | The root account that creates the org. **Pays the bill.** Cannot have SCPs applied to it (it's intentionally outside guardrails) |
+| **Member account** | Any AWS account that's part of the org |
+| **Root** | The top of the OU hierarchy — *one per org*. Don't confuse with the "root user" of an account |
+| **Organizational Unit (OU)** | A folder of accounts; can nest up to 5 levels deep. Apply policies at OU level for inheritance |
+| **Service Control Policy (SCP)** | A **deny-only** policy that bounds what IAM can do in member accounts. Attached to root, OUs, or individual accounts |
+| **Delegated administrator** | A member account given admin rights for a specific service (GuardDuty, Security Hub, Config) without granting it management-account power |
+
+### Standard Multi-Account Topology
+
+```
+Root
+├── Security OU
+│   ├── log-archive account     (centralised CloudTrail/Config logs, write-once, Object Lock)
+│   └── audit account           (read-only across the org for security team)
+├── Infrastructure OU
+│   └── shared-services account (DNS, networking, AMIs, build pipelines)
+├── Workloads OU
+│   ├── Prod OU
+│   │   ├── prod-app-1
+│   │   └── prod-app-2
+│   └── Non-prod OU
+│       ├── staging
+│       └── dev
+└── Sandbox OU
+    └── sandbox-* (one per engineer)
+```
+
+Each leaf is its own AWS account. SCPs at the OU level enforce *"prod accounts can't disable CloudTrail"*, *"sandbox accounts can't use anything outside `eu-west-1`"*, *"only the security account can write to the log-archive bucket"*, etc.
+
+### Consolidated Billing — the Money Bit
+
+- One invoice for the whole org
+- **Volume discounts pool** across accounts — tier-based pricing on S3, data transfer, etc. (you cross volume tiers faster by aggregating usage)
+- **Reserved Instances + Savings Plans share** across accounts by default (a sandbox account benefits from a prod-account RI's unused capacity)
+- Per-account or per-tag cost allocation reports via **AWS Cost Explorer**
+- The management account is the payer; member accounts see usage but not the consolidated invoice
+
+**Exam trap:** *"How do I get the volume discount across all my accounts without managing them centrally?"* — you can't. Consolidated billing requires Organizations.
+
+### SCPs (Service Control Policies) — Deep Dive
+
+SCPs are the governance hammer. They define the **maximum** permissions for an account, regardless of what IAM policies grant. Key properties:
+
+| Property | Detail |
+| -------- | ------ |
+| **Effect** | Can only **Deny** in practice — they bound the ceiling. (Technically you can use `Allow` in allow-list mode but the default is deny-list.) |
+| **Applies to** | Root, OUs, or individual accounts. **Inherited down** the OU tree (an account is bounded by every SCP from root → its OU → itself) |
+| **Affects** | **All IAM principals** (users, roles, federated identities) AND the **root user** of member accounts |
+| **Does NOT affect** | The management account (excluded by design — don't even try) |
+| **Cannot grant** | Only restrict. Without an IAM policy granting the action, the user still can't do it |
+
+#### Deny-list vs Allow-list strategies
+
+Two competing patterns — the exam loves this distinction:
+
+| Strategy | How it works | When to use |
+| -------- | ------------ | ----------- |
+| **Deny-list** (default) | Default `FullAWSAccess` policy is attached at root; you add SCPs that *deny* specific actions | Start permissive, lock down the dangerous stuff. Easier; what most orgs run |
+| **Allow-list** | Remove `FullAWSAccess`; explicitly `Allow` only certain services/actions | Maximum lockdown — e.g. a regulated workload OU that only needs S3 + Lambda + DynamoDB. Brittle: any new service is blocked until you add it |
+
+#### Classic SCP example — region lockdown
+
+```json
+{
+  "Effect": "Deny",
+  "Action": "*",
+  "Resource": "*",
+  "Condition": {
+    "StringNotEquals": { "aws:RequestedRegion": ["eu-west-1", "us-east-1"] }
+  }
+}
+```
+
+Now nothing in those accounts — IAM user, role, or root — can spin up resources outside those two regions. The bluntest instrument in AWS governance.
+
+#### Other SCPs every multi-account org runs
+
+- *"Member accounts can't disable CloudTrail / Config / GuardDuty"* — deny `cloudtrail:Stop*`, `cloudtrail:Delete*`, `config:Delete*`
+- *"No one can leave the organization"* — deny `organizations:LeaveOrganization`
+- *"Prod accounts can't create IAM users with console access"* — deny `iam:CreateLoginProfile`
+- *"Sandbox accounts can only run small EC2 instances"* — deny `ec2:RunInstances` unless `ec2:InstanceType` matches an allow-list
+
+### AWS Control Tower — the layer above Organizations
+
+Organizations gives you the primitives (accounts, OUs, SCPs). **Control Tower** is the opinionated landing-zone builder on top:
+
+- **Provisions Organizations**, creates Security OU (log-archive + audit accounts), enables CloudTrail org trail, Config aggregator, IAM Identity Center
+- **Account Factory** — vended template for provisioning new accounts with standard config (network, tags, baseline guardrails)
+- **Guardrails** — pre-built SCPs grouped into:
+  - **Mandatory** — enforced, can't disable (e.g. "disallow public read on log archive S3")
+  - **Strongly recommended** — enabled by default, can disable
+  - **Elective** — opt-in (e.g. region restrictions)
+- **Drift detection** — alerts if someone modifies the landing zone outside Control Tower
+
+**Decision:** if a question says *"set up a new multi-account environment from scratch with AWS best practices"* → **Control Tower**. If it says *"I already have 50 accounts, I need centralised governance"* → **Organizations directly + maybe migrate to Control Tower later**.
+
+### IAM Identity Center (formerly AWS SSO)
+
+Organizations is the substrate. **IAM Identity Center** is how humans actually log in to all those accounts without managing IAM users per account.
+
+- Federates with external IdPs (Okta, Azure AD, Google Workspace) or hosts its own user directory
+- **Permission Sets** = templated IAM policies (e.g. `ReadOnly`, `BillingAdmin`) assigned to a (user-or-group, account) pair
+- One login → AWS SSO portal → pick an account → assume the assigned role
+- Replaces "IAM users in every account" — the modern best practice
+
+**Exam trap:** if a question describes *"users currently have IAM users in 30 accounts"* → the right answer is almost always *"migrate to IAM Identity Center"*.
+
+### Organization-Aware Services
+
+| Service | What "organization-aware" enables |
+| ------- | --------------------------------- |
+| **CloudTrail** | **Organization trail** captures events across all member accounts (members can't disable it) |
+| **AWS Config** | **Aggregator** pulls compliance state from every account into one dashboard |
+| **GuardDuty** | Org-wide threat detection from a **delegated admin account** |
+| **Security Hub** | Org-wide findings aggregation |
+| **IAM Access Analyzer** | Org-scoped zone of trust — flags resources accessible from outside the org |
+| **AWS Backup** | Centralised backup policies applied at OU level |
+| **Resource Access Manager (RAM)** | Share subnets / TGWs / Resolver rules across accounts within the org |
+| **Service Catalog** | Vend approved products across the org |
+| **Cost & Billing** | Consolidated reports, per-account or per-tag breakdowns |
+
+### Pricing
+
+**AWS Organizations itself is free.** You pay for the underlying AWS usage in each member account. Control Tower is also free; you pay for the resources it creates (Config recorders, CloudTrail, etc.).
+
+The cost reality: **Config + CloudTrail running across many accounts is where the bill grows** — see the Config pricing notes for how to scope.
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Apply an SCP to the management account to lock it down"* → **doesn't work** — management account is excluded from SCPs by design. Use IAM policies + permissions boundaries there
+- *"Use SCPs to grant permissions"* → SCPs are **deny-only in practice** (they set the ceiling). You still need IAM policies to grant
+- *"IAM users per account"* in a 30-account org → **IAM Identity Center** with permission sets
+- *"Run CloudTrail individually in each account"* → **organization trail** in the management account (or via Control Tower)
+- *"Mix prod and non-prod accounts in the same OU"* → split into Prod / Non-prod OUs so SCPs can differ
+- *"Set up multi-account from scratch by manually creating accounts"* → **Control Tower Account Factory**
+- *"Create a new account by calling `CreateAccount` then forgetting baseline setup"* → use **Control Tower** or wrap in IaC so baseline (CloudTrail, Config, tags, IAM roles) is applied
+- *"SCPs can lock the root user out of a member account"* — **true and intended**, but if a question presents this as "unintended consequence", the answer is usually "create a break-glass IAM role exempted via SCP condition"
+
+### Exam Triggers
+
+- *"Centralised billing across multiple AWS accounts"* → **AWS Organizations consolidated billing**
+- *"Block use of certain regions across all accounts"* → **SCP at the root or OU level with `aws:RequestedRegion` condition**
+- *"Prevent member accounts from disabling CloudTrail / Config"* → **SCP denying `cloudtrail:Stop*`, `config:Delete*`**
+- *"Programmatically create new AWS accounts"* → **`organizations:CreateAccount`** API or **Control Tower Account Factory**
+- *"Standardised landing zone for a new multi-account setup"* → **AWS Control Tower**
+- *"Federated SSO across all member accounts"* → **IAM Identity Center**
+- *"Centralised CloudTrail across the org"* → **organization trail**
+- *"Centralised compliance dashboard across the org"* → **AWS Config Aggregator**
+- *"Allow only specific EC2 instance types in sandbox accounts"* → **SCP with `ec2:InstanceType` condition**
+- *"Share VPC subnets across accounts"* → **AWS Resource Access Manager (RAM)**, not Organizations directly
+- *"Delegate GuardDuty admin to a security account"* → **delegated administrator** feature
+- *"Pool Reserved Instance discounts across accounts"* → **Consolidated billing** (default behaviour)
+- *"Restrict the root user of a member account from doing X"* → **SCP** (the *only* way to restrict the root user)
+
+**The 80/20:** *AWS Organizations = central management of many AWS accounts grouped into OUs under a root. Two killer features: **consolidated billing** (pooled discounts, shared RIs, one invoice) and **SCPs** (deny-only guardrails that cap what IAM can do — even for the root user). The management account is excluded from SCPs by design. **AWS Control Tower** is the opinionated landing-zone builder on top; **IAM Identity Center** provides federated SSO across accounts. Org-aware services (CloudTrail, Config, GuardDuty, Security Hub) all support a "delegated admin" + cross-account aggregation pattern.*
 
 ## ECS (Elastic Container Service)
 
