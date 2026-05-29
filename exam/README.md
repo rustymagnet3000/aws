@@ -87,12 +87,25 @@
   - [Standard Multi-Account Topology](#standard-multi-account-topology)
   - [Consolidated Billing — the Money Bit](#consolidated-billing--the-money-bit)
   - [SCPs (Service Control Policies) — Deep Dive](#scps-service-control-policies--deep-dive)
+  - [Three Policy Layers: Identity Policy vs SCP vs Permissions Boundary](#three-policy-layers-identity-policy-vs-scp-vs-permissions-boundary)
   - [AWS Control Tower — the layer above Organizations](#aws-control-tower--the-layer-above-organizations)
   - [IAM Identity Center (formerly AWS SSO)](#iam-identity-center-formerly-aws-sso)
   - [Organization-Aware Services](#organization-aware-services)
   - [Pricing](#pricing)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-12)
+  - [Common Exam Question Patterns](#common-exam-question-patterns)
   - [Exam Triggers](#exam-triggers-12)
+- [AWS Directory Service (Active Directory on AWS)](#aws-directory-service-active-directory-on-aws)
+  - [The Three Flavours (this is the whole exam)](#the-three-flavours-this-is-the-whole-exam)
+  - [What AWS Directory Service is NOT](#what-aws-directory-service-is-not)
+  - [The Decision Tree](#the-decision-tree)
+  - [How Domain-Joining an EC2 Instance Actually Flows](#how-domain-joining-an-ec2-instance-actually-flows)
+  - [Trust Relationships (Managed AD Only)](#trust-relationships-managed-ad-only)
+  - [Integration with IAM Identity Center](#integration-with-iam-identity-center)
+  - [Common Use Cases](#common-use-cases)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-13)
+  - [Exam Triggers](#exam-triggers-13)
+  - [Pricing Notes](#pricing-notes)
 - [ECS (Elastic Container Service)](#ecs-elastic-container-service)
   - [ECS vs ASG + EC2](#ecs-vs-asg--ec2)
   - [Key concepts](#key-concepts)
@@ -2089,6 +2102,93 @@ Now nothing in those accounts — IAM user, role, or root — can spin up resour
 - *"Prod accounts can't create IAM users with console access"* — deny `iam:CreateLoginProfile`
 - *"Sandbox accounts can only run small EC2 instances"* — deny `ec2:RunInstances` unless `ec2:InstanceType` matches an allow-list
 
+### Three Policy Layers: Identity Policy vs SCP vs Permissions Boundary
+
+Three layers that get confused constantly. **Identity policy grants. SCP and boundary restrict. SCPs are organisation-wide; boundaries are per-principal.**
+
+| | **Identity-based policy** | **SCP** | **Permissions Boundary** |
+| - | ------------------------- | ------- | ------------------------ |
+| **Purpose** | **Grants** permissions | Caps what an account can do | Caps what one principal can do |
+| **Grants?** | ✅ Yes (the only one that grants) | ❌ No — restricts only | ❌ No — restricts only |
+| **Attaches to** | IAM user, group, role | Root, OU, or account | A single IAM user or role |
+| **Scope** | The principal it's attached to | **Every** principal in the account(s) it covers | Just that one principal |
+| **Affects root user?** | ❌ Root has implicit `*` | ✅ Yes — even root | ❌ No — only IAM users/roles |
+| **Set by** | Account admin / developer | Org management account | Account admin |
+| **Without it** | Principal can do nothing (deny-by-default at IAM) | Default `FullAWSAccess` SCP allows everything | Boundary is optional |
+
+#### What each is for, in one line
+
+- **Identity-based policy:** *"What CAN this user do?"* (the grant)
+- **SCP:** *"What is the maximum any user — including root — in this account is allowed to do?"* (the org-level ceiling)
+- **Permissions boundary:** *"What is the maximum THIS specific role is allowed to do, even if its IAM policy says more?"* (the per-principal ceiling)
+
+#### Evaluation order when all three exist
+
+```
+Can this user do action X on resource Y?
+        ↓
+1. Is there an explicit Deny anywhere?                → ❌ BLOCKED
+        ↓ (no)
+2. Does the SCP allow X?                              → if no, ❌ BLOCKED
+        ↓ (yes)
+3. Does the Permissions Boundary allow X?             → if no, ❌ BLOCKED
+        ↓ (yes)
+4. Does the Identity policy (or resource policy)      → if no, ❌ BLOCKED
+   explicitly Allow X?                                   (implicit deny)
+        ↓ (yes)
+                                                      → ✅ ALLOWED
+```
+
+**All three must say yes.** Any one saying no blocks the action. SCP and Boundary cap; Identity policy grants.
+
+#### Worked example — developer `bob` who needs admin most of the time
+
+```
+Org SCP (attached to the developer's OU)
+└── "Deny everything outside eu-west-1"           ← org-wide guardrail
+
+Permissions Boundary (attached to bob's IAM user)
+└── "Allow only s3:*, ec2:*, lambda:*, iam:Get*   ← bob-specific ceiling
+     — deny anything tagged Environment=Production"
+
+Identity policy (attached to bob's IAM user)
+└── "AdministratorAccess"                         ← grants the actual permissions
+```
+
+`bob` tries to:
+
+| Action | SCP | Boundary | Identity | Result |
+| ------ | --- | -------- | -------- | ------ |
+| Create EC2 in eu-west-1 (non-prod) | ✅ | ✅ | ✅ | ✅ Allowed |
+| Create EC2 in us-east-1 | ❌ wrong region | ✅ | ✅ | ❌ **Blocked by SCP** |
+| Delete an RDS instance | ✅ | ❌ not in boundary | ✅ | ❌ **Blocked by boundary** |
+| Read a prod-tagged S3 bucket | ✅ | ❌ prod tag denied | ✅ | ❌ **Blocked by boundary** |
+| Create an IAM user | ✅ | ❌ only `iam:Get*` | ✅ | ❌ **Blocked by boundary** |
+
+The identity policy says "anything" — but the SCP and boundary together filter it down to a safe subset. Defence in depth.
+
+#### Why three layers, not one
+
+Each layer answers a different "who's in charge?" question:
+
+| Layer | Owned by | Answers |
+| ----- | -------- | ------- |
+| **SCP** | Org admin (security team) | *"What can NO account in our org ever do?"* |
+| **Permissions Boundary** | Account admin / platform team | *"This developer can manage their own IAM — but never escalate beyond this ceiling."* |
+| **Identity policy** | Account admin / developer | *"Here are the permissions to actually do the job."* |
+
+Boundaries shine in **delegated IAM** scenarios: *"I'll let developers create their own roles for their apps, but the roles can never be more powerful than this boundary."* Without boundaries, a developer with `iam:*` could create themselves an admin role and bypass everything.
+
+#### Exam traps for the three layers
+
+| Question setup | Trap | Right answer |
+| -------------- | ---- | ------------ |
+| "Limit a specific developer's max permissions, but they need to be admin sometimes" | "Use an SCP" | **Permissions boundary** — SCPs apply to *all* principals in the account |
+| "Limit ALL users in an account, including root" | "Use a permissions boundary" | **SCP** — boundaries don't apply to root and only attach to one principal |
+| "Developer has `iam:*` and shouldn't escalate privileges" | "Restrict their IAM policy" | **Permissions boundary** + condition requiring all roles they create attach the same boundary |
+| "Why isn't the SCP affecting the management account?" | "Misconfigured" | Management account is **excluded** from SCPs by design |
+| "User has admin identity policy but action denied" | "Re-add admin to IAM" | The cause is an SCP, boundary, or resource policy denying — IAM is fine |
+
 ### AWS Control Tower — the layer above Organizations
 
 Organizations gives you the primitives (accounts, OUs, SCPs). **Control Tower** is the opinionated landing-zone builder on top:
@@ -2105,14 +2205,125 @@ Organizations gives you the primitives (accounts, OUs, SCPs). **Control Tower** 
 
 ### IAM Identity Center (formerly AWS SSO)
 
-Organizations is the substrate. **IAM Identity Center** is how humans actually log in to all those accounts without managing IAM users per account.
+**Anchored against Okta or Azure AD's SSO portal — but AWS-native and free.** Sits on top of AWS Organizations and gives humans a single browser portal where they sign in once, pick which AWS account + role to assume, and get temporary STS credentials. No IAM users anywhere.
 
-- Federates with external IdPs (Okta, Azure AD, Google Workspace) or hosts its own user directory
-- **Permission Sets** = templated IAM policies (e.g. `ReadOnly`, `BillingAdmin`) assigned to a (user-or-group, account) pair
-- One login → AWS SSO portal → pick an account → assume the assigned role
-- Replaces "IAM users in every account" — the modern best practice
+Was called **AWS SSO** until 2022. Exam questions still use both names interchangeably.
 
-**Exam trap:** if a question describes *"users currently have IAM users in 30 accounts"* → the right answer is almost always *"migrate to IAM Identity Center"*.
+#### What it is NOT
+
+| Question | Service | Not Identity Center because... |
+| -------- | ------- | ------------------------------ |
+| *"Manage app users (people signing up for our SaaS)"* | **Amazon Cognito** | Identity Center is for *workforce identity*; Cognito is for *customer identity* in your own apps |
+| *"Active Directory for AWS workloads"* | **AWS Managed Microsoft AD** | Identity Center can *use* AD as an identity source, but isn't a directory service itself |
+| *"Grant permissions"* | **IAM** (via permission sets that materialise as IAM roles) | Identity Center orchestrates; IAM still does the actual permission evaluation |
+| *"Federated login for a single AWS account"* | **IAM Identity Provider** (SAML or OIDC) | Single-account federation works via IAM; Identity Center is the *multi-account* answer |
+| *"Service-to-service auth"* | **IAM roles** | Identity Center is for human users, not services |
+
+#### Core concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Identity source** | Where users live: built-in Identity Center directory, external IdP (Okta / Entra ID / Google / Ping / OneLogin via SAML 2.0), or AWS Managed Microsoft AD / on-prem AD via AD Connector |
+| **Users + Groups** | Managed in Identity Center, or synced from external IdP via **SCIM 2.0** (auto provision / deprovision) |
+| **Permission Set** | Reusable bundle of policies (AWS-managed + customer-managed + inline + optional permissions boundary). E.g. `ReadOnlyAccess`, `BillingAdmin`, `DataScientist` |
+| **Assignment** | Three-way join: *(user-or-group) × (permission set) × (account)*. "Alice gets BillingAdmin in finance account; dev-team group gets ReadOnly in all prod accounts" |
+| **Application assignment** | The portal can also launch external SaaS apps (Salesforce, Slack, etc.) via SAML — Identity Center doubles as an enterprise SSO portal |
+| **Start URL** | Unique URL of your Identity Center portal (e.g. `https://d-xxx.awsapps.com/start`) |
+
+#### How a login actually flows
+
+```
+1. Alice opens https://d-xxx.awsapps.com/start
+       ↓
+2. Identity Center authenticates her
+   (either against its own directory, or redirects to Okta/Entra ID)
+       ↓
+3. Alice sees a list of accounts she's assigned to,
+   each with the permission sets she can use
+       ↓
+4. Alice clicks "prod-account" → "BillingAdmin"
+       ↓
+5. Identity Center calls STS to assume the corresponding IAM role
+   (Identity Center auto-creates a role per permission set per account,
+    named like `AWSReservedSSO_BillingAdmin_xxx`)
+       ↓
+6. Alice gets temporary STS credentials (1–12h, configurable)
+       ↓
+7. Console session opens in that account with those permissions
+```
+
+For CLI use: `aws configure sso` walks Alice through setup; `aws sso login` opens the browser, she authenticates, the CLI caches her temporary creds locally.
+
+#### Permission Sets — the workhorse
+
+- **Reusable across accounts** — define `DataScientist` once; assign to 12 accounts
+- **Compose multiple policy types** — AWS-managed + customer-managed + inline + permissions boundary, all in one set
+- **Materialised as IAM roles** in each target account when first assigned. Identity Center owns these roles (prefixed `AWSReservedSSO_`); don't edit them directly — your changes will be clobbered on next provisioning
+- **Session duration** configurable per set (default 1h, max 12h)
+- **MFA enforcement** configured at the Identity Center level — applies to every login
+
+Common patterns:
+```
+ReadOnly                  → AWS managed: ReadOnlyAccess
+BillingAdmin              → AWS managed: AWSBillingReadOnlyAccess + custom budget actions
+PowerUser                 → AWS managed: PowerUserAccess (no IAM)
+Admin-with-Boundary       → AdministratorAccess + permissions boundary
+                            that denies prod-tagged resources
+SecurityAuditor           → ReadOnlyAccess + SecurityAudit + IAMReadOnlyAccess
+```
+
+#### Identity source choices
+
+| Source | When to use |
+| ------ | ----------- |
+| **Identity Center directory** (default) | Small org, no existing IdP, simplest setup |
+| **External IdP via SAML 2.0 + SCIM 2.0** | You already use Okta / Entra ID / Google Workspace — **the normal enterprise answer** |
+| **AWS Managed Microsoft AD or on-prem AD** | You're an AD shop and want AWS to follow AD group membership |
+
+**Exam trigger:** *"users are in Okta — give them AWS console access"* → **Identity Center with Okta as SAML identity source + SCIM for sync**.
+
+#### Replacing IAM users — the migration pattern
+
+```
+Before:
+  account-1: IAM user "alice", "bob", "charlie"...
+  account-2: IAM user "alice", "bob"...
+  account-3: ...
+  (30 accounts × N users = chaos. Access keys everywhere.)
+
+After:
+  IAM Identity Center (in management account)
+  ├── Identity source: Okta (via SAML 2.0 + SCIM)
+  ├── Permission sets: ReadOnly, PowerUser, Admin-with-Boundary
+  └── Assignments:
+        engineering group → PowerUser → all dev accounts
+        sre group         → Admin-with-Boundary → prod accounts
+        finance group     → BillingAdmin → finance account
+
+  No IAM users. No access keys (CLI uses `aws sso login`).
+  Offboarding = remove from Okta group; access disappears instantly.
+```
+
+#### Anti-patterns
+
+- *"Use Cognito for AWS console access"* — wrong service; Cognito is for app users
+- *"Have IAM users in each account because permissions are simpler that way"* — this is the legacy pattern Identity Center exists to replace
+- *"Federate each account separately via IAM SAML provider"* — works but doesn't scale; Identity Center is multi-account-aware
+- *"Create one giant `AdministratorAccess` permission set for everyone"* — defeats the purpose; combine with **permissions boundaries** or use scoped sets per role
+- *"Edit the `AWSReservedSSO_*` roles directly in each account"* — Identity Center owns these; your edits get clobbered
+
+#### Exam triggers
+
+- *"Federated SSO across all AWS accounts in an org"* → **IAM Identity Center**
+- *"Users currently have IAM users in 30 accounts, want to consolidate"* → **migrate to IAM Identity Center**
+- *"Users live in Okta / Entra ID — give them AWS access"* → **Identity Center + that IdP as SAML source + SCIM 2.0 for auto-sync**
+- *"Single sign-on for AWS Console AND third-party SaaS"* → **Identity Center application assignments**
+- *"Replace static access keys for engineers using the CLI"* → **`aws configure sso` + `aws sso login`** (temporary STS creds)
+- *"Auto-deprovision a leaver from all AWS accounts when they leave"* → **Identity Center + SCIM** (removal from IdP cascades)
+- *"Centrally manage which permissions are available in each account"* → **permission sets**
+- *"Different MFA / session durations per role"* → **per-permission-set configuration**
+
+**Pricing:** Free from AWS's side. (Your IdP may charge per SAML app — that's an Okta/Entra ID concern.)
 
 ### Organization-Aware Services
 
@@ -2145,6 +2356,157 @@ The cost reality: **Config + CloudTrail running across many accounts is where th
 - *"Create a new account by calling `CreateAccount` then forgetting baseline setup"* → use **Control Tower** or wrap in IaC so baseline (CloudTrail, Config, tags, IAM roles) is applied
 - *"SCPs can lock the root user out of a member account"* — **true and intended**, but if a question presents this as "unintended consequence", the answer is usually "create a break-glass IAM role exempted via SCP condition"
 
+### Common Exam Question Patterns
+
+The exam loves Organizations / SCP scenarios because they expose whether you actually understand AWS's layered policy model. Here are the recurring patterns and the trap answers each one is designed to lure you toward.
+
+#### Pattern 1 — "Why can't user X do Y despite having admin?"
+
+A user has `AdministratorAccess` in IAM but an action gets blocked. You need to spot which layer is denying.
+
+| Scenario | The actual cause | Trap answer |
+| -------- | ---------------- | ----------- |
+| Admin user can't terminate EC2 instances | **SCP** at OU level denies `ec2:TerminateInstances` | "the IAM policy is wrong" |
+| Admin user can't access an S3 bucket | **Resource policy** (bucket policy) denies — or doesn't include the role's account | "add `s3:*` to IAM policy" (already there) |
+| Admin user can't use a KMS key in another account | KMS **key policy** doesn't trust the role | "grant `kms:Decrypt` in IAM" |
+| Admin user can't assume a role | **Permissions boundary** blocks it, or the role's **trust policy** doesn't include them | "the role's permission policy is wrong" |
+
+**Rule:** *"User has admin but still can't do X"* → look for **SCP, resource policy, permissions boundary, or trust policy**. The IAM policy isn't the culprit.
+
+#### Pattern 2 — "How do we enforce X across all accounts?"
+
+| The ask | The answer | Why |
+| ------- | ---------- | --- |
+| "Prevent any account from using regions other than EU" | **SCP with `aws:RequestedRegion` condition** | Only mechanism that enforces across all accounts and overrides root |
+| "Prevent member accounts from disabling CloudTrail" | **SCP denying `cloudtrail:Stop*`, `cloudtrail:Delete*`** | Org trail alone isn't enough — members could still try; SCP makes it impossible |
+| "Block creation of public S3 buckets" | **SCP denying `s3:PutBucketAcl`** with public-read condition + S3 Block Public Access | Defence in depth |
+| "Sandbox accounts can only run small EC2 instances" | **SCP with `ec2:InstanceType` condition** on `ec2:RunInstances` | Per-OU policy enforcement |
+| "Prevent root user of any member account from creating access keys" | **SCP** | The *only* way to restrict the root user — IAM can't |
+
+**Rule:** *"Enforce X across many accounts"* or *"prevent users including root from doing X"* → **SCP**. If the answer says "IAM policy", it's the trap.
+
+#### Pattern 3 — Management account traps
+
+| Question | Correct answer | Trap |
+| -------- | -------------- | ---- |
+| "Apply an SCP to the management account to lock it down" | **Doesn't work** — management account is excluded from SCPs | "yes, just attach the SCP" |
+| "Why is the management account still able to terminate instances despite the deny SCP?" | Management account ignores SCPs | "the SCP must be misconfigured" |
+| "How do we restrict the management account?" | **IAM + permissions boundaries** in the management account; better: **don't put workloads there** | "another SCP" |
+
+**Rule:** if a question mentions "management account" + "SCP", the answer is almost always *"SCPs don't apply to the management account"*. Best practice: management account should have **no workloads** — only Organizations + billing.
+
+#### Pattern 4 — Allow-list vs deny-list strategy
+
+| Question wording | Answer |
+| ---------------- | ------ |
+| "This OU should only be able to use S3, Lambda, and DynamoDB — nothing else" | **Allow-list SCP**: remove default `FullAWSAccess`, attach SCP allowing only those services |
+| "Block usage of EC2 P-series instances across all accounts" | **Deny-list SCP**: keep `FullAWSAccess`, attach SCP denying `ec2:RunInstances` with instance-type condition |
+| "Highly regulated workload, lock down to minimum surface area" | **Allow-list** |
+| "Most accounts run normally, but a few high-risk actions need blocking" | **Deny-list** |
+
+**Rule:** *"only X, Y, Z allowed"* → allow-list. *"block A, B, C"* → deny-list.
+
+#### Pattern 5 — Cross-account access
+
+Cross-account requires **both sides to agree**:
+
+```
+Account A: alice                  Account B: prod-data S3 bucket
+─────────────────                 ──────────────────────────────
+Identity policy on alice:         Bucket policy on prod-data:
+"Allow s3:GetObject               "Allow Principal arn:…alice
+ on prod-data/*"                   s3:GetObject on prod-data/*"
+
+      Both must Allow → access granted
+      Either missing → denied
+```
+
+| Question | Answer |
+| -------- | ------ |
+| "User in Account A can't read S3 bucket in Account B" | Need **both** IAM allow on alice AND bucket policy granting account A |
+| "We added the IAM policy but it still doesn't work" | The **resource policy** (bucket policy) is missing the grant |
+| "We added the bucket policy but it still doesn't work" | The **IAM policy** on the user is missing the grant |
+| "How does cross-account role assumption work?" | Role's **trust policy** in Account B trusts Account A; user in A has IAM permission to call `sts:AssumeRole` |
+
+**Rule:** cross-account = **both** identity policy AND resource policy must allow. The exam tests whether you know one side alone isn't enough.
+
+#### Pattern 6 — SCP vs Permissions Boundary
+
+A perennial source of confusion:
+
+| | SCP | Permissions Boundary |
+| - | --- | -------------------- |
+| Attaches to | Account, OU, root | Individual IAM user or role |
+| Scope | All principals in that account | Just that one principal |
+| Affects root user? | ✅ Yes | ❌ No (only IAM users/roles) |
+| Effect | Caps what IAM can grant | Caps what IAM can grant for that principal |
+| Set by | Org management account | Account admin |
+
+**Rule:** "all principals in an account" → **SCP**. "specific role for a developer who's also an admin" → **permissions boundary**.
+
+#### Pattern 7 — Account creation / landing zone
+
+| Question | Answer | Trap |
+| -------- | ------ | ---- |
+| "Set up a new multi-account environment from scratch with best practices" | **AWS Control Tower** | "Use Organizations directly" |
+| "Programmatically create 50 new sandbox accounts" | **Control Tower Account Factory** or `organizations:CreateAccount` API | "manually via console" |
+| "We have 30 existing accounts and want centralised governance" | **AWS Organizations** (add Control Tower later) | "rebuild everything in Control Tower" |
+| "Standardised baseline for every new account (CloudTrail, Config, IAM roles)" | **Control Tower guardrails + Account Factory** | "CloudFormation StackSets alone" |
+
+**Rule:** "from scratch + best practices + landing zone" → Control Tower. "already have many accounts" → Organizations.
+
+#### Pattern 8 — Federated SSO
+
+| Question | Answer |
+| -------- | ------ |
+| "Users currently have IAM users in 30 accounts — what should we move to?" | **IAM Identity Center** (formerly AWS SSO) |
+| "Federate with Okta / Azure AD for AWS access" | **IAM Identity Center** with the IdP as identity source |
+| "One login → access multiple accounts" | **IAM Identity Center** with permission sets |
+| "Allow temporary credentials instead of access keys" | IAM Identity Center, or **roles + STS** |
+
+**Rule:** "IAM users everywhere" + "federated login" + "many accounts" → **IAM Identity Center**.
+
+#### Pattern 9 — Organization-wide security tooling
+
+| Question | Answer |
+| -------- | ------ |
+| "Centralise CloudTrail across all accounts" | **Organization trail** |
+| "Centralised compliance dashboard across all accounts" | **AWS Config Aggregator** |
+| "Centralise GuardDuty findings, but security team isn't in the management account" | **Delegated administrator** for GuardDuty |
+| "Aggregate Security Hub findings org-wide" | **Delegated admin + cross-account Security Hub integration** |
+| "Centralised backup policies for all accounts" | **AWS Backup + Organizations** |
+| "Share VPC subnets across accounts" | **AWS Resource Access Manager (RAM)** — not Organizations directly |
+
+**Rule:** "org-wide X from non-management account" → **delegated administrator** pattern.
+
+#### Pattern 10 — Order of evaluation gotchas
+
+The most punishing questions because the answer hinges on the precedence rules.
+
+| Scenario | Result | Why |
+| -------- | ------ | --- |
+| SCP Allows, IAM doesn't grant | ❌ Blocked | IAM must explicitly Allow — SCPs never grant |
+| SCP Denies, IAM Allows | ❌ Blocked | Explicit Deny wins everywhere |
+| SCP Allows, IAM Allows, Permissions Boundary Denies | ❌ Blocked | Every layer must pass |
+| Resource policy Allows, IAM Denies (same account) | ❌ Blocked | Both layers must Allow |
+| Resource policy Allows (cross-account), IAM Allows (cross-account), SCP in *either* account Denies | ❌ Blocked | SCP in either account can block |
+
+**Rule:** *Explicit Deny anywhere = blocked. Every layer must Allow. SCPs never grant.*
+
+#### Vocabulary the exam uses to telegraph the answer
+
+| Phrase in question | What it's pointing at |
+| ------------------ | --------------------- |
+| "across all accounts" | Organizations / SCP / org trail / Aggregator |
+| "even if a user is an administrator" | SCP or permissions boundary |
+| "prevent the root user from..." | **Only** SCP can do this |
+| "minimum necessary permissions for a developer who needs admin sometimes" | Permissions boundary |
+| "from scratch with best practices" | Control Tower |
+| "federated single sign-on" | IAM Identity Center |
+| "delegate administration of [GuardDuty/Config/etc.] to a non-management account" | Delegated administrator |
+| "consolidated billing" / "pooled volume discounts" | Organizations (consolidated billing) |
+| "tamper-proof audit logs across accounts" | Organization trail + S3 Object Lock |
+
 ### Exam Triggers
 
 - *"Centralised billing across multiple AWS accounts"* → **AWS Organizations consolidated billing**
@@ -2162,6 +2524,140 @@ The cost reality: **Config + CloudTrail running across many accounts is where th
 - *"Restrict the root user of a member account from doing X"* → **SCP** (the *only* way to restrict the root user)
 
 **The 80/20:** *AWS Organizations = central management of many AWS accounts grouped into OUs under a root. Two killer features: **consolidated billing** (pooled discounts, shared RIs, one invoice) and **SCPs** (deny-only guardrails that cap what IAM can do — even for the root user). The management account is excluded from SCPs by design. **AWS Control Tower** is the opinionated landing-zone builder on top; **IAM Identity Center** provides federated SSO across accounts. Org-aware services (CloudTrail, Config, GuardDuty, Security Hub) all support a "delegated admin" + cross-account aggregation pattern.*
+
+## AWS Directory Service (Active Directory on AWS)
+
+**Anchored against on-prem Active Directory.** If you've ever run AD in a data centre (domain controllers, OUs, Group Policy, Kerberos, LDAP), AWS Directory Service is the managed version — three flavours depending on how much "real AD" you need.
+
+### The Three Flavours (this is the whole exam)
+
+| Service | What it actually is | When to pick it | Cost |
+| ------- | ------------------- | --------------- | ---- |
+| **AWS Managed Microsoft AD** | **Real Microsoft AD** on AWS-managed Domain Controllers in a VPC. Full schema, Group Policy, Kerberos, LDAP, MFA, trusts | Need *actual* AD features: SQL Server Windows Auth, SharePoint, .NET apps, schema extensions, forest trusts with on-prem AD | $$$ (most expensive — managed DCs) |
+| **AD Connector** | A **proxy / redirector** to your *existing* on-prem AD. No directory data stored in AWS — every auth call is forwarded back to on-prem | You already have on-prem AD and want AWS workloads (EC2 domain-join, WorkSpaces, IAM Identity Center) to authenticate against it without replicating | $ (cheap — it's just a proxy) |
+| **Simple AD** | A **Samba-based** AD-compatible directory. LDAP, basic user/group management, joining Linux/Windows EC2 | Lightweight, low cost, no Microsoft-specific features needed (no trusts, no schema extensions, no MFA, no PowerShell, no Group Policy) | $ |
+
+**The umbrella name** for all three is **AWS Directory Service**.
+
+### What AWS Directory Service is NOT
+
+| Question | Service | Not Directory Service because... |
+| -------- | ------- | -------------------------------- |
+| *"SSO into AWS Console across many accounts"* | **IAM Identity Center** | Identity Center *uses* AD as one possible identity source; AD itself doesn't talk to the AWS console |
+| *"Manage IAM users / roles"* | **IAM** | Different identity layer — IAM is for AWS API/console; AD is for Windows/LDAP workloads |
+| *"Authenticate end customers signing into our SaaS"* | **Amazon Cognito** | AD is workforce identity, not customer identity |
+| *"Replace IAM users in each AWS account"* | **IAM Identity Center** (which can sit on top of Managed AD) | AD alone doesn't federate to AWS console |
+| *"Sync Google Workspace users to AWS"* | **IAM Identity Center with Google as SAML source** | AD is Microsoft-flavoured; Google syncs to Identity Center directly |
+| *"DNS for VPC resources"* | **Route 53 (private hosted zones) or Route 53 Resolver** | AD provides DNS *for the domain*, but isn't your general-purpose DNS service |
+
+### The Decision Tree
+
+```
+Do you need full Microsoft AD features (Group Policy, schema, trusts, MFA, LDAPS)?
+  └── YES → AWS Managed Microsoft AD
+  └── NO → Do you already have on-prem AD and want to keep it as the source of truth?
+            └── YES → AD Connector (proxy to on-prem)
+            └── NO → Do you just need basic LDAP / small user count, no Microsoft-specific bits?
+                      └── YES → Simple AD
+                      └── NO → You probably don't need a directory at all
+                                  → use IAM Identity Center's built-in directory
+```
+
+### How Domain-Joining an EC2 Instance Actually Flows
+
+```
+1. Launch a Windows EC2 in a VPC subnet that can reach the AD DCs
+       ↓
+2. EC2 has an IAM role with permission to read directory join info from SSM
+   (and AmazonSSMManagedInstanceCore for the SSM agent)
+       ↓
+3. Either:
+   - At launch: pass the directory ID via the "Domain join directory" option
+   - At runtime: SSM Run Command "AWS-JoinDirectoryServiceDomain"
+       ↓
+4. SSM agent on the instance retrieves domain credentials from a managed secret
+       ↓
+5. The instance contacts the AD DCs (Managed AD, or via AD Connector → on-prem)
+   using Kerberos/LDAP over the standard ports (UDP/TCP 88, 389, 445, 636…)
+       ↓
+6. AD creates a computer account; the instance trusts the domain controllers
+       ↓
+7. AD users can now RDP into the box; Group Policy applies
+```
+
+The IAM role + SSM glue is what makes this seamless — without it you'd be manually joining with `Add-Computer`.
+
+### Trust Relationships (Managed AD Only)
+
+Trusts let users in one domain authenticate to resources in another. Three flavours, all tested:
+
+| Trust type | Direction | Use case |
+| ---------- | --------- | -------- |
+| **One-way outgoing trust** | AWS Managed AD trusts on-prem AD | On-prem users access AWS resources, but not vice versa |
+| **One-way incoming trust** | On-prem AD trusts AWS Managed AD | AWS-managed accounts access on-prem resources |
+| **Two-way (bidirectional) forest trust** | Both ways | Full integration — the classic answer for hybrid AD |
+
+**Exam trigger:** *"hybrid AD, users in either domain access resources in the other"* → **two-way forest trust between AWS Managed Microsoft AD and on-prem AD**.
+
+You **cannot** create trusts with Simple AD or AD Connector — trusts are a Managed Microsoft AD–only feature.
+
+### Integration with IAM Identity Center
+
+This is where Directory Service ties back to everything in the Organizations section:
+
+```
+On-prem AD (or AWS Managed Microsoft AD)
+         ↓ (identity source)
+IAM Identity Center
+         ↓ (assigns permission sets to user/group + account)
+AWS Console / CLI in member accounts
+```
+
+User identity lives in AD. Identity Center reads group membership from AD. Permission sets in Identity Center map AD groups → AWS roles. AD users get federated AWS console access without ever creating IAM users.
+
+**Exam trigger:** *"company uses AD on-prem and wants AWS console SSO that respects AD group membership"* → **IAM Identity Center with Managed AD (with trust to on-prem) OR AD Connector as the identity source**.
+
+### Common Use Cases
+
+| Use case | Service |
+| -------- | ------- |
+| SQL Server Windows Authentication on RDS / EC2 | **Managed Microsoft AD** (RDS for SQL Server integrates directly) |
+| .NET apps using AD authentication | **Managed Microsoft AD** or **AD Connector** |
+| Joining Windows EC2 fleet to a domain | Any of the three (Managed AD if you want trusts/Group Policy) |
+| Amazon WorkSpaces / AppStream user directory | **Managed Microsoft AD** or **AD Connector** (or Simple AD for basic) |
+| FSx for Windows File Server (SMB shares with AD ACLs) | **Managed Microsoft AD** or **AD Connector** |
+| LDAP-backed Linux app, no Microsoft features | **Simple AD** |
+| SSO into AWS Console for AD users | **AD source + IAM Identity Center** |
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Use Simple AD because it's cheap"* — fine until you need trusts, Group Policy, MFA, schema extensions, or PowerShell management — none of which Simple AD supports
+- *"Use AD Connector when on-prem is unreachable"* — AD Connector requires live network to on-prem DCs; an outage there breaks all AWS auth
+- *"Use Managed Microsoft AD for a simple LDAP directory of 20 users"* — overkill and expensive; use Simple AD or Identity Center directory
+- *"Use AD to authenticate customers of your SaaS"* — wrong layer; that's **Cognito**
+- *"Replicate on-prem AD into AWS by standing up DCs on EC2"* — works but you're managing DCs yourself; the whole point of Managed AD is AWS does that for you
+- *"Use AD for AWS Console SSO directly"* — AD doesn't talk to the AWS console; you need **IAM Identity Center** on top
+
+### Exam Triggers
+
+- *"Run SQL Server with Windows Authentication"* → **AWS Managed Microsoft AD** (or AD Connector to on-prem)
+- *"Domain-join EC2 instances to existing on-prem AD"* → **AD Connector** (or Managed AD with trust)
+- *"Two-way trust with on-prem AD"* → **Managed Microsoft AD** (Simple AD + AD Connector can't do trusts)
+- *"Cheap AD-compatible directory for small Linux workload"* → **Simple AD**
+- *"Hybrid AD with seamless user experience in both directions"* → **Managed Microsoft AD + two-way forest trust**
+- *"AWS Console SSO for AD users across many accounts"* → **IAM Identity Center with AD as identity source**
+- *"Group Policy, MFA, LDAPS, schema extensions"* → **Managed Microsoft AD** only
+- *"WorkSpaces / FSx need a directory"* → **Managed AD or AD Connector** (Simple AD for low-end WorkSpaces)
+- *"Manage the directory in AWS but users authenticate against on-prem"* → contradictory — pick: Managed AD (AWS-resident) or AD Connector (on-prem-resident)
+- *"No AD admin team, no Microsoft licences, but we need an LDAP directory"* → **Simple AD** or skip AD entirely
+
+### Pricing Notes
+
+- **Managed Microsoft AD**: per-hour per DC (you get 2 DCs by default; can scale up). Most expensive of the three.
+- **AD Connector**: per-hour, much cheaper — it's just a proxy.
+- **Simple AD**: per-hour, cheapest. Two sizes (Small for ≤500 users, Large for ≤5000).
+
+**The 80/20:** *AWS Directory Service umbrella covers three flavours: **Managed Microsoft AD** (real MS AD on AWS DCs, supports trusts/Group Policy/schema), **AD Connector** (proxy to existing on-prem AD), **Simple AD** (Samba-based, cheap, no Microsoft-specific features). For hybrid AD with trust → Managed AD. For "on-prem AD is the source of truth" → AD Connector. For "I just need a basic LDAP" → Simple AD. Combine any of these with **IAM Identity Center** to give AD users SSO into the AWS console across all org accounts. Trusts are Managed AD only. Watch out: AD ≠ IAM ≠ Cognito ≠ Identity Center — different identity layers.*
 
 ## ECS (Elastic Container Service)
 
