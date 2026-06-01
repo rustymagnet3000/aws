@@ -120,6 +120,35 @@
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-13)
   - [Exam Triggers](#exam-triggers-13)
   - [Pricing Notes](#pricing-notes)
+- [AWS KMS (Key Management Service)](#aws-kms-key-management-service)
+  - [What KMS is NOT](#what-kms-is-not)
+  - [Core Concepts](#core-concepts-3)
+  - [Envelope Encryption — How It Actually Flows](#envelope-encryption--how-it-actually-flows)
+  - [Common Use Cases (where KMS hides underneath)](#common-use-cases-where-kms-hides-underneath)
+  - [Key Policies vs IAM Policies — the Gotcha](#key-policies-vs-iam-policies--the-gotcha)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-14)
+  - [Exam Triggers](#exam-triggers-14)
+- [Amazon GuardDuty](#amazon-guardduty)
+  - [What GuardDuty is NOT](#what-guardduty-is-not)
+  - [Core Concepts](#core-concepts-4)
+  - [How GuardDuty Actually Detects Things](#how-guardduty-actually-detects-things)
+  - [Common Finding Types (worth recognising on the exam)](#common-finding-types-worth-recognising-on-the-exam)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-15)
+  - [Exam Triggers](#exam-triggers-15)
+- [AWS Security Hub](#aws-security-hub)
+  - [What Security Hub is NOT](#what-security-hub-is-not)
+  - [Core Concepts](#core-concepts-5)
+  - [How Security Hub Pulls It All Together](#how-security-hub-pulls-it-all-together)
+  - [Compliance Standards — the "what controls am I passing?" angle](#compliance-standards--the-what-controls-am-i-passing-angle)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-16)
+  - [Exam Triggers](#exam-triggers-16)
+- [AWS WAF (Web Application Firewall)](#aws-waf-web-application-firewall)
+  - [What WAF is NOT](#what-waf-is-not)
+  - [Core Concepts](#core-concepts-6)
+  - [How a WAF Request Actually Flows](#how-a-waf-request-actually-flows)
+  - [Where to attach a Web ACL](#where-to-attach-a-web-acl)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-17)
+  - [Exam Triggers](#exam-triggers-17)
 - [ECS (Elastic Container Service)](#ecs-elastic-container-service)
   - [ECS vs ASG + EC2](#ecs-vs-asg--ec2)
   - [Key concepts](#key-concepts)
@@ -3096,6 +3125,395 @@ User identity lives in AD. Identity Center reads group membership from AD. Permi
 - **Simple AD**: per-hour, cheapest. Two sizes (Small for ≤500 users, Large for ≤5000).
 
 **The 80/20:** *AWS Directory Service umbrella covers three flavours: **Managed Microsoft AD** (real MS AD on AWS DCs, supports trusts/Group Policy/schema), **AD Connector** (proxy to existing on-prem AD), **Simple AD** (Samba-based, cheap, no Microsoft-specific features). For hybrid AD with trust → Managed AD. For "on-prem AD is the source of truth" → AD Connector. For "I just need a basic LDAP" → Simple AD. Combine any of these with **IAM Identity Center** to give AD users SSO into the AWS console across all org accounts. Trusts are Managed AD only. Watch out: AD ≠ IAM ≠ Cognito ≠ Identity Center — different identity layers.*
+
+## AWS KMS (Key Management Service)
+
+**Anchored against HashiCorp Vault or a managed HSM.** KMS is the centralised, managed cryptographic key service that virtually every AWS service uses for encryption at rest. You don't usually call KMS directly — services like S3, EBS, RDS, Secrets Manager call it on your behalf.
+
+### What KMS is NOT
+
+| Question | Service | Not KMS because... |
+| -------- | ------- | ------------------ |
+| *"Store and rotate database passwords / API keys"* | **AWS Secrets Manager** | Secrets Manager *uses* KMS to encrypt secrets — but it stores/rotates them; KMS just encrypts |
+| *"Single-tenant dedicated hardware HSM for FIPS 140-2 Level 3"* | **AWS CloudHSM** | KMS is multi-tenant managed (FIPS 140-2 Level 3 too, but shared HW). CloudHSM is your own dedicated HSM cluster |
+| *"Manage TLS certificates"* | **AWS Certificate Manager (ACM)** | ACM provisions/renews certs; ACM uses KMS for private CA keys but isn't KMS |
+| *"Encrypted string parameters"* | **SSM Parameter Store SecureString** (which uses KMS) | Different storage layer; KMS is the encryption backend |
+| *"Encrypt my data with my own algorithm offline"* | **AWS Encryption SDK / S2N** | Client-side libraries; can use KMS-supplied data keys but aren't KMS |
+
+### Core Concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **KMS Key** (formerly "CMK" — Customer Master Key) | The logical key resource. Three flavours: **AWS-managed** (free, used automatically by services like `aws/s3`), **customer-managed** ($1/mo + API calls, you control rotation/policy), **AWS-owned** (invisible, used by some services) |
+| **Symmetric vs Asymmetric** | Symmetric (256-bit AES-GCM) = single key encrypts + decrypts; most common. Asymmetric (RSA/ECC) = public/private pairs; for signing, verification, or encryption where caller can't have the private key |
+| **Envelope encryption** | The killer pattern: KMS encrypts a **data key**, the data key encrypts your actual data. Lets you encrypt huge files with one KMS API call |
+| **Key policy** | Resource-based policy *on the key itself*. Combined with IAM policies via the standard AND/OR rules. **Required** — even root user needs an explicit grant in the key policy |
+| **Grant** | Temporary, programmatic delegation of key permissions — used by services like RDS that need to use your key on your behalf |
+| **Alias** | Friendly name pointing at a key (e.g. `alias/prod-database`). Use these in code, not raw key IDs |
+| **Multi-region key** | One logical key replicated across regions — same key material, same key ID. Required for cross-region snapshot copies and global apps |
+| **Imported key material (BYOK)** | You generate key material elsewhere and import into KMS — KMS stores it but didn't create it. Lets you keep an offline master key |
+| **KMS Custom Key Store** | Back a KMS key with a CloudHSM cluster you own — best of both worlds for high-compliance workloads |
+
+### Envelope Encryption — How It Actually Flows
+
+The single most important KMS pattern. Without it, every encrypt/decrypt would need a KMS API call, hitting rate limits and 4 KB payload caps.
+
+```
+1. App calls KMS GenerateDataKey(KeyId=alias/my-key)
+       ↓
+2. KMS returns BOTH:
+     - Plaintext data key (use this NOW, then throw away)
+     - Encrypted data key (store this with your data)
+       ↓
+3. App uses the plaintext data key to encrypt local data with AES-GCM
+       ↓
+4. App writes to disk/S3:
+     [ encrypted data | encrypted data key ]
+       ↓
+5. App wipes the plaintext data key from memory
+       ↓
+   ─── later, to decrypt ───
+       ↓
+6. App reads [ encrypted data | encrypted data key ] from storage
+       ↓
+7. App calls KMS Decrypt(CiphertextBlob=encrypted data key)
+       ↓
+8. KMS returns the plaintext data key
+       ↓
+9. App decrypts data locally, then wipes the data key again
+```
+
+**Why this pattern wins:** one KMS API call lets you encrypt arbitrarily large data. The KMS master key never leaves AWS. Even AWS staff can't see your plaintext data keys — they only exist in your app's memory.
+
+### Common Use Cases (where KMS hides underneath)
+
+| Service | How it uses KMS |
+| ------- | --------------- |
+| **S3 SSE-KMS** | Each object encrypted with a data key wrapped by your KMS key |
+| **EBS volume encryption** | Volume encrypted with a KMS-derived data key |
+| **RDS / Aurora encryption** | Storage layer encrypted via KMS |
+| **Secrets Manager** | Secret values stored encrypted with KMS |
+| **Parameter Store SecureString** | Same — KMS-encrypted parameter values |
+| **Lambda environment variables** | Optional KMS encryption for env vars at rest |
+| **CloudTrail log file encryption** | KMS encrypts log files in S3 |
+
+### Key Policies vs IAM Policies — the Gotcha
+
+Unlike most resource policies in AWS, a KMS **key policy is required** and acts as the **primary** authorisation source. IAM policies alone cannot grant access to a key — the key policy must explicitly allow it (typically by saying "allow IAM to be used", which then defers to IAM policies).
+
+```json
+// Minimal key policy — must include something like this
+{
+  "Effect": "Allow",
+  "Principal": { "AWS": "arn:aws:iam::123456789012:root" },
+  "Action": "kms:*",
+  "Resource": "*"
+}
+```
+
+That `Principal: root` doesn't mean "the root user" — it means "any IAM principal in this account, subject to IAM policies". Without it, IAM policies granting KMS permissions don't work.
+
+**Exam trap:** *"Why can't this IAM user use the key despite having `kms:Decrypt` in their IAM policy?"* → **Key policy doesn't include them or doesn't defer to IAM**.
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Use a customer-managed key when an AWS-managed key would suffice"* → wasted $1/mo + API costs per key; only go custom when you need control over rotation/policy
+- *"Hard-code key IDs in code"* → use **aliases** so key rotation/migration doesn't break code
+- *"Disable key rotation to save money"* → annual rotation is free and zero-config; just turn it on
+- *"Single-region key for cross-region snapshot copy"* → fails. Use a **multi-region key** for cross-region replication
+- *"Call KMS Encrypt for every record"* → hits API rate limits; use **envelope encryption** with locally-cached data keys
+- *"IAM policy alone grants key access"* → no, key policy must allow it too
+- *"Use KMS to store database passwords"* → wrong service; **Secrets Manager** stores+rotates, KMS just encrypts
+
+### Exam Triggers
+
+- *"Centrally managed encryption keys with rotation"* → **AWS KMS**
+- *"Bring your own key material"* → **KMS imported key material**
+- *"Dedicated single-tenant hardware HSM, FIPS 140-2 Level 3"* → **AWS CloudHSM** (not KMS)
+- *"Encrypt across regions"* → **KMS multi-region keys**
+- *"Temporary access for a service to use a key"* → **KMS Grant**
+- *"Encrypt huge files without API call per record"* → **Envelope encryption**
+- *"Automated annual key rotation, zero app changes"* → **KMS automatic rotation** (customer-managed keys)
+- *"Cross-region EBS snapshot copy fails to decrypt"* → snapshot encrypted with **single-region key**; need multi-region
+- *"Encrypt secret database password"* → **Secrets Manager** (which uses KMS underneath)
+
+**The 80/20:** *KMS = managed crypto key service that almost every AWS service uses for encryption at rest. Three key flavours: **AWS-managed** (free, automatic), **customer-managed** ($1/mo, you control), **AWS-owned** (invisible). **Envelope encryption** is the foundational pattern — KMS encrypts data keys, data keys encrypt your data. Keys are protected by **key policies** (required) + IAM policies + grants. **Multi-region keys** for cross-region scenarios. **CloudHSM** for dedicated single-tenant; KMS for everything else.*
+
+## Amazon GuardDuty
+
+**Anchored against Datadog Security Monitoring or Splunk SIEM detection rules — but AWS-native and agentless.** GuardDuty continuously analyses CloudTrail, VPC Flow Logs, and DNS query logs using ML and threat intelligence, then emits **findings** for suspicious behaviour. Zero agents, zero infrastructure to manage. Enable it and findings start appearing within minutes.
+
+### What GuardDuty is NOT
+
+| Question | Service | Not GuardDuty because... |
+| -------- | ------- | ------------------------ |
+| *"Aggregate findings from many sources into one dashboard"* | **AWS Security Hub** | Security Hub *consumes* GuardDuty findings; GuardDuty is one source among many |
+| *"Scan EC2 / Lambda / container images for software vulnerabilities (CVEs)"* | **Amazon Inspector** | Inspector = static vulnerability scanning; GuardDuty = behavioural threat detection |
+| *"Classify sensitive data in S3 (PII, PHI)"* | **Amazon Macie** | Macie inspects *data*; GuardDuty inspects *behaviour* |
+| *"Deep-dive investigation of an incident across logs"* | **Amazon Detective** | Detective is the forensic analysis tool that complements GuardDuty findings |
+| *"Full SIEM with custom queries on raw logs"* | **Amazon OpenSearch / Splunk** | GuardDuty doesn't store raw logs — pipe findings into a SIEM if you need that |
+
+### Core Concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Finding** | A detection event with severity (Low / Medium / High), affected resource, evidence (which API call, source IP, threat intel match), and a finding type like `Backdoor:EC2/C&CActivity.B` |
+| **Always-on data sources** | CloudTrail management events + VPC Flow Logs + Route 53 DNS query logs. No setup — GuardDuty reads them directly via a service-linked role |
+| **Optional protection plans** (paid) | **S3 Protection** (CloudTrail data events for S3), **EKS Protection** (Kubernetes audit logs), **Malware Protection** (snapshot-scan EBS on suspicious EC2), **RDS Protection** (login activity), **Lambda Protection** (network activity), **Runtime Monitoring** (EKS/ECS/EC2 agent-based runtime threats) |
+| **Trusted IP / threat lists** | Custom IP allow-lists or block-lists (your own threat intel) |
+| **Multi-account** | Delegated administrator in Organizations — one security account sees findings org-wide |
+| **EventBridge integration** | Every finding auto-emits an EventBridge event — feeds Security Hub, Lambda auto-remediation, SNS alerting, Slack |
+
+### How GuardDuty Actually Detects Things
+
+```
+1. GuardDuty's service-linked role consumes (no setup needed):
+     - CloudTrail management events from every region
+     - VPC Flow Logs from every ENI
+     - Route 53 Resolver DNS query logs
+   (Plus optional sources if enabled)
+       ↓
+2. AWS-managed ML models + threat-intel feeds + behavioural baselines
+   analyse the combined stream in near-real-time
+       ↓
+3. If a pattern matches a finding type → finding emitted
+   Example: an EC2 instance making DNS queries to a known botnet C2 domain
+   AND VPC Flow Logs show outbound traffic to its IP → Backdoor:EC2/C&CActivity.B
+       ↓
+4. Finding appears in GuardDuty console (and propagates to Security Hub if enabled)
+       ↓
+5. EventBridge automatically receives the finding event
+       ↓
+6. EventBridge rule routes to:
+     - SNS topic → PagerDuty / Slack
+     - Lambda → auto-quarantine instance (revoke SG, isolate)
+     - Step Functions → human-in-the-loop incident response
+     - Security Hub → centralised finding management
+```
+
+**Why the agentless angle matters:** GuardDuty reads existing AWS log streams. It can't be disabled by a compromised instance (the instance never knew it was being watched). Compare to host-based agents which an attacker can kill once they're on the box.
+
+### Common Finding Types (worth recognising on the exam)
+
+| Finding | Meaning |
+| ------- | ------- |
+| `UnauthorizedAccess:IAMUser/MaliciousIPCaller` | IAM access key used from a known malicious IP |
+| `UnauthorizedAccess:IAMUser/ConsoleLoginSuccess.B` | Console login from anomalous location |
+| `CryptoCurrency:EC2/BitcoinTool.B!DNS` | EC2 querying a known crypto mining pool DNS |
+| `Backdoor:EC2/C&CActivity.B` | EC2 communicating with a known command-and-control server |
+| `Recon:EC2/PortProbeUnprotectedPort` | EC2 being port-scanned from outside |
+| `Exfiltration:S3/AnomalousBehavior` | S3 access pattern (volume / source IP) deviates from baseline |
+| `Trojan:EC2/DNSDataExfiltration` | DNS tunneling exfiltration suspected |
+| `Policy:IAMUser/RootCredentialUsage` | Root user API activity (always Medium severity) |
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Disable GuardDuty in some accounts to save money"* → blind spots in those accounts; cost is small relative to detection value
+- *"Use GuardDuty to scan for software vulnerabilities"* → wrong service; **Inspector** does that
+- *"Use GuardDuty to find sensitive data in S3"* → wrong service; **Macie** does that
+- *"Treat GuardDuty as a SIEM"* → it's a detector; pipe findings into **Security Hub** or a real SIEM (Splunk, OpenSearch) for long-term storage / cross-correlation
+- *"Each account manages its own GuardDuty findings"* in a multi-account org → use **delegated administrator** for org-wide central management
+- *"Install GuardDuty agents on EC2"* → no agents; it's agentless (Runtime Monitoring is the only agent-based feature)
+
+### Exam Triggers
+
+- *"Detect compromised EC2 instance making unusual API calls / connecting to C2 server"* → **GuardDuty**
+- *"Detect cryptocurrency mining on EC2"* → **GuardDuty** (specific finding type)
+- *"Anomalous S3 download patterns / exfiltration"* → **GuardDuty S3 Protection**
+- *"Malware on EC2 without installing agents"* → **GuardDuty Malware Protection** (snapshot-based EBS scan)
+- *"EKS / Kubernetes API anomalies"* → **GuardDuty EKS Protection**
+- *"Detect unauthorised IAM API activity"* → **GuardDuty** (paired with CloudTrail under the hood)
+- *"Org-wide threat detection from a dedicated security account"* → **GuardDuty + delegated admin**
+- *"Auto-quarantine compromised instance on finding"* → **GuardDuty finding → EventBridge → Lambda**
+
+**The 80/20:** *GuardDuty = AWS-native, agentless, ML-driven threat detection. Always-on sources: CloudTrail + VPC Flow + DNS. Optional add-ons: S3 / EKS / Malware / RDS / Lambda Protection + Runtime Monitoring. Emits **findings** (severity Low/Medium/High, with finding-type strings like `Backdoor:EC2/C&CActivity.B`). Every finding hits EventBridge → automate response (SNS, Lambda, Security Hub). For multi-account: **delegated administrator** in Organizations. Pairs with Security Hub (aggregation) and Detective (investigation).*
+
+## AWS Security Hub
+
+**Anchored against a SIEM-lite dashboard for AWS.** Security Hub doesn't *detect* anything itself — it **aggregates findings** from GuardDuty, Inspector, Macie, Config, IAM Access Analyzer, Firewall Manager, Health, plus third-party tools (Wiz, Lacework, Splunk, etc.) into one normalised view, then scores you against compliance standards.
+
+### What Security Hub is NOT
+
+| Question | Service | Not Security Hub because... |
+| -------- | ------- | --------------------------- |
+| *"Detect threats"* | **Amazon GuardDuty** | Security Hub aggregates GuardDuty findings, not produces them |
+| *"Vulnerability scanning"* | **Amazon Inspector** | Inspector is a *source* into Security Hub |
+| *"Classify sensitive data"* | **Amazon Macie** | Macie is a *source* into Security Hub |
+| *"Compliance-as-code evaluation"* | **AWS Config + Conformance packs** | Security Hub *consumes* Config findings; Config does the evaluation |
+| *"Full SIEM with raw log retention + custom queries"* | **OpenSearch / Splunk** | Security Hub holds findings only — no raw logs, no custom queries on logs |
+| *"Investigation tool"* | **Amazon Detective** | Detective is the deep-dive; Security Hub is the overview |
+
+### Core Concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **AWS Security Finding Format (ASFF)** | The normalised JSON schema every finding gets converted to before entering Security Hub. Lets one dashboard handle GuardDuty + Inspector + third-party findings uniformly |
+| **Native sources** | GuardDuty, Inspector, Macie, Config (compliance findings), IAM Access Analyzer, Firewall Manager, Health, Audit Manager |
+| **Third-party sources** | Wiz, Lacework, Splunk, CrowdStrike, Tenable, Palo Alto, etc. — integrate via partner connectors |
+| **Compliance Standards** | Pre-built control sets you can enable: **AWS Foundational Security Best Practices (FSBP)**, **CIS AWS Foundations Benchmark** (v1.2, v1.4, v3.0), **PCI-DSS**, **NIST 800-53 Rev. 5**, **Service-Managed Standard: AWS Control Tower** |
+| **Security Score** | Percentage of enabled controls passing. Per-account or aggregated across org |
+| **Automation Rules** | Auto-update / suppress / re-route findings without code (e.g. "if finding from sandbox OU, set severity to Low") |
+| **Custom Actions** | User-triggered routing of findings to EventBridge for custom handling (e.g. open a Jira ticket) |
+| **Cross-region aggregation** | Pick a home region; findings from all enabled regions aggregate there |
+| **Delegated administrator** | One member account becomes the org-wide Security Hub admin |
+
+### How Security Hub Pulls It All Together
+
+```
+        ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+        │   GuardDuty     │    │   Inspector     │    │     Macie       │
+        │  (threats)      │    │  (CVEs)         │    │  (data class.)  │
+        └────────┬────────┘    └────────┬────────┘    └────────┬────────┘
+                 │                      │                      │
+                 │  findings in ASFF format                    │
+                 ▼                      ▼                      ▼
+         ┌──────────────────────────────────────────────────────────┐
+         │                  AWS Security Hub                         │
+         │  - Normalises into ASFF                                   │
+         │  - Aggregates cross-account, cross-region                 │
+         │  - Maps findings to compliance standards (FSBP/CIS/etc.)  │
+         │  - Computes security score                                │
+         │  - Runs Automation Rules (auto-update/suppress/escalate)  │
+         └──────────────────────────────┬───────────────────────────┘
+                                        │
+                       ┌────────────────┼────────────────┐
+                       ▼                ▼                ▼
+              ┌────────────────┐  ┌──────────┐  ┌──────────────────┐
+              │  EventBridge   │  │  Console │  │  Third-party SIEM │
+              │  (Custom       │  │  dash    │  │  (Splunk, etc.)   │
+              │   Actions)     │  │          │  │                   │
+              └────────────────┘  └──────────┘  └──────────────────┘
+```
+
+### Compliance Standards — the "what controls am I passing?" angle
+
+Each standard is a list of **controls** (e.g. *"S3 buckets should have versioning enabled"*, *"IAM users should not have access keys older than 90 days"*). Security Hub evaluates these continuously via Config rules under the hood. Your security score = passing controls ÷ enabled controls.
+
+**Exam-favourite standards:**
+- **AWS Foundational Security Best Practices (FSBP)** — AWS's curated baseline; turn this on first
+- **CIS AWS Foundations Benchmark v1.4 / v3.0** — industry-standard checklist
+- **PCI-DSS** — for payment workloads
+- **NIST 800-53 Rev. 5** — US federal compliance
+- **Service-Managed Standard: AWS Control Tower** — auto-managed by Control Tower (mandatory guardrails appear here)
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Use Security Hub to detect threats"* → it aggregates, doesn't detect; **GuardDuty** detects
+- *"Ingest custom application logs into Security Hub"* → it holds findings only, not logs; use OpenSearch / Splunk for logs
+- *"Game the security score by suppressing low-severity findings"* → score becomes meaningless; fix root causes
+- *"Skip cross-region aggregation"* in a multi-region org → findings scattered across regions are hard to triage
+- *"Treat Security Hub as the final SIEM"* — export to a real SIEM if you need cross-correlation, long retention, custom queries
+- *"Each account manages its own Security Hub"* → use **delegated administrator** in Organizations
+
+### Exam Triggers
+
+- *"Aggregate findings from GuardDuty / Inspector / Macie across all accounts and regions"* → **AWS Security Hub**
+- *"AWS-native security compliance dashboard with CIS / PCI / NIST"* → **Security Hub standards**
+- *"Auto-suppress findings from sandbox accounts"* → **Security Hub Automation Rules**
+- *"Pipe critical findings to PagerDuty / Slack"* → **Security Hub → EventBridge → SNS/Lambda**
+- *"Single security score across the org"* → **Security Hub + delegated admin**
+- *"Normalise findings from third-party security tools (Wiz, Lacework)"* → **Security Hub** via ASFF partner integrations
+- *"Centrally view 'do my accounts pass the CIS benchmark?'"* → **Security Hub CIS standard**
+
+**The 80/20:** *Security Hub = the AWS-native aggregator + compliance scorer. **Not a detector** — it consumes findings from GuardDuty, Inspector, Macie, Config, Access Analyzer, third-party tools in **ASFF format**. Adds **compliance standards** (FSBP / CIS / PCI / NIST) and continuous security scores. Cross-account / cross-region aggregation via **delegated administrator**. Routes findings to EventBridge for automation. Pairs with GuardDuty (detection) and Detective (investigation). Not a full SIEM — export findings to one if you need raw-log retention.*
+
+## AWS WAF (Web Application Firewall)
+
+**Anchored against nginx + ModSecurity or Cloudflare WAF — but as a managed AWS service.** WAF is the **Layer-7** firewall: it inspects HTTP/HTTPS requests and decides Allow / Block / Count / CAPTCHA / Challenge based on headers, URI, body, source IP, geo, rate, signatures. Sits in front of CloudFront, ALB, API Gateway, AppSync, App Runner, Cognito, or Verified Access.
+
+### What WAF is NOT
+
+| Question | Service | Not WAF because... |
+| -------- | ------- | ------------------ |
+| *"Protect against large volumetric DDoS attacks"* | **AWS Shield** (Standard is free; Advanced is paid) | WAF filters HTTP; Shield handles L3/L4 volumetric attacks |
+| *"Filter TCP/UDP at instance/subnet level"* | **Security Groups** (L4 stateful) / **NACLs** (L4 stateless) | WAF is L7 HTTP only |
+| *"Network firewall for VPC east-west / L3-L7 traffic"* | **AWS Network Firewall** | WAF doesn't sit in the VPC data path |
+| *"Centrally manage WAF rules across many accounts"* | **AWS Firewall Manager** | Firewall Manager applies WAF rule groups + Shield + Network Firewall configs across the org |
+| *"Filter non-HTTP traffic"* | **Network Firewall / Security Groups** | WAF is HTTP/HTTPS only |
+| *"Protect API behind WebSocket / gRPC"* | Mixed | WAF works on HTTP-based protocols; raw WebSocket is limited |
+
+### Core Concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Web ACL** (Web Access Control List) | A bundle of rules attached to a protected resource (CloudFront distribution, ALB, etc.) |
+| **Rule** | A single check: condition + action. Can be **AWS managed** (curated by AWS), **Marketplace managed** (vendor), or **custom** (you write) |
+| **Rule action** | What happens on match: **Allow**, **Block**, **Count** (test mode — log but don't block), **CAPTCHA**, **Challenge** (silent JS challenge to weed out bots) |
+| **Conditions** | What to match on: **IP set**, **geo-match** (country), **rate-based** (per-IP rate limit), **regex pattern**, **size constraint**, **SQL injection**, **XSS**, **byte match** (string in URI/header/body), **label match** (chain rules) |
+| **Managed Rule Groups** | Pre-built bundles. AWS-managed includes **Core Rule Set (CRS / OWASP)**, **Known Bad Inputs**, **SQL Database**, **Linux/Unix/Windows-specific**, **Bot Control**, **Account Takeover Prevention** |
+| **WCU (Web ACL Capacity Units)** | Each rule "costs" WCUs; total cap per Web ACL (1,500 default). Complex rules (regex/body inspection) cost more |
+| **Logging** | Send inspected request logs to S3, CloudWatch Logs, or Kinesis Firehose |
+
+### Specialised (paid) features
+
+- **Bot Control** — distinguishes verified bots (Google, Bing) from scrapers and credential-stuffers
+- **Account Takeover Prevention (ATP)** — credential-stuffing detection on login endpoints
+- **Account Creation Fraud Prevention (ACFP)** — detects fake account signups
+- **Fraud Control** — umbrella term covering the above
+
+### How a WAF Request Actually Flows
+
+```
+1. Client sends HTTPS request to CloudFront / ALB / API Gateway
+       ↓
+2. The associated Web ACL evaluates its rules in PRIORITY order
+       ↓
+3. For each rule:
+     - Check conditions (IP set match? URI regex? body contains SQLi pattern?)
+     - If matched → apply rule action (Allow / Block / Count / CAPTCHA / Challenge)
+     - If terminating action (Allow/Block) → STOP evaluation
+     - If non-terminating (Count) → continue to next rule
+       ↓
+4. If no rule matched → DEFAULT action applies (usually Allow, sometimes Block)
+       ↓
+5. If Block → 403 returned to client
+   If Allow → request proxied to the origin
+   If CAPTCHA → client served a CAPTCHA challenge first
+       ↓
+6. Inspected request metadata logged to S3 / CW Logs / Firehose (if enabled)
+```
+
+**Priority matters:** put broad allow-list rules early (e.g. allow your monitoring vendor's IP set), then the broad managed rule groups, then narrow custom blocks.
+
+### Where to attach a Web ACL
+
+| Resource | When |
+| -------- | ---- |
+| **CloudFront distribution** | Global apps — filter at the edge, lowest latency. Web ACL is **Global** scope |
+| **Application Load Balancer (ALB)** | Regional apps. Web ACL is **Regional** scope |
+| **API Gateway (REST/HTTP API)** | API protection. Regional scope |
+| **AppSync GraphQL API** | GraphQL protection. Regional scope |
+| **App Runner service** | Regional scope |
+| **Cognito user pool** | Auth endpoint protection |
+| **Verified Access** | Workforce access |
+
+**Exam decision:** if the app is global → CloudFront + WAF. If regional → ALB or API Gateway + WAF.
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Use WAF for DDoS protection"* → wrong layer; use **AWS Shield** (Advanced for serious DDoS) — WAF supplements Shield, doesn't replace it
+- *"Use WAF for L3/L4 filtering"* → wrong layer; use **Security Groups / NACLs**
+- *"WAF on ALB for a globally distributed app"* → adds latency for distant users; put WAF on **CloudFront** for global apps
+- *"Enable all managed rule groups in Block mode without testing"* → false positives will break legitimate traffic; use **Count** mode first to observe
+- *"Single Web ACL across all environments"* → can't tune per environment; use separate Web ACLs
+- *"Manage WAF rules separately in each account"* in a multi-account org → use **AWS Firewall Manager** for centralised rule deployment
+- *"Forget rate-based rules"* → critical for slowing brute-force and scraping
+
+### Exam Triggers
+
+- *"Block SQL injection / XSS at the edge"* → **AWS WAF Managed Core Rule Set**
+- *"Rate-limit per source IP"* → **WAF rate-based rule**
+- *"Block traffic from specific country"* → **WAF geo-match rule**
+- *"OWASP Top 10 protection"* → **WAF AWS Managed Rules**
+- *"Bot mitigation / scraping prevention"* → **WAF Bot Control**
+- *"Credential stuffing on login"* → **WAF Account Takeover Prevention (ATP)**
+- *"Fake account signups"* → **WAF Account Creation Fraud Prevention (ACFP)**
+- *"Centrally manage WAF across many accounts"* → **AWS Firewall Manager**
+- *"DDoS protection beyond WAF"* → **AWS Shield Advanced**
+- *"Test a new WAF rule without affecting traffic"* → **Count action mode**
+- *"Global app — filter at the edge"* → **WAF on CloudFront** (not ALB)
+
+**The 80/20:** *WAF = Layer-7 HTTP firewall as a managed service. Attaches to CloudFront (global), ALB / API Gateway / AppSync / App Runner / Cognito (regional). **Rules** with conditions (IP, geo, rate, regex, SQLi, XSS, body inspection) → actions (Allow / Block / Count / CAPTCHA / Challenge). **AWS Managed Rule Groups** cover OWASP Top 10, SQLi, bot control. **Web ACL Capacity Units (WCU)** cap rule complexity. Paid features: **Bot Control**, **ATP** (credential stuffing), **ACFP** (fake signups). Multi-account → **AWS Firewall Manager**. WAF ≠ Shield (DDoS) ≠ Security Groups (L3/L4) ≠ Network Firewall (VPC-level).*
 
 ## ECS (Elastic Container Service)
 
