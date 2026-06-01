@@ -81,6 +81,45 @@
   - [Privileges — Who Needs What](#privileges--who-needs-what)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-11)
   - [Exam Triggers](#exam-triggers-11)
+- [AWS Organizations](#aws-organizations)
+  - [What AWS Organizations is NOT](#what-aws-organizations-is-not)
+  - [Core Concepts](#core-concepts-1)
+  - [Standard Multi-Account Topology](#standard-multi-account-topology)
+  - [Consolidated Billing — the Money Bit](#consolidated-billing--the-money-bit)
+  - [SCPs (Service Control Policies) — Deep Dive](#scps-service-control-policies--deep-dive)
+  - [Three Policy Layers: Identity Policy vs SCP vs Permissions Boundary](#three-policy-layers-identity-policy-vs-scp-vs-permissions-boundary)
+  - [AWS Control Tower — the layer above Organizations](#aws-control-tower--the-layer-above-organizations)
+  - [IAM Identity Center (formerly AWS SSO)](#iam-identity-center-formerly-aws-sso)
+  - [Organization-Aware Services](#organization-aware-services)
+  - [Pricing](#pricing)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-12)
+  - [Common Exam Question Patterns](#common-exam-question-patterns)
+  - [Exam Triggers](#exam-triggers-12)
+- [AWS Control Tower & Landing Zones](#aws-control-tower--landing-zones)
+  - ["Landing Zone" — the term is overloaded](#landing-zone--the-term-is-overloaded)
+  - [What Control Tower is NOT](#what-control-tower-is-not)
+  - [Core Concepts](#core-concepts-2)
+  - [What Control Tower Sets Up on Day 1](#what-control-tower-sets-up-on-day-1)
+  - [How Control Tower Account Provisioning Actually Flows](#how-control-tower-account-provisioning-actually-flows)
+  - [Guardrails — Where the Governance Lives](#guardrails--where-the-governance-lives)
+  - [Drift Detection](#drift-detection)
+  - [CfCT and AFT — Customising Beyond the Defaults](#cfct-and-aft--customising-beyond-the-defaults)
+  - [Control Tower vs Landing Zone Accelerator (LZA)](#control-tower-vs-landing-zone-accelerator-lza)
+  - [Enrolling Existing Accounts](#enrolling-existing-accounts)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-13)
+  - [Exam Triggers](#exam-triggers-13)
+  - [Pricing](#pricing-1)
+- [AWS Directory Service (Active Directory on AWS)](#aws-directory-service-active-directory-on-aws)
+  - [The Three Flavours (this is the whole exam)](#the-three-flavours-this-is-the-whole-exam)
+  - [What AWS Directory Service is NOT](#what-aws-directory-service-is-not)
+  - [The Decision Tree](#the-decision-tree)
+  - [How Domain-Joining an EC2 Instance Actually Flows](#how-domain-joining-an-ec2-instance-actually-flows)
+  - [Trust Relationships (Managed AD Only)](#trust-relationships-managed-ad-only)
+  - [Integration with IAM Identity Center](#integration-with-iam-identity-center)
+  - [Common Use Cases](#common-use-cases)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-13)
+  - [Exam Triggers](#exam-triggers-13)
+  - [Pricing Notes](#pricing-notes)
 - [ECS (Elastic Container Service)](#ecs-elastic-container-service)
   - [ECS vs ASG + EC2](#ecs-vs-asg--ec2)
   - [Key concepts](#key-concepts)
@@ -1973,6 +2012,1090 @@ Remediation  →  HIGH WRITE      ← scrutinise this
 - *"Reduce Config cost in a noisy account"* → scope recorded resource types, exclude unused regions, switch to **daily recording** for low-churn resources
 
 **The 80/20:** *AWS Config = `git log` for AWS resource state. Records a **Configuration Item** every time a resource changes, evaluates **Config Rules** (managed or custom) for compliance, and can **auto-remediate** via SSM Automation. Pairs with CloudTrail (CloudTrail = "who called the API"; Config = "how the resource state changed"). For multi-account compliance use an **Aggregator**; for compliance bundles use a **Conformance pack**. Watch for the detective-vs-preventive distinction — Config flags violations, **SCPs / IAM / permission boundaries** prevent them.*
+
+## AWS Organizations
+
+**Anchored against GitHub Organizations / Active Directory OUs.** One company → many AWS accounts (prod, dev, sandbox, security, log-archive) grouped into a hierarchy with central governance and one consolidated bill. Above ~5 accounts, managing them individually breaks down — Organizations is how you scale.
+
+Two killer features: **consolidated billing** (one invoice, volume discounts pooled, RIs/Savings Plans shared) and **Service Control Policies (SCPs)** — deny-only guardrails that bound what IAM in member accounts can do, even for the root user.
+
+### What AWS Organizations is NOT
+
+| Question | Service | Not Organizations because... |
+| -------- | ------- | ---------------------------- |
+| *"Grant a user permissions to do X"* | **IAM** | SCPs don't grant — only restrict the *ceiling* of what IAM grants |
+| *"Single sign-on across accounts"* | **IAM Identity Center** (formerly AWS SSO) | Organizations is the substrate; Identity Center sits on top for federated login |
+| *"Set up a multi-account landing zone with best practices"* | **AWS Control Tower** | Control Tower is the opinionated wizard built *on top of* Organizations |
+| *"Active Directory for AWS"* | **AWS Managed Microsoft AD** | Directory service for Windows / domain-joined resources; different layer entirely |
+| *"Group IAM users together"* | **IAM Groups** | IAM Groups live inside *one* account; Organizations groups *accounts* themselves |
+| *"Cross-account resource sharing"* | **AWS Resource Access Manager (RAM)** | RAM shares specific resources (subnets, TGWs, Resolver rules) across accounts |
+
+### Core Concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Management account** (was "master") | The root account that creates the org. **Pays the bill.** Cannot have SCPs applied to it (it's intentionally outside guardrails) |
+| **Member account** | Any AWS account that's part of the org |
+| **Root** | The top of the OU hierarchy — *one per org*. Don't confuse with the "root user" of an account |
+| **Organizational Unit (OU)** | A folder of accounts; can nest up to 5 levels deep. Apply policies at OU level for inheritance |
+| **Service Control Policy (SCP)** | A **deny-only** policy that bounds what IAM can do in member accounts. Attached to root, OUs, or individual accounts |
+| **Delegated administrator** | A member account given admin rights for a specific service (GuardDuty, Security Hub, Config) without granting it management-account power |
+
+### Standard Multi-Account Topology
+
+```
+Root
+├── Security OU
+│   ├── log-archive account     (centralised CloudTrail/Config logs, write-once, Object Lock)
+│   └── audit account           (read-only across the org for security team)
+├── Infrastructure OU
+│   └── shared-services account (DNS, networking, AMIs, build pipelines)
+├── Workloads OU
+│   ├── Prod OU
+│   │   ├── prod-app-1
+│   │   └── prod-app-2
+│   └── Non-prod OU
+│       ├── staging
+│       └── dev
+└── Sandbox OU
+    └── sandbox-* (one per engineer)
+```
+
+Each leaf is its own AWS account. SCPs at the OU level enforce *"prod accounts can't disable CloudTrail"*, *"sandbox accounts can't use anything outside `eu-west-1`"*, *"only the security account can write to the log-archive bucket"*, etc.
+
+### Consolidated Billing — the Money Bit
+
+- One invoice for the whole org
+- **Volume discounts pool** across accounts — tier-based pricing on S3, data transfer, etc. (you cross volume tiers faster by aggregating usage)
+- **Reserved Instances + Savings Plans share** across accounts by default (a sandbox account benefits from a prod-account RI's unused capacity)
+- Per-account or per-tag cost allocation reports via **AWS Cost Explorer**
+- The management account is the payer; member accounts see usage but not the consolidated invoice
+
+**Exam trap:** *"How do I get the volume discount across all my accounts without managing them centrally?"* — you can't. Consolidated billing requires Organizations.
+
+### SCPs (Service Control Policies) — Deep Dive
+
+SCPs are the governance hammer. They define the **maximum** permissions for an account, regardless of what IAM policies grant. Key properties:
+
+| Property | Detail |
+| -------- | ------ |
+| **Effect** | Can only **Deny** in practice — they bound the ceiling. (Technically you can use `Allow` in allow-list mode but the default is deny-list.) |
+| **Applies to** | Root, OUs, or individual accounts. **Inherited down** the OU tree (an account is bounded by every SCP from root → its OU → itself) |
+| **Affects** | **All IAM principals** (users, roles, federated identities) AND the **root user** of member accounts |
+| **Does NOT affect** | The management account (excluded by design — don't even try) |
+| **Cannot grant** | Only restrict. Without an IAM policy granting the action, the user still can't do it |
+
+#### Deny-list vs Allow-list strategies
+
+Two competing patterns — the exam loves this distinction:
+
+| Strategy | How it works | When to use |
+| -------- | ------------ | ----------- |
+| **Deny-list** (default) | Default `FullAWSAccess` policy is attached at root; you add SCPs that *deny* specific actions | Start permissive, lock down the dangerous stuff. Easier; what most orgs run |
+| **Allow-list** | Remove `FullAWSAccess`; explicitly `Allow` only certain services/actions | Maximum lockdown — e.g. a regulated workload OU that only needs S3 + Lambda + DynamoDB. Brittle: any new service is blocked until you add it |
+
+#### Classic SCP example — region lockdown
+
+```json
+{
+  "Effect": "Deny",
+  "Action": "*",
+  "Resource": "*",
+  "Condition": {
+    "StringNotEquals": { "aws:RequestedRegion": ["eu-west-1", "us-east-1"] }
+  }
+}
+```
+
+Now nothing in those accounts — IAM user, role, or root — can spin up resources outside those two regions. The bluntest instrument in AWS governance.
+
+#### Worked Example: "Only audited services in prod, freely experiment in dev"
+
+A classic regulated-industry scenario (fintech, healthcare, public sector). The audit team has approved a specific list of AWS services for production use. New services can only be used in prod once they clear audit. Meanwhile, developers should be free to experiment with anything in dev.
+
+**The pattern:**
+
+```
+Prod OU      →  allow-list SCP (remove FullAWSAccess, allow only audited services)
+                + companion deny-list SCP (block dangerous actions within allowed services)
+                + region lockdown SCP
+Dev OU       →  default FullAWSAccess (no restrictions — experimentation encouraged)
+```
+
+When a new service like Bedrock launches, prod accounts cannot use it until the security team audits it and adds it to the prod SCP allow-list. Dev accounts can use it immediately.
+
+**SCP 1 — the audited-services allow-list (attached to Prod OU, with `FullAWSAccess` removed):**
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "AllowAuditedServicesOnly",
+    "Effect": "Allow",
+    "Resource": "*",
+    "Action": [
+      "ec2:*", "autoscaling:*", "elasticloadbalancing:*",
+      "ecs:*", "ecr:*", "eks:*",
+      "lambda:*",
+      "s3:*", "ebs:*", "efs:*",
+      "rds:*", "dynamodb:*", "elasticache:*",
+      "vpc:*", "route53:*", "cloudfront:*", "apigateway:*",
+      "iam:*", "sts:*", "kms:*", "secretsmanager:*", "acm:*",
+      "cloudwatch:*", "logs:*", "cloudtrail:*", "xray:*", "events:*",
+      "sqs:*", "sns:*", "kinesis:*", "firehose:*",
+      "cloudformation:*", "ssm:*",
+      "codebuild:*", "codepipeline:*", "codedeploy:*",
+      "backup:*", "config:*",
+      "support:*", "tag:*", "resource-groups:*"
+    ]
+  }]
+}
+```
+
+Anything not on the list — Bedrock, QLDB, Managed Blockchain, GameLift, IoT services, brand-new previews — is implicitly denied at the SCP layer. Even an account admin can't bypass it.
+
+**SCP 2 — companion deny-list for dangerous actions within allowed services:**
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyTamperingWithAuditLogs",
+      "Effect": "Deny",
+      "Action": [
+        "cloudtrail:StopLogging", "cloudtrail:DeleteTrail", "cloudtrail:UpdateTrail",
+        "config:DeleteConfigurationRecorder", "config:StopConfigurationRecorder",
+        "config:DeleteDeliveryChannel"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyDangerousKMS",
+      "Effect": "Deny",
+      "Action": ["kms:ScheduleKeyDeletion", "kms:DisableKey"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyLeavingTheOrg",
+      "Effect": "Deny",
+      "Action": "organizations:LeaveOrganization",
+      "Resource": "*"
+    },
+    {
+      "Sid": "EnforceRegionLockdown",
+      "Effect": "Deny",
+      "NotAction": [
+        "iam:*", "sts:*", "support:*", "organizations:*",
+        "route53:*", "cloudfront:*", "waf:*", "globalaccelerator:*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": { "aws:RequestedRegion": ["eu-west-1", "eu-west-2"] }
+      }
+    }
+  ]
+}
+```
+
+The region lockdown uses `NotAction` to exempt **global services** (IAM, STS, CloudFront, Route 53) — these don't have a region and would otherwise be blocked.
+
+**Walking through scenarios — `bob` in a prod account vs `bob` in a dev account:**
+
+| Action | Prod account | Dev account |
+| ------ | ------------ | ----------- |
+| `s3:PutObject` | ✅ Allowed (S3 in allow-list) | ✅ Allowed |
+| `bedrock:InvokeModel` (not audited yet) | ❌ Blocked — Bedrock not in allow-list | ✅ Allowed |
+| `cloudtrail:StopLogging` | ❌ Blocked by deny-list SCP | ✅ Allowed (no SCP restriction) |
+| `s3:PutObject` in `us-east-1` | ❌ Blocked by region lockdown | ✅ Allowed (no region SCP in dev) |
+| `iam:CreateUser` in `us-east-1` | ✅ Allowed — IAM is in `NotAction` exemption | ✅ Allowed |
+
+**The practical workflow when a new service needs to go to prod:**
+
+```
+1. New service launches (e.g. Bedrock) OR team requests exception
+       ↓
+2. Compliance/security team reviews:
+   - Data residency (where does data go?)
+   - Encryption (at rest, in transit, customer-managed keys?)
+   - Logging (CloudTrail data events available?)
+   - Provider/sub-processor risk (Bedrock models from third parties)
+       ↓
+3. Decision recorded; ticket raised against the SCP repo
+       ↓
+4. PR adds the service to SCP 1's allow-list
+       ↓
+5. Code review, approval, merged
+       ↓
+6. Terraform / CloudFormation pipeline deploys updated SCP
+       ↓
+7. Prod accounts can now use the service immediately
+```
+
+**The SCP is the audit gate** — services literally cannot be used in prod until they pass through this repo's PR review.
+
+**Why this works where IAM doesn't:**
+
+1. **Defence against escalation** — a developer with `iam:*` could grant themselves more permissions, but SCPs cap what IAM can grant
+2. **Defence against the root user** — root ignores IAM but is bound by SCPs
+3. **Applies to every principal** in every account in the OU — set once, applies to all
+4. **Cannot be modified from the member account** — only the org management account can change SCPs, so a compromised prod account can't lift restrictions
+
+**SCP gotchas to know:**
+
+- **Size limit:** 5,120 characters per SCP, max 5 SCPs per entity. Real orgs hit this — they split into multiple SCPs (allow-list, deny-list, region lockdown)
+- **`FullAWSAccess` must be removed** from the OU for allow-list mode to work; otherwise the SCP layer remains open
+- **Test SCPs in a dev OU first** — a misconfigured allow-list can lock everyone out of prod
+- **Don't forget global services** in region lockdown — use `NotAction` for IAM, STS, CloudFront, Route 53, etc.
+
+#### How real orgs maintain the allow-list
+
+**There is no AWS-provided file that maps service-name → "audited / approved".** It's a per-company decision. But AWS ships two artifacts that feed into the process:
+
+| AWS resource | What it gives you | What it's NOT |
+| ------------ | ----------------- | ------------- |
+| **AWS Services in Scope by Compliance Program** (`aws.amazon.com/compliance/services-in-scope/`) | Published page mapping each AWS service to compliance programs it's certified under: SOC 1/2/3, PCI-DSS, HIPAA, FedRAMP, ISO 27001, IRAP, etc. **The starting point for any allow-list.** | Not a policy file — you read it and decide |
+| **AWS Artifact** | The AWS service where you download the actual SOC / PCI / ISO audit reports for use in your own audits | Not a service-allow-list either |
+| **AWS Config conformance packs** | Pre-built bundles of compliance rules (HIPAA, PCI, NIST). Detective, not preventive. | Doesn't gate service usage; flags non-compliant resources |
+| **AWS Service Catalog** | Vend approved *products* (e.g. "the only RDS pattern you can deploy") — complements SCPs | Higher-level than SCPs; doesn't replace them |
+
+**The typical workflow:**
+
+```
+1. Compliance team reads "Services in Scope" page
+       ↓
+2. Cross-references against your org's required certifications
+   (e.g. PCI-DSS + HIPAA for healthtech)
+       ↓
+3. Maintains an internal manifest of "services we've reviewed + approved for prod"
+       ↓
+4. That manifest drives the SCP allow-list (often via codegen)
+```
+
+**Repo structure most orgs use:**
+
+```
+scp-policies/
+├── audited-services.yaml          ← source-of-truth manifest
+├── policies/
+│   ├── prod-allow-list.json       ← generated from manifest
+│   ├── prod-deny-list.json
+│   ├── prod-region-lockdown.json
+│   └── dev-permissive.json
+├── terraform/
+│   └── attach-scps.tf
+└── docs/
+    └── service-approval-process.md
+```
+
+**Example `audited-services.yaml`** — captures *why* a service is approved, not just *that* it is:
+
+```yaml
+services:
+  - service: s3
+    actions: ["s3:*"]
+    approved_date: 2024-03-15
+    approved_by: compliance@example.com
+    audit_ticket: SEC-1247
+    compliance_certifications: [SOC2, PCI-DSS, HIPAA, ISO27001]
+    conditions: |
+      Must enable bucket encryption (KMS).
+      Must enable Block Public Access at account level.
+      Data-event logging required for buckets containing PHI.
+
+  - service: bedrock
+    actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+    approved_date: 2026-04-02
+    approved_by: compliance@example.com
+    audit_ticket: SEC-2103
+    compliance_certifications: [SOC2, HIPAA]
+    conditions: |
+      Only approved foundation models: Claude (Anthropic), Titan (AWS).
+      Region restricted to us-east-1, eu-west-1 (data residency).
+      No PHI in prompts without HIPAA BAA review.
+    excluded_actions: ["bedrock:CreateModelCustomizationJob"]
+
+  - service: qldb
+    status: NOT_APPROVED
+    reason: "Compliance burden vs benefit not justified"
+```
+
+A pipeline reads the manifest → generates the SCP JSON → applies via Terraform/CloudFormation.
+
+**Why a YAML manifest instead of editing the SCP JSON directly:**
+
+1. **Auditor-friendly** — the YAML has reasoning, dates, approvers, conditions. The generated JSON is just `Allow: [...]` with no context
+2. **Git history is the audit trail** — every change shows who approved what, when, with what justification
+3. **One source feeds multiple outputs** — same manifest can generate SCP, Config rules, IAM permissions boundaries, Service Catalog products
+4. **Conditions are documented** — *"S3 approved but requires bucket encryption"* lives next to the service, so deployers know the constraints
+
+**The three layers most regulated orgs run:**
+
+```
+Layer 1 — Manifest (YAML)
+   "Here are the services we've reviewed + approved, with conditions"
+        ↓ (codegen)
+Layer 2 — SCPs
+   "Hard gate at the AWS API layer — services not in the list cannot be called"
+        ↓ (parallel control)
+Layer 3 — Service Catalog products
+   "Pre-built blessed deployments — one-click launch with required
+    encryption/tagging/networking already configured"
+```
+
+SCPs are the *deny-by-default* outer wall. **Service Catalog is the paved road inside it** that makes the right thing easy for developers.
+
+**Exam framing:** if a question asks *"how do you ensure only audited services are used in production?"* → **SCP allow-list at the OU level**. If it asks *"how do you give developers a self-service way to deploy approved patterns?"* → **AWS Service Catalog**. Both together = the complete answer for regulated orgs.
+
+#### Other SCPs every multi-account org runs
+
+- *"Member accounts can't disable CloudTrail / Config / GuardDuty"* — deny `cloudtrail:Stop*`, `cloudtrail:Delete*`, `config:Delete*`
+- *"No one can leave the organization"* — deny `organizations:LeaveOrganization`
+- *"Prod accounts can't create IAM users with console access"* — deny `iam:CreateLoginProfile`
+- *"Sandbox accounts can only run small EC2 instances"* — deny `ec2:RunInstances` unless `ec2:InstanceType` matches an allow-list
+
+### Three Policy Layers: Identity Policy vs SCP vs Permissions Boundary
+
+Three layers that get confused constantly. **Identity policy grants. SCP and boundary restrict. SCPs are organisation-wide; boundaries are per-principal.**
+
+| | **Identity-based policy** | **SCP** | **Permissions Boundary** |
+| - | ------------------------- | ------- | ------------------------ |
+| **Purpose** | **Grants** permissions | Caps what an account can do | Caps what one principal can do |
+| **Grants?** | ✅ Yes (the only one that grants) | ❌ No — restricts only | ❌ No — restricts only |
+| **Attaches to** | IAM user, group, role | Root, OU, or account | A single IAM user or role |
+| **Scope** | The principal it's attached to | **Every** principal in the account(s) it covers | Just that one principal |
+| **Affects root user?** | ❌ Root has implicit `*` | ✅ Yes — even root | ❌ No — only IAM users/roles |
+| **Set by** | Account admin / developer | Org management account | Account admin |
+| **Without it** | Principal can do nothing (deny-by-default at IAM) | Default `FullAWSAccess` SCP allows everything | Boundary is optional |
+
+#### What each is for, in one line
+
+- **Identity-based policy:** *"What CAN this user do?"* (the grant)
+- **SCP:** *"What is the maximum any user — including root — in this account is allowed to do?"* (the org-level ceiling)
+- **Permissions boundary:** *"What is the maximum THIS specific role is allowed to do, even if its IAM policy says more?"* (the per-principal ceiling)
+
+#### Evaluation order when all three exist
+
+```
+Can this user do action X on resource Y?
+        ↓
+1. Is there an explicit Deny anywhere?                → ❌ BLOCKED
+        ↓ (no)
+2. Does the SCP allow X?                              → if no, ❌ BLOCKED
+        ↓ (yes)
+3. Does the Permissions Boundary allow X?             → if no, ❌ BLOCKED
+        ↓ (yes)
+4. Does the Identity policy (or resource policy)      → if no, ❌ BLOCKED
+   explicitly Allow X?                                   (implicit deny)
+        ↓ (yes)
+                                                      → ✅ ALLOWED
+```
+
+**All three must say yes.** Any one saying no blocks the action. SCP and Boundary cap; Identity policy grants.
+
+#### Worked example — developer `bob` who needs admin most of the time
+
+```
+Org SCP (attached to the developer's OU)
+└── "Deny everything outside eu-west-1"           ← org-wide guardrail
+
+Permissions Boundary (attached to bob's IAM user)
+└── "Allow only s3:*, ec2:*, lambda:*, iam:Get*   ← bob-specific ceiling
+     — deny anything tagged Environment=Production"
+
+Identity policy (attached to bob's IAM user)
+└── "AdministratorAccess"                         ← grants the actual permissions
+```
+
+`bob` tries to:
+
+| Action | SCP | Boundary | Identity | Result |
+| ------ | --- | -------- | -------- | ------ |
+| Create EC2 in eu-west-1 (non-prod) | ✅ | ✅ | ✅ | ✅ Allowed |
+| Create EC2 in us-east-1 | ❌ wrong region | ✅ | ✅ | ❌ **Blocked by SCP** |
+| Delete an RDS instance | ✅ | ❌ not in boundary | ✅ | ❌ **Blocked by boundary** |
+| Read a prod-tagged S3 bucket | ✅ | ❌ prod tag denied | ✅ | ❌ **Blocked by boundary** |
+| Create an IAM user | ✅ | ❌ only `iam:Get*` | ✅ | ❌ **Blocked by boundary** |
+
+The identity policy says "anything" — but the SCP and boundary together filter it down to a safe subset. Defence in depth.
+
+#### Why three layers, not one
+
+Each layer answers a different "who's in charge?" question:
+
+| Layer | Owned by | Answers |
+| ----- | -------- | ------- |
+| **SCP** | Org admin (security team) | *"What can NO account in our org ever do?"* |
+| **Permissions Boundary** | Account admin / platform team | *"This developer can manage their own IAM — but never escalate beyond this ceiling."* |
+| **Identity policy** | Account admin / developer | *"Here are the permissions to actually do the job."* |
+
+Boundaries shine in **delegated IAM** scenarios: *"I'll let developers create their own roles for their apps, but the roles can never be more powerful than this boundary."* Without boundaries, a developer with `iam:*` could create themselves an admin role and bypass everything.
+
+#### Exam traps for the three layers
+
+| Question setup | Trap | Right answer |
+| -------------- | ---- | ------------ |
+| "Limit a specific developer's max permissions, but they need to be admin sometimes" | "Use an SCP" | **Permissions boundary** — SCPs apply to *all* principals in the account |
+| "Limit ALL users in an account, including root" | "Use a permissions boundary" | **SCP** — boundaries don't apply to root and only attach to one principal |
+| "Developer has `iam:*` and shouldn't escalate privileges" | "Restrict their IAM policy" | **Permissions boundary** + condition requiring all roles they create attach the same boundary |
+| "Why isn't the SCP affecting the management account?" | "Misconfigured" | Management account is **excluded** from SCPs by design |
+| "User has admin identity policy but action denied" | "Re-add admin to IAM" | The cause is an SCP, boundary, or resource policy denying — IAM is fine |
+
+### AWS Control Tower — the layer above Organizations
+
+Organizations gives you the primitives (accounts, OUs, SCPs). **Control Tower** is the opinionated landing-zone builder on top. See the dedicated **[AWS Control Tower & Landing Zones](#aws-control-tower--landing-zones)** section below for the deep dive — including the overloaded "Landing Zone" terminology, guardrails, Account Factory flow, CfCT/AFT, and Landing Zone Accelerator (LZA).
+
+### IAM Identity Center (formerly AWS SSO)
+
+**Anchored against Okta or Azure AD's SSO portal — but AWS-native and free.** Sits on top of AWS Organizations and gives humans a single browser portal where they sign in once, pick which AWS account + role to assume, and get temporary STS credentials. No IAM users anywhere.
+
+Was called **AWS SSO** until 2022. Exam questions still use both names interchangeably.
+
+#### What it is NOT
+
+| Question | Service | Not Identity Center because... |
+| -------- | ------- | ------------------------------ |
+| *"Manage app users (people signing up for our SaaS)"* | **Amazon Cognito** | Identity Center is for *workforce identity*; Cognito is for *customer identity* in your own apps |
+| *"Active Directory for AWS workloads"* | **AWS Managed Microsoft AD** | Identity Center can *use* AD as an identity source, but isn't a directory service itself |
+| *"Grant permissions"* | **IAM** (via permission sets that materialise as IAM roles) | Identity Center orchestrates; IAM still does the actual permission evaluation |
+| *"Federated login for a single AWS account"* | **IAM Identity Provider** (SAML or OIDC) | Single-account federation works via IAM; Identity Center is the *multi-account* answer |
+| *"Service-to-service auth"* | **IAM roles** | Identity Center is for human users, not services |
+
+#### Core concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Identity source** | Where users live: built-in Identity Center directory, external IdP (Okta / Entra ID / Google / Ping / OneLogin via SAML 2.0), or AWS Managed Microsoft AD / on-prem AD via AD Connector |
+| **Users + Groups** | Managed in Identity Center, or synced from external IdP via **SCIM 2.0** (auto provision / deprovision) |
+| **Permission Set** | Reusable bundle of policies (AWS-managed + customer-managed + inline + optional permissions boundary). E.g. `ReadOnlyAccess`, `BillingAdmin`, `DataScientist` |
+| **Assignment** | Three-way join: *(user-or-group) × (permission set) × (account)*. "Alice gets BillingAdmin in finance account; dev-team group gets ReadOnly in all prod accounts" |
+| **Application assignment** | The portal can also launch external SaaS apps (Salesforce, Slack, etc.) via SAML — Identity Center doubles as an enterprise SSO portal |
+| **Start URL** | Unique URL of your Identity Center portal (e.g. `https://d-xxx.awsapps.com/start`) |
+
+#### How a login actually flows
+
+```
+1. Alice opens https://d-xxx.awsapps.com/start
+       ↓
+2. Identity Center authenticates her
+   (either against its own directory, or redirects to Okta/Entra ID)
+       ↓
+3. Alice sees a list of accounts she's assigned to,
+   each with the permission sets she can use
+       ↓
+4. Alice clicks "prod-account" → "BillingAdmin"
+       ↓
+5. Identity Center calls STS to assume the corresponding IAM role
+   (Identity Center auto-creates a role per permission set per account,
+    named like `AWSReservedSSO_BillingAdmin_xxx`)
+       ↓
+6. Alice gets temporary STS credentials (1–12h, configurable)
+       ↓
+7. Console session opens in that account with those permissions
+```
+
+For CLI use: `aws configure sso` walks Alice through setup; `aws sso login` opens the browser, she authenticates, the CLI caches her temporary creds locally.
+
+#### Permission Sets — the workhorse
+
+- **Reusable across accounts** — define `DataScientist` once; assign to 12 accounts
+- **Compose multiple policy types** — AWS-managed + customer-managed + inline + permissions boundary, all in one set
+- **Materialised as IAM roles** in each target account when first assigned. Identity Center owns these roles (prefixed `AWSReservedSSO_`); don't edit them directly — your changes will be clobbered on next provisioning
+- **Session duration** configurable per set (default 1h, max 12h)
+- **MFA enforcement** configured at the Identity Center level — applies to every login
+
+Common patterns:
+```
+ReadOnly                  → AWS managed: ReadOnlyAccess
+BillingAdmin              → AWS managed: AWSBillingReadOnlyAccess + custom budget actions
+PowerUser                 → AWS managed: PowerUserAccess (no IAM)
+Admin-with-Boundary       → AdministratorAccess + permissions boundary
+                            that denies prod-tagged resources
+SecurityAuditor           → ReadOnlyAccess + SecurityAudit + IAMReadOnlyAccess
+```
+
+#### Identity source choices
+
+| Source | When to use |
+| ------ | ----------- |
+| **Identity Center directory** (default) | Small org, no existing IdP, simplest setup |
+| **External IdP via SAML 2.0 + SCIM 2.0** | You already use Okta / Entra ID / Google Workspace — **the normal enterprise answer** |
+| **AWS Managed Microsoft AD or on-prem AD** | You're an AD shop and want AWS to follow AD group membership |
+
+**Exam trigger:** *"users are in Okta — give them AWS console access"* → **Identity Center with Okta as SAML identity source + SCIM for sync**.
+
+#### Replacing IAM users — the migration pattern
+
+```
+Before:
+  account-1: IAM user "alice", "bob", "charlie"...
+  account-2: IAM user "alice", "bob"...
+  account-3: ...
+  (30 accounts × N users = chaos. Access keys everywhere.)
+
+After:
+  IAM Identity Center (in management account)
+  ├── Identity source: Okta (via SAML 2.0 + SCIM)
+  ├── Permission sets: ReadOnly, PowerUser, Admin-with-Boundary
+  └── Assignments:
+        engineering group → PowerUser → all dev accounts
+        sre group         → Admin-with-Boundary → prod accounts
+        finance group     → BillingAdmin → finance account
+
+  No IAM users. No access keys (CLI uses `aws sso login`).
+  Offboarding = remove from Okta group; access disappears instantly.
+```
+
+#### Anti-patterns
+
+- *"Use Cognito for AWS console access"* — wrong service; Cognito is for app users
+- *"Have IAM users in each account because permissions are simpler that way"* — this is the legacy pattern Identity Center exists to replace
+- *"Federate each account separately via IAM SAML provider"* — works but doesn't scale; Identity Center is multi-account-aware
+- *"Create one giant `AdministratorAccess` permission set for everyone"* — defeats the purpose; combine with **permissions boundaries** or use scoped sets per role
+- *"Edit the `AWSReservedSSO_*` roles directly in each account"* — Identity Center owns these; your edits get clobbered
+
+#### Exam triggers
+
+- *"Federated SSO across all AWS accounts in an org"* → **IAM Identity Center**
+- *"Users currently have IAM users in 30 accounts, want to consolidate"* → **migrate to IAM Identity Center**
+- *"Users live in Okta / Entra ID — give them AWS access"* → **Identity Center + that IdP as SAML source + SCIM 2.0 for auto-sync**
+- *"Single sign-on for AWS Console AND third-party SaaS"* → **Identity Center application assignments**
+- *"Replace static access keys for engineers using the CLI"* → **`aws configure sso` + `aws sso login`** (temporary STS creds)
+- *"Auto-deprovision a leaver from all AWS accounts when they leave"* → **Identity Center + SCIM** (removal from IdP cascades)
+- *"Centrally manage which permissions are available in each account"* → **permission sets**
+- *"Different MFA / session durations per role"* → **per-permission-set configuration**
+
+**Pricing:** Free from AWS's side. (Your IdP may charge per SAML app — that's an Okta/Entra ID concern.)
+
+### Organization-Aware Services
+
+| Service | What "organization-aware" enables |
+| ------- | --------------------------------- |
+| **CloudTrail** | **Organization trail** captures events across all member accounts (members can't disable it) |
+| **AWS Config** | **Aggregator** pulls compliance state from every account into one dashboard |
+| **GuardDuty** | Org-wide threat detection from a **delegated admin account** |
+| **Security Hub** | Org-wide findings aggregation |
+| **IAM Access Analyzer** | Org-scoped zone of trust — flags resources accessible from outside the org |
+| **AWS Backup** | Centralised backup policies applied at OU level |
+| **Resource Access Manager (RAM)** | Share subnets / TGWs / Resolver rules across accounts within the org |
+| **Service Catalog** | Vend approved products across the org |
+| **Cost & Billing** | Consolidated reports, per-account or per-tag breakdowns |
+
+### Pricing
+
+**AWS Organizations itself is free.** You pay for the underlying AWS usage in each member account. Control Tower is also free; you pay for the resources it creates (Config recorders, CloudTrail, etc.).
+
+The cost reality: **Config + CloudTrail running across many accounts is where the bill grows** — see the Config pricing notes for how to scope.
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Apply an SCP to the management account to lock it down"* → **doesn't work** — management account is excluded from SCPs by design. Use IAM policies + permissions boundaries there
+- *"Use SCPs to grant permissions"* → SCPs are **deny-only in practice** (they set the ceiling). You still need IAM policies to grant
+- *"IAM users per account"* in a 30-account org → **IAM Identity Center** with permission sets
+- *"Run CloudTrail individually in each account"* → **organization trail** in the management account (or via Control Tower)
+- *"Mix prod and non-prod accounts in the same OU"* → split into Prod / Non-prod OUs so SCPs can differ
+- *"Set up multi-account from scratch by manually creating accounts"* → **Control Tower Account Factory**
+- *"Create a new account by calling `CreateAccount` then forgetting baseline setup"* → use **Control Tower** or wrap in IaC so baseline (CloudTrail, Config, tags, IAM roles) is applied
+- *"SCPs can lock the root user out of a member account"* — **true and intended**, but if a question presents this as "unintended consequence", the answer is usually "create a break-glass IAM role exempted via SCP condition"
+
+### Common Exam Question Patterns
+
+The exam loves Organizations / SCP scenarios because they expose whether you actually understand AWS's layered policy model. Here are the recurring patterns and the trap answers each one is designed to lure you toward.
+
+#### Pattern 1 — "Why can't user X do Y despite having admin?"
+
+A user has `AdministratorAccess` in IAM but an action gets blocked. You need to spot which layer is denying.
+
+| Scenario | The actual cause | Trap answer |
+| -------- | ---------------- | ----------- |
+| Admin user can't terminate EC2 instances | **SCP** at OU level denies `ec2:TerminateInstances` | "the IAM policy is wrong" |
+| Admin user can't access an S3 bucket | **Resource policy** (bucket policy) denies — or doesn't include the role's account | "add `s3:*` to IAM policy" (already there) |
+| Admin user can't use a KMS key in another account | KMS **key policy** doesn't trust the role | "grant `kms:Decrypt` in IAM" |
+| Admin user can't assume a role | **Permissions boundary** blocks it, or the role's **trust policy** doesn't include them | "the role's permission policy is wrong" |
+
+**Rule:** *"User has admin but still can't do X"* → look for **SCP, resource policy, permissions boundary, or trust policy**. The IAM policy isn't the culprit.
+
+#### Pattern 2 — "How do we enforce X across all accounts?"
+
+| The ask | The answer | Why |
+| ------- | ---------- | --- |
+| "Prevent any account from using regions other than EU" | **SCP with `aws:RequestedRegion` condition** | Only mechanism that enforces across all accounts and overrides root |
+| "Prevent member accounts from disabling CloudTrail" | **SCP denying `cloudtrail:Stop*`, `cloudtrail:Delete*`** | Org trail alone isn't enough — members could still try; SCP makes it impossible |
+| "Block creation of public S3 buckets" | **SCP denying `s3:PutBucketAcl`** with public-read condition + S3 Block Public Access | Defence in depth |
+| "Sandbox accounts can only run small EC2 instances" | **SCP with `ec2:InstanceType` condition** on `ec2:RunInstances` | Per-OU policy enforcement |
+| "Prevent root user of any member account from creating access keys" | **SCP** | The *only* way to restrict the root user — IAM can't |
+
+**Rule:** *"Enforce X across many accounts"* or *"prevent users including root from doing X"* → **SCP**. If the answer says "IAM policy", it's the trap.
+
+#### Pattern 3 — Management account traps
+
+| Question | Correct answer | Trap |
+| -------- | -------------- | ---- |
+| "Apply an SCP to the management account to lock it down" | **Doesn't work** — management account is excluded from SCPs | "yes, just attach the SCP" |
+| "Why is the management account still able to terminate instances despite the deny SCP?" | Management account ignores SCPs | "the SCP must be misconfigured" |
+| "How do we restrict the management account?" | **IAM + permissions boundaries** in the management account; better: **don't put workloads there** | "another SCP" |
+
+**Rule:** if a question mentions "management account" + "SCP", the answer is almost always *"SCPs don't apply to the management account"*. Best practice: management account should have **no workloads** — only Organizations + billing.
+
+#### Pattern 4 — Allow-list vs deny-list strategy
+
+| Question wording | Answer |
+| ---------------- | ------ |
+| "This OU should only be able to use S3, Lambda, and DynamoDB — nothing else" | **Allow-list SCP**: remove default `FullAWSAccess`, attach SCP allowing only those services |
+| "Block usage of EC2 P-series instances across all accounts" | **Deny-list SCP**: keep `FullAWSAccess`, attach SCP denying `ec2:RunInstances` with instance-type condition |
+| "Highly regulated workload, lock down to minimum surface area" | **Allow-list** |
+| "Most accounts run normally, but a few high-risk actions need blocking" | **Deny-list** |
+
+**Rule:** *"only X, Y, Z allowed"* → allow-list. *"block A, B, C"* → deny-list.
+
+#### Pattern 5 — Cross-account access
+
+Cross-account requires **both sides to agree**:
+
+```
+Account A: alice                  Account B: prod-data S3 bucket
+─────────────────                 ──────────────────────────────
+Identity policy on alice:         Bucket policy on prod-data:
+"Allow s3:GetObject               "Allow Principal arn:…alice
+ on prod-data/*"                   s3:GetObject on prod-data/*"
+
+      Both must Allow → access granted
+      Either missing → denied
+```
+
+| Question | Answer |
+| -------- | ------ |
+| "User in Account A can't read S3 bucket in Account B" | Need **both** IAM allow on alice AND bucket policy granting account A |
+| "We added the IAM policy but it still doesn't work" | The **resource policy** (bucket policy) is missing the grant |
+| "We added the bucket policy but it still doesn't work" | The **IAM policy** on the user is missing the grant |
+| "How does cross-account role assumption work?" | Role's **trust policy** in Account B trusts Account A; user in A has IAM permission to call `sts:AssumeRole` |
+
+**Rule:** cross-account = **both** identity policy AND resource policy must allow. The exam tests whether you know one side alone isn't enough.
+
+#### Pattern 6 — SCP vs Permissions Boundary
+
+A perennial source of confusion:
+
+| | SCP | Permissions Boundary |
+| - | --- | -------------------- |
+| Attaches to | Account, OU, root | Individual IAM user or role |
+| Scope | All principals in that account | Just that one principal |
+| Affects root user? | ✅ Yes | ❌ No (only IAM users/roles) |
+| Effect | Caps what IAM can grant | Caps what IAM can grant for that principal |
+| Set by | Org management account | Account admin |
+
+**Rule:** "all principals in an account" → **SCP**. "specific role for a developer who's also an admin" → **permissions boundary**.
+
+#### Pattern 7 — Account creation / landing zone
+
+| Question | Answer | Trap |
+| -------- | ------ | ---- |
+| "Set up a new multi-account environment from scratch with best practices" | **AWS Control Tower** | "Use Organizations directly" |
+| "Programmatically create 50 new sandbox accounts" | **Control Tower Account Factory** or `organizations:CreateAccount` API | "manually via console" |
+| "We have 30 existing accounts and want centralised governance" | **AWS Organizations** (add Control Tower later) | "rebuild everything in Control Tower" |
+| "Standardised baseline for every new account (CloudTrail, Config, IAM roles)" | **Control Tower guardrails + Account Factory** | "CloudFormation StackSets alone" |
+
+**Rule:** "from scratch + best practices + landing zone" → Control Tower. "already have many accounts" → Organizations.
+
+#### Pattern 8 — Federated SSO
+
+| Question | Answer |
+| -------- | ------ |
+| "Users currently have IAM users in 30 accounts — what should we move to?" | **IAM Identity Center** (formerly AWS SSO) |
+| "Federate with Okta / Azure AD for AWS access" | **IAM Identity Center** with the IdP as identity source |
+| "One login → access multiple accounts" | **IAM Identity Center** with permission sets |
+| "Allow temporary credentials instead of access keys" | IAM Identity Center, or **roles + STS** |
+
+**Rule:** "IAM users everywhere" + "federated login" + "many accounts" → **IAM Identity Center**.
+
+#### Pattern 9 — Organization-wide security tooling
+
+| Question | Answer |
+| -------- | ------ |
+| "Centralise CloudTrail across all accounts" | **Organization trail** |
+| "Centralised compliance dashboard across all accounts" | **AWS Config Aggregator** |
+| "Centralise GuardDuty findings, but security team isn't in the management account" | **Delegated administrator** for GuardDuty |
+| "Aggregate Security Hub findings org-wide" | **Delegated admin + cross-account Security Hub integration** |
+| "Centralised backup policies for all accounts" | **AWS Backup + Organizations** |
+| "Share VPC subnets across accounts" | **AWS Resource Access Manager (RAM)** — not Organizations directly |
+
+**Rule:** "org-wide X from non-management account" → **delegated administrator** pattern.
+
+#### Pattern 10 — Order of evaluation gotchas
+
+The most punishing questions because the answer hinges on the precedence rules.
+
+| Scenario | Result | Why |
+| -------- | ------ | --- |
+| SCP Allows, IAM doesn't grant | ❌ Blocked | IAM must explicitly Allow — SCPs never grant |
+| SCP Denies, IAM Allows | ❌ Blocked | Explicit Deny wins everywhere |
+| SCP Allows, IAM Allows, Permissions Boundary Denies | ❌ Blocked | Every layer must pass |
+| Resource policy Allows, IAM Denies (same account) | ❌ Blocked | Both layers must Allow |
+| Resource policy Allows (cross-account), IAM Allows (cross-account), SCP in *either* account Denies | ❌ Blocked | SCP in either account can block |
+
+**Rule:** *Explicit Deny anywhere = blocked. Every layer must Allow. SCPs never grant.*
+
+#### Vocabulary the exam uses to telegraph the answer
+
+| Phrase in question | What it's pointing at |
+| ------------------ | --------------------- |
+| "across all accounts" | Organizations / SCP / org trail / Aggregator |
+| "even if a user is an administrator" | SCP or permissions boundary |
+| "prevent the root user from..." | **Only** SCP can do this |
+| "minimum necessary permissions for a developer who needs admin sometimes" | Permissions boundary |
+| "from scratch with best practices" | Control Tower |
+| "federated single sign-on" | IAM Identity Center |
+| "delegate administration of [GuardDuty/Config/etc.] to a non-management account" | Delegated administrator |
+| "consolidated billing" / "pooled volume discounts" | Organizations (consolidated billing) |
+| "tamper-proof audit logs across accounts" | Organization trail + S3 Object Lock |
+
+### Exam Triggers
+
+- *"Centralised billing across multiple AWS accounts"* → **AWS Organizations consolidated billing**
+- *"Block use of certain regions across all accounts"* → **SCP at the root or OU level with `aws:RequestedRegion` condition**
+- *"Prevent member accounts from disabling CloudTrail / Config"* → **SCP denying `cloudtrail:Stop*`, `config:Delete*`**
+- *"Programmatically create new AWS accounts"* → **`organizations:CreateAccount`** API or **Control Tower Account Factory**
+- *"Standardised landing zone for a new multi-account setup"* → **AWS Control Tower**
+- *"Federated SSO across all member accounts"* → **IAM Identity Center**
+- *"Centralised CloudTrail across the org"* → **organization trail**
+- *"Centralised compliance dashboard across the org"* → **AWS Config Aggregator**
+- *"Allow only specific EC2 instance types in sandbox accounts"* → **SCP with `ec2:InstanceType` condition**
+- *"Share VPC subnets across accounts"* → **AWS Resource Access Manager (RAM)**, not Organizations directly
+- *"Delegate GuardDuty admin to a security account"* → **delegated administrator** feature
+- *"Pool Reserved Instance discounts across accounts"* → **Consolidated billing** (default behaviour)
+- *"Restrict the root user of a member account from doing X"* → **SCP** (the *only* way to restrict the root user)
+
+**The 80/20:** *AWS Organizations = central management of many AWS accounts grouped into OUs under a root. Two killer features: **consolidated billing** (pooled discounts, shared RIs, one invoice) and **SCPs** (deny-only guardrails that cap what IAM can do — even for the root user). The management account is excluded from SCPs by design. **AWS Control Tower** is the opinionated landing-zone builder on top; **IAM Identity Center** provides federated SSO across accounts. Org-aware services (CloudTrail, Config, GuardDuty, Security Hub) all support a "delegated admin" + cross-account aggregation pattern.*
+
+## AWS Control Tower & Landing Zones
+
+**Anchored against opinionated infrastructure templates (Terraform blueprints, GitHub starter repos) — but AWS-managed and continuously enforced.** Control Tower isn't a service in the traditional sense; it's a **wizard + ongoing supervisor** that builds a standardised multi-account "landing zone" on top of AWS Organizations and keeps it from drifting.
+
+### "Landing Zone" — the term is overloaded
+
+When someone says *"do you have a landing zone?"* they could mean any of these:
+
+| What they mean | What it actually is | Status |
+| -------------- | ------------------- | ------ |
+| **The concept** | A pre-configured, secure, multi-account AWS environment with baseline governance (CloudTrail, Config, IAM, networking, audit) ready to go — the *thing* you've built | Generic industry term, not a service |
+| **AWS Control Tower** | AWS's *managed wizard* that builds a landing zone for you in ~30 mins | Active, recommended for most |
+| **AWS Landing Zone Accelerator (LZA)** | AWS's open-source CloudFormation/Terraform solution for enterprise/regulated landing zones — more powerful, more setup | Active, for advanced cases |
+| **AWS Landing Zone (the old service)** | The legacy CloudFormation solution AWS used to ship — pre-dates Control Tower | **Deprecated.** Migrated customers to Control Tower |
+
+**One-line answer:** *A landing zone is a pre-built, governed, multi-account AWS foundation. **AWS Control Tower** is how most companies build one. **Landing Zone Accelerator (LZA)** is the heavier-duty alternative for regulated enterprise environments.*
+
+### What Control Tower is NOT
+
+| Question | Service | Not Control Tower because... |
+| -------- | ------- | ---------------------------- |
+| *"Group AWS accounts and apply SCPs"* | **AWS Organizations** | Control Tower *uses* Organizations under the hood; Organizations is the primitive |
+| *"Provision infrastructure as code"* | **CloudFormation / Terraform** | Control Tower deploys *accounts*, not arbitrary infra (though it uses StackSets to apply baselines) |
+| *"Enterprise-grade landing zone with deep customisation"* | **AWS Landing Zone Accelerator (LZA)** | LZA is the more powerful, more complex enterprise alternative — Control Tower is the opinionated, lower-ceiling option |
+| *"Multi-account billing"* | **Organizations consolidated billing** | Comes free with Organizations; Control Tower doesn't add billing features |
+| *"User authentication / SSO"* | **IAM Identity Center** | Control Tower *enables* Identity Center as part of setup, but doesn't manage users itself |
+| *"Workload deployment across accounts"* | **CloudFormation StackSets / Terraform** | Control Tower bootstraps the accounts; you still need IaC to deploy workloads into them |
+
+### Core Concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Landing Zone** | The full multi-account environment Control Tower builds and maintains — OUs, accounts, baselines, guardrails, log/audit pipelines |
+| **Home region** | The single region where Control Tower itself runs. **Cannot be changed** after setup — pick carefully |
+| **Governed regions** | Regions Control Tower extends its guardrails into. Guardrails only enforce in these regions; everything else is unmanaged |
+| **Account Factory** | Vended template (in Service Catalog) for provisioning new accounts with the standard baseline auto-applied |
+| **Guardrails** | Pre-built **SCPs** (preventive) and **Config Rules** (detective) bundled into mandatory / strongly recommended / elective tiers |
+| **Drift detection** | Alerts when someone modifies the landing zone outside Control Tower (e.g. manually edits an SCP, moves an account between OUs) |
+| **Customizations for Control Tower (CfCT)** | CloudFormation templates that auto-run when a new account is provisioned — your customisation layer |
+| **Account Factory for Terraform (AFT)** | Terraform-based alternative to Account Factory for IaC-heavy orgs — runs in a CodePipeline |
+
+### What Control Tower Sets Up on Day 1
+
+When you click "Enable Control Tower" in a fresh org, it creates:
+
+```
+Management account (your existing account, becomes the org root)
+        │
+        ├── Security OU
+        │     ├── Log Archive account     (centralised CloudTrail + Config logs)
+        │     │                             - S3 bucket with versioning + Object Lock
+        │     │                             - Cross-account write from all member accounts
+        │     │
+        │     └── Audit account            (read-only across the org for security team)
+        │                                    - Aggregates Config compliance
+        │                                    - SNS topics for compliance alerts
+        │
+        └── Sandbox OU                    (empty initially; place for test accounts)
+
+Plus, in the management account:
+  - AWS Organizations enabled with all features
+  - IAM Identity Center enabled
+  - CloudTrail organization trail → Log Archive bucket
+  - AWS Config aggregator → Audit account
+  - Service Catalog with Account Factory product available
+  - CloudFormation StackSets deploying baseline IAM roles into every account
+```
+
+You go from "blank AWS account" to "production-ready 3-account landing zone" in ~30 minutes. Doing this manually is a multi-week project.
+
+### How Control Tower Account Provisioning Actually Flows
+
+```
+1. Admin opens Service Catalog → "AWS Control Tower Account Factory" product
+       ↓
+2. Fills in: account email, account name, target OU, SSO user details
+       ↓
+3. Submits — Service Catalog kicks off a CloudFormation stack
+       ↓
+4. Stack calls organizations:CreateAccount to vend a new AWS account
+       ↓
+5. Once created, Control Tower automatically:
+   - Moves the account into the chosen OU
+   - Applies all mandatory + strongly recommended guardrails (SCPs)
+   - Deploys baseline CloudFormation StackSets:
+       • AWSControlTowerExecution role (cross-account admin for CT)
+       • CloudTrail log forwarding to Log Archive
+       • AWS Config recorder + delivery to Audit account
+       • IAM Identity Center permission set assignments
+   - Runs any Customizations for Control Tower (CfCT) templates
+       ↓
+6. Creates an IAM Identity Center user (the new account's "admin")
+       ↓
+7. Sends an invitation email to the admin's address
+       ↓
+8. Admin logs into Identity Center → sees new account → can start working
+```
+
+What took ~2 weeks of manual setup is now ~20 minutes.
+
+### Guardrails — Where the Governance Lives
+
+Two implementations under the same name:
+
+| Mechanism | What it does | Example |
+| --------- | ------------ | ------- |
+| **Preventive guardrails** | **SCPs** that block actions before they happen | "Disallow changes to CloudTrail config" — denies `cloudtrail:Stop*`, `cloudtrail:Delete*` |
+| **Detective guardrails** | **AWS Config Rules** that flag non-compliant resources after the fact | "Detect S3 buckets without versioning" |
+
+Three tiers of enforcement:
+
+| Tier | Behaviour | Example |
+| ---- | --------- | ------- |
+| **Mandatory** | Always on, **cannot disable** | "Disallow public read on log archive S3 bucket"; "disallow deletion of log archive bucket" |
+| **Strongly recommended** | On by default, can disable per OU | "Require MFA for root user"; "disallow internet access from EC2 in Security OU" |
+| **Elective** | Opt-in only | "Disallow EC2 instances larger than `m5.large`"; "deny use of specific regions" |
+
+The mandatory ones are the killer feature — they make it *impossible* for any account in the org to compromise the audit trail.
+
+### Drift Detection
+
+Control Tower continuously checks that the landing zone matches its expected state. Drifts get flagged:
+
+| Common drift cause | What happens |
+| ------------------ | ------------ |
+| Someone manually edits an SCP that Control Tower owns | Drift event in dashboard |
+| Account moved between OUs outside Control Tower | Drift detected |
+| Log archive bucket policy modified | Drift detected (this one's serious — affects audit integrity) |
+| Mandatory guardrail somehow disabled | Drift detected |
+
+**Remediation:** "Reset landing zone" from the console reverts changes to the expected state. Or manually fix the offending change.
+
+### CfCT and AFT — Customising Beyond the Defaults
+
+| | Customizations for Control Tower (CfCT) | Account Factory for Terraform (AFT) |
+| - | -------------------------------------- | ------------------------------------ |
+| Language | CloudFormation | Terraform |
+| Trigger | Runs when accounts are provisioned via Account Factory | Replaces Account Factory with a Terraform-driven pipeline |
+| Use when | You want to apply standard CFN templates to every new account (baseline VPC, IAM roles, alarms) | You're a Terraform shop and want GitOps account vending |
+| Complexity | Lower | Higher (CodeCommit + CodePipeline + Terraform state per account) |
+
+**Exam trigger:** *"customise account baseline beyond what Control Tower provides"* → **CfCT** (CloudFormation) or **AFT** (Terraform).
+
+### Control Tower vs Landing Zone Accelerator (LZA)
+
+| | Control Tower | Landing Zone Accelerator (LZA) |
+| - | ------------- | ------------------------------ |
+| Setup | Click through a wizard | Deploy a CloudFormation stack + extensive config files |
+| Customisation | Limited (via CfCT) | Almost unlimited |
+| Target | Most orgs, small-to-medium complexity | Heavily regulated industries (finance, gov, healthcare), 100+ accounts |
+| Maintenance | AWS keeps it updated | You maintain the LZA codebase |
+| Cost (effort) | Low | High |
+| Cost ($) | Free | Free (but more AWS resources spun up) |
+
+**Decision:** Control Tower until you outgrow it. Then either migrate to LZA, or layer LZA-style customisations on top using CfCT.
+
+### Enrolling Existing Accounts
+
+Originally Control Tower was greenfield-only. Now you can:
+- **Enrol existing accounts** into an existing Control Tower org — they get the baseline applied retroactively
+- **Enrol an existing OU** to bring all its accounts in at once
+- Some constraints: the account must not have conflicting resources (e.g. its own non-CT CloudTrail config in conflicting regions)
+
+**Exam framing:** the older "Control Tower only works for new orgs" answer is **out of date**. If a question implies that, it's the trap.
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Manually edit SCPs that Control Tower manages"* → causes drift; let Control Tower own its SCPs and add your *own* SCPs alongside
+- *"Manually create accounts via `organizations:CreateAccount`"* in a Control Tower org → bypasses Account Factory baseline → drift
+- *"Put workloads in the management account"* → bad practice; management account should be Organizations + billing only
+- *"Disable mandatory guardrails"* → can't anyway, but if a question implies you can, it's the trap
+- *"Use Control Tower for a 500-account heavily regulated environment"* → consider **LZA** instead
+- *"Skip Account Factory and provision baseline manually"* → no — that's exactly what Control Tower automates
+
+### Exam Triggers
+
+- *"Set up a new multi-account environment with AWS best practices"* → **AWS Control Tower**
+- *"What is a landing zone?"* → pre-built, governed, multi-account AWS foundation (built by Control Tower or LZA)
+- *"Auto-provision accounts with standard CloudTrail / Config / IAM baseline"* → **Control Tower Account Factory**
+- *"Pre-built compliance rules across all accounts"* → **Control Tower guardrails** (mandatory / recommended / elective)
+- *"Detect when someone modifies our landing zone"* → **Control Tower drift detection**
+- *"Terraform-based account vending"* → **Account Factory for Terraform (AFT)**
+- *"Run additional CloudFormation in every new account"* → **Customizations for Control Tower (CfCT)**
+- *"Enterprise landing zone, 200+ accounts, deep customisation"* → **AWS Landing Zone Accelerator (LZA)**
+- *"Enrol our existing 30 accounts into Control Tower"* → **Enrol existing accounts/OUs feature** (no longer greenfield-only)
+- *"Tamper-proof audit log shared across all accounts"* → **Control Tower's Log Archive account** (with mandatory guardrails preventing modification)
+- *"Why can't I disable this CloudTrail in a Control Tower account?"* → **Mandatory guardrail blocks it via SCP**
+
+### Pricing
+
+**Control Tower itself is free.** You pay for the underlying resources it spins up: CloudTrail (org trail is free for management events; data events cost), Config recorders + rules, S3 storage in Log Archive, IAM Identity Center (free), CloudWatch alarms in Audit account.
+
+**The cost reality:** Config across many accounts is where the bill grows — same trap as in the AWS Config notes.
+
+**The 80/20:** *AWS Control Tower = the opinionated wizard that builds a production-ready multi-account **landing zone** on top of Organizations in ~30 minutes. Creates Security OU (Log Archive + Audit accounts), enables CloudTrail org trail, Config aggregator, IAM Identity Center, and applies preventive (SCP) + detective (Config Rule) **guardrails** in three tiers (mandatory/strongly recommended/elective). **Account Factory** vends new accounts with the baseline auto-applied; **CfCT** or **AFT** lets you customise further. **Drift detection** alerts when someone modifies the landing zone outside Control Tower. Pick Control Tower when starting fresh or up to ~100 accounts; pick **Landing Zone Accelerator (LZA)** for enterprise / heavily regulated environments. Management account is Organizations + billing — don't put workloads there.*
+
+## AWS Directory Service (Active Directory on AWS)
+
+**Anchored against on-prem Active Directory.** If you've ever run AD in a data centre (domain controllers, OUs, Group Policy, Kerberos, LDAP), AWS Directory Service is the managed version — three flavours depending on how much "real AD" you need.
+
+### The Three Flavours (this is the whole exam)
+
+| Service | What it actually is | When to pick it | Cost |
+| ------- | ------------------- | --------------- | ---- |
+| **AWS Managed Microsoft AD** | **Real Microsoft AD** on AWS-managed Domain Controllers in a VPC. Full schema, Group Policy, Kerberos, LDAP, MFA, trusts | Need *actual* AD features: SQL Server Windows Auth, SharePoint, .NET apps, schema extensions, forest trusts with on-prem AD | $$$ (most expensive — managed DCs) |
+| **AD Connector** | A **proxy / redirector** to your *existing* on-prem AD. No directory data stored in AWS — every auth call is forwarded back to on-prem | You already have on-prem AD and want AWS workloads (EC2 domain-join, WorkSpaces, IAM Identity Center) to authenticate against it without replicating | $ (cheap — it's just a proxy) |
+| **Simple AD** | A **Samba-based** AD-compatible directory. LDAP, basic user/group management, joining Linux/Windows EC2 | Lightweight, low cost, no Microsoft-specific features needed (no trusts, no schema extensions, no MFA, no PowerShell, no Group Policy) | $ |
+
+**The umbrella name** for all three is **AWS Directory Service**.
+
+### What AWS Directory Service is NOT
+
+| Question | Service | Not Directory Service because... |
+| -------- | ------- | -------------------------------- |
+| *"SSO into AWS Console across many accounts"* | **IAM Identity Center** | Identity Center *uses* AD as one possible identity source; AD itself doesn't talk to the AWS console |
+| *"Manage IAM users / roles"* | **IAM** | Different identity layer — IAM is for AWS API/console; AD is for Windows/LDAP workloads |
+| *"Authenticate end customers signing into our SaaS"* | **Amazon Cognito** | AD is workforce identity, not customer identity |
+| *"Replace IAM users in each AWS account"* | **IAM Identity Center** (which can sit on top of Managed AD) | AD alone doesn't federate to AWS console |
+| *"Sync Google Workspace users to AWS"* | **IAM Identity Center with Google as SAML source** | AD is Microsoft-flavoured; Google syncs to Identity Center directly |
+| *"DNS for VPC resources"* | **Route 53 (private hosted zones) or Route 53 Resolver** | AD provides DNS *for the domain*, but isn't your general-purpose DNS service |
+
+### The Decision Tree
+
+```
+Do you need full Microsoft AD features (Group Policy, schema, trusts, MFA, LDAPS)?
+  └── YES → AWS Managed Microsoft AD
+  └── NO → Do you already have on-prem AD and want to keep it as the source of truth?
+            └── YES → AD Connector (proxy to on-prem)
+            └── NO → Do you just need basic LDAP / small user count, no Microsoft-specific bits?
+                      └── YES → Simple AD
+                      └── NO → You probably don't need a directory at all
+                                  → use IAM Identity Center's built-in directory
+```
+
+### How Domain-Joining an EC2 Instance Actually Flows
+
+```
+1. Launch a Windows EC2 in a VPC subnet that can reach the AD DCs
+       ↓
+2. EC2 has an IAM role with permission to read directory join info from SSM
+   (and AmazonSSMManagedInstanceCore for the SSM agent)
+       ↓
+3. Either:
+   - At launch: pass the directory ID via the "Domain join directory" option
+   - At runtime: SSM Run Command "AWS-JoinDirectoryServiceDomain"
+       ↓
+4. SSM agent on the instance retrieves domain credentials from a managed secret
+       ↓
+5. The instance contacts the AD DCs (Managed AD, or via AD Connector → on-prem)
+   using Kerberos/LDAP over the standard ports (UDP/TCP 88, 389, 445, 636…)
+       ↓
+6. AD creates a computer account; the instance trusts the domain controllers
+       ↓
+7. AD users can now RDP into the box; Group Policy applies
+```
+
+The IAM role + SSM glue is what makes this seamless — without it you'd be manually joining with `Add-Computer`.
+
+### Trust Relationships (Managed AD Only)
+
+Trusts let users in one domain authenticate to resources in another. Three flavours, all tested:
+
+| Trust type | Direction | Use case |
+| ---------- | --------- | -------- |
+| **One-way outgoing trust** | AWS Managed AD trusts on-prem AD | On-prem users access AWS resources, but not vice versa |
+| **One-way incoming trust** | On-prem AD trusts AWS Managed AD | AWS-managed accounts access on-prem resources |
+| **Two-way (bidirectional) forest trust** | Both ways | Full integration — the classic answer for hybrid AD |
+
+**Exam trigger:** *"hybrid AD, users in either domain access resources in the other"* → **two-way forest trust between AWS Managed Microsoft AD and on-prem AD**.
+
+You **cannot** create trusts with Simple AD or AD Connector — trusts are a Managed Microsoft AD–only feature.
+
+### Integration with IAM Identity Center
+
+This is where Directory Service ties back to everything in the Organizations section:
+
+```
+On-prem AD (or AWS Managed Microsoft AD)
+         ↓ (identity source)
+IAM Identity Center
+         ↓ (assigns permission sets to user/group + account)
+AWS Console / CLI in member accounts
+```
+
+User identity lives in AD. Identity Center reads group membership from AD. Permission sets in Identity Center map AD groups → AWS roles. AD users get federated AWS console access without ever creating IAM users.
+
+**Exam trigger:** *"company uses AD on-prem and wants AWS console SSO that respects AD group membership"* → **IAM Identity Center with Managed AD (with trust to on-prem) OR AD Connector as the identity source**.
+
+### Common Use Cases
+
+| Use case | Service |
+| -------- | ------- |
+| SQL Server Windows Authentication on RDS / EC2 | **Managed Microsoft AD** (RDS for SQL Server integrates directly) |
+| .NET apps using AD authentication | **Managed Microsoft AD** or **AD Connector** |
+| Joining Windows EC2 fleet to a domain | Any of the three (Managed AD if you want trusts/Group Policy) |
+| Amazon WorkSpaces / AppStream user directory | **Managed Microsoft AD** or **AD Connector** (or Simple AD for basic) |
+| FSx for Windows File Server (SMB shares with AD ACLs) | **Managed Microsoft AD** or **AD Connector** |
+| LDAP-backed Linux app, no Microsoft features | **Simple AD** |
+| SSO into AWS Console for AD users | **AD source + IAM Identity Center** |
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Use Simple AD because it's cheap"* — fine until you need trusts, Group Policy, MFA, schema extensions, or PowerShell management — none of which Simple AD supports
+- *"Use AD Connector when on-prem is unreachable"* — AD Connector requires live network to on-prem DCs; an outage there breaks all AWS auth
+- *"Use Managed Microsoft AD for a simple LDAP directory of 20 users"* — overkill and expensive; use Simple AD or Identity Center directory
+- *"Use AD to authenticate customers of your SaaS"* — wrong layer; that's **Cognito**
+- *"Replicate on-prem AD into AWS by standing up DCs on EC2"* — works but you're managing DCs yourself; the whole point of Managed AD is AWS does that for you
+- *"Use AD for AWS Console SSO directly"* — AD doesn't talk to the AWS console; you need **IAM Identity Center** on top
+
+### Exam Triggers
+
+- *"Run SQL Server with Windows Authentication"* → **AWS Managed Microsoft AD** (or AD Connector to on-prem)
+- *"Domain-join EC2 instances to existing on-prem AD"* → **AD Connector** (or Managed AD with trust)
+- *"Two-way trust with on-prem AD"* → **Managed Microsoft AD** (Simple AD + AD Connector can't do trusts)
+- *"Cheap AD-compatible directory for small Linux workload"* → **Simple AD**
+- *"Hybrid AD with seamless user experience in both directions"* → **Managed Microsoft AD + two-way forest trust**
+- *"AWS Console SSO for AD users across many accounts"* → **IAM Identity Center with AD as identity source**
+- *"Group Policy, MFA, LDAPS, schema extensions"* → **Managed Microsoft AD** only
+- *"WorkSpaces / FSx need a directory"* → **Managed AD or AD Connector** (Simple AD for low-end WorkSpaces)
+- *"Manage the directory in AWS but users authenticate against on-prem"* → contradictory — pick: Managed AD (AWS-resident) or AD Connector (on-prem-resident)
+- *"No AD admin team, no Microsoft licences, but we need an LDAP directory"* → **Simple AD** or skip AD entirely
+
+### Pricing Notes
+
+- **Managed Microsoft AD**: per-hour per DC (you get 2 DCs by default; can scale up). Most expensive of the three.
+- **AD Connector**: per-hour, much cheaper — it's just a proxy.
+- **Simple AD**: per-hour, cheapest. Two sizes (Small for ≤500 users, Large for ≤5000).
+
+**The 80/20:** *AWS Directory Service umbrella covers three flavours: **Managed Microsoft AD** (real MS AD on AWS DCs, supports trusts/Group Policy/schema), **AD Connector** (proxy to existing on-prem AD), **Simple AD** (Samba-based, cheap, no Microsoft-specific features). For hybrid AD with trust → Managed AD. For "on-prem AD is the source of truth" → AD Connector. For "I just need a basic LDAP" → Simple AD. Combine any of these with **IAM Identity Center** to give AD users SSO into the AWS console across all org accounts. Trusts are Managed AD only. Watch out: AD ≠ IAM ≠ Cognito ≠ Identity Center — different identity layers.*
 
 ## ECS (Elastic Container Service)
 
@@ -6429,6 +7552,79 @@ A **rule** has:
 ```
 
 That rule fires only on **S3 object creations in `prod-uploads` larger than 1 MB**. Content-based filtering is the headline differentiator from SNS (SNS does filter-by-attribute but is less expressive).
+
+#### Target Permissions: Resource-based Policy vs IAM Role
+
+A perennial exam confusion: *"How does EventBridge get permission to invoke its target?"* There are **two patterns** and which one you use depends on the target type.
+
+| Target | Permission mechanism |
+| ------ | -------------------- |
+| **Lambda** | **Resource-based policy** on the function (a "Lambda permission" granting `events.amazonaws.com` to `lambda:InvokeFunction`) |
+| **SNS** | **Resource-based policy** on the topic |
+| **SQS** | **Resource-based policy** on the queue |
+| **CloudWatch Logs** | **Resource-based policy** on the log group |
+| **Kinesis Data Streams** | **IAM role** (EventBridge assumes a role with `kinesis:PutRecord` permission) |
+| **Kinesis Data Firehose** | **IAM role** |
+| **Step Functions** | **IAM role** |
+| **ECS / Fargate task** | **IAM role** (with `ecs:RunTask`) |
+| **API destinations** | **IAM role** |
+| **Systems Manager Run Command** | **IAM role** |
+| **CodeBuild / CodePipeline / Batch / Glue / SageMaker** | **IAM role** |
+
+**The underlying rule:** *"Does the target service support resource-based policies that allow another AWS service to invoke it?"*
+
+- **Yes** (Lambda, SNS, SQS, CloudWatch Logs) → grant via resource-based policy *on the target*
+- **No** (everything else) → EventBridge needs an **IAM role** to assume, and the role has permission to call the target
+
+#### Why the historical split
+
+It comes down to how each service was designed:
+
+```
+Resource-based pattern (Lambda):
+  EventBridge ──invoke──► Lambda function
+                          ↑
+                          │ checks its own resource policy:
+                          │ "Is events.amazonaws.com on the allow list?"
+                          │ ✅ yes → execute
+
+IAM-role pattern (Kinesis):
+  EventBridge ──assume-role──► IAM Role
+                               ↓ (with temp credentials)
+                               kinesis:PutRecord on stream
+```
+
+**Mental model:** *Lambda/SNS/SQS/Logs are "the doors with a doorman list posted on them." Everything else has no doorman, so the caller must wear a badge (role) to get in.*
+
+#### What the console auto-creates
+
+When you set up an EventBridge rule with a target via the console, AWS auto-creates the right thing:
+
+- **Lambda target** → adds a `Lambda permission` to the function (visible in *Configuration → Permissions → Resource-based policy*)
+- **Kinesis target** → creates an IAM role named like `Amazon_EventBridge_Invoke_Kinesis_xxx` with the trust policy + invocation permissions
+
+You can verify by inspecting the target after creation.
+
+#### The rule generalises beyond EventBridge
+
+Same pattern applies any time *service A invokes service B* in AWS:
+
+| Integration | Mechanism |
+| ----------- | --------- |
+| S3 event notification → Lambda | **Resource-based policy** on the Lambda |
+| API Gateway → Lambda backend | **Resource-based policy** on the Lambda |
+| SNS subscription → Lambda | **Resource-based policy** on the Lambda |
+| CloudWatch Logs subscription filter → Lambda | **Resource-based policy** on the Lambda |
+| CloudWatch Events / EventBridge → Lambda | **Resource-based policy** on the Lambda |
+| CloudWatch Events / EventBridge → Kinesis | **IAM role** |
+| Step Functions → Lambda | **IAM role** (Step Functions assumes a role with `lambda:InvokeFunction`) — note Lambda *also* accepts resource policies, but Step Functions uses the role pattern |
+| Cross-account access to any resource | **Both** — resource policy on the target AND IAM policy on the principal |
+
+#### Exam-pattern mnemonic
+
+> *"Lambda, SNS, SQS, CloudWatch Logs — the four targets with a doorman. Everything else needs the caller to wear a badge."*
+
+If a question phrases the answer choices as *"add an IAM role"* vs *"add a resource-based policy"*, ask: **what type of target?** Lambda/SNS/SQS/Logs → resource policy. Anything else → IAM role.
 
 #### Archive + Replay (unique feature)
 
