@@ -128,27 +128,50 @@
   - [Key Policies vs IAM Policies — the Gotcha](#key-policies-vs-iam-policies--the-gotcha)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-14)
   - [Exam Triggers](#exam-triggers-14)
-- [Amazon GuardDuty](#amazon-guardduty)
-  - [What GuardDuty is NOT](#what-guardduty-is-not)
+- [AWS Certificate Manager (ACM)](#aws-certificate-manager-acm)
+  - [What ACM is NOT](#what-acm-is-not)
   - [Core Concepts](#core-concepts-4)
-  - [How GuardDuty Actually Detects Things](#how-guardduty-actually-detects-things)
-  - [Common Finding Types (worth recognising on the exam)](#common-finding-types-worth-recognising-on-the-exam)
+  - [How DNS Validation Actually Flows](#how-dns-validation-actually-flows)
+  - [Where You Can Attach an ACM Cert](#where-you-can-attach-an-acm-cert)
+  - [ACM Private CA (PCA) — the Internal mTLS Story](#acm-private-ca-pca--the-internal-mtls-story)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-15)
   - [Exam Triggers](#exam-triggers-15)
-- [AWS Security Hub](#aws-security-hub)
-  - [What Security Hub is NOT](#what-security-hub-is-not)
+- [AWS Secrets Manager](#aws-secrets-manager)
+  - [What Secrets Manager is NOT](#what-secrets-manager-is-not)
   - [Core Concepts](#core-concepts-5)
-  - [How Security Hub Pulls It All Together](#how-security-hub-pulls-it-all-together)
-  - [Compliance Standards — the "what controls am I passing?" angle](#compliance-standards--the-what-controls-am-i-passing-angle)
+  - [How Rotation Actually Flows (numbered)](#how-rotation-actually-flows-numbered)
+  - [Single-User vs Alternating-User Rotation](#single-user-vs-alternating-user-rotation)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-16)
   - [Exam Triggers](#exam-triggers-16)
-- [AWS WAF (Web Application Firewall)](#aws-waf-web-application-firewall)
-  - [What WAF is NOT](#what-waf-is-not)
+- [AWS Systems Manager Parameter Store](#aws-systems-manager-parameter-store)
+  - [What Parameter Store is NOT](#what-parameter-store-is-not)
   - [Core Concepts](#core-concepts-6)
-  - [How a WAF Request Actually Flows](#how-a-waf-request-actually-flows)
-  - [Where to attach a Web ACL](#where-to-attach-a-web-acl)
+  - [Standard vs Advanced Tier — When to Upgrade](#standard-vs-advanced-tier--when-to-upgrade)
+  - [Common Patterns](#common-patterns)
+  - [Secrets Manager vs Parameter Store — the Comparison](#secrets-manager-vs-parameter-store--the-comparison)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-17)
   - [Exam Triggers](#exam-triggers-17)
+- [Amazon GuardDuty](#amazon-guardduty)
+  - [What GuardDuty is NOT](#what-guardduty-is-not)
+  - [Core Concepts](#core-concepts-7)
+  - [How GuardDuty Actually Detects Things](#how-guardduty-actually-detects-things)
+  - [Common Finding Types (worth recognising on the exam)](#common-finding-types-worth-recognising-on-the-exam)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-18)
+  - [Exam Triggers](#exam-triggers-18)
+- [AWS Security Hub](#aws-security-hub)
+  - [What Security Hub is NOT](#what-security-hub-is-not)
+  - [Core Concepts](#core-concepts-8)
+  - [How Security Hub Pulls It All Together](#how-security-hub-pulls-it-all-together)
+  - [Compliance Standards — the "what controls am I passing?" angle](#compliance-standards--the-what-controls-am-i-passing-angle)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-19)
+  - [Exam Triggers](#exam-triggers-19)
+- [AWS WAF (Web Application Firewall)](#aws-waf-web-application-firewall)
+  - [What WAF is NOT](#what-waf-is-not)
+  - [Core Concepts](#core-concepts-9)
+  - [How a WAF Request Actually Flows](#how-a-waf-request-actually-flows)
+  - [Where to attach a Web ACL](#where-to-attach-a-web-acl)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-20)
+  - [Exam Triggers](#exam-triggers-20)
 - [ECS (Elastic Container Service)](#ecs-elastic-container-service)
   - [ECS vs ASG + EC2](#ecs-vs-asg--ec2)
   - [Key concepts](#key-concepts)
@@ -3238,6 +3261,334 @@ That `Principal: root` doesn't mean "the root user" — it means "any IAM princi
 - *"Encrypt secret database password"* → **Secrets Manager** (which uses KMS underneath)
 
 **The 80/20:** *KMS = managed crypto key service that almost every AWS service uses for encryption at rest. Three key flavours: **AWS-managed** (free, automatic), **customer-managed** ($1/mo, you control), **AWS-owned** (invisible). **Envelope encryption** is the foundational pattern — KMS encrypts data keys, data keys encrypt your data. Keys are protected by **key policies** (required) + IAM policies + grants. **Multi-region keys** for cross-region scenarios. **CloudHSM** for dedicated single-tenant; KMS for everything else.*
+
+## AWS Certificate Manager (ACM)
+
+**Anchored as KMS's sibling.** *KMS = encryption at rest. **ACM = TLS / encryption in transit.*** ACM provisions, manages, and **auto-renews** public + private TLS/SSL certificates and deploys them directly into AWS services that terminate TLS (CloudFront, ALB, NLB, API Gateway, etc.). Public certificates are **free**. The catch: ACM keeps the private key inside AWS — you can't export it.
+
+### What ACM is NOT
+
+| Question | Service | Not ACM because... |
+| -------- | ------- | ------------------ |
+| *"Encrypt data at rest"* | **AWS KMS** | KMS handles encryption-at-rest keys; ACM handles TLS certs (encryption in transit) |
+| *"Store arbitrary secrets"* | **AWS Secrets Manager** | Secrets Manager stores generic secrets; ACM is purpose-built for X.509 certs |
+| *"Manage DNS records"* | **Route 53** | Route 53 is DNS; ACM *uses* Route 53 records for domain validation but isn't DNS |
+| *"Code signing certificates"* | **AWS Signer** | Different lifecycle and trust model |
+| *"Deploy a TLS cert onto an EC2 nginx web server"* | Buy/manage cert externally (Let's Encrypt, etc.) | ACM **won't let you export the private key** — only AWS services with native ACM integration can use it |
+| *"Issue internal mTLS certs for microservices"* | **AWS Certificate Manager Private CA** (ACM PCA) | Public ACM issues *publicly trusted* certs only — for internal trust you need a private CA |
+
+### Core Concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Public certificate** | Publicly trusted X.509 cert issued by **Amazon Trust Services**. Free. Must validate domain ownership |
+| **Private certificate** | Issued by your **ACM Private CA** — trusted only by clients you've given the CA's root to. For internal mTLS, service-to-service auth |
+| **Imported certificate** | A cert you bought from a third party (DigiCert, Let's Encrypt, etc.) that you import into ACM. **No auto-renewal** — you manage rotation |
+| **Domain validation** | Two flavours: **DNS validation** (preferred — add a CNAME, ACM checks it, auto-renewable forever) or **email validation** (manual click on email; doesn't auto-renew well) |
+| **Wildcard cert** | One cert covering `*.example.com` (any single-level subdomain). Free in ACM |
+| **Multi-SAN cert** | One cert covering multiple domains: `example.com`, `www.example.com`, `api.example.com`. Subject Alternative Names list |
+| **Auto-renewal** | ACM-issued certs with DNS validation renew automatically before expiry — zero touch. Imported certs do NOT auto-renew |
+| **Region scope** | Most ACM certs are **regional**. **CloudFront certs must be in `us-east-1`** (CloudFront is global but its config layer is anchored there) |
+
+### How DNS Validation Actually Flows
+
+```
+1. Request a public certificate via ACM:
+     aws acm request-certificate --domain-name example.com \
+                                 --validation-method DNS
+       ↓
+2. ACM returns a unique CNAME record name + value, e.g.:
+     _abc123.example.com  CNAME  _xyz789.acm-validations.aws
+       ↓
+3. You add that CNAME to your DNS provider
+   (If using Route 53: one-click "Create record in Route 53" from console)
+       ↓
+4. ACM polls DNS for the CNAME — typically resolves within 5 minutes
+       ↓
+5. Validation succeeds → certificate ISSUED status; ready to attach
+       ↓
+6. Attach cert to CloudFront / ALB / API Gateway (via console / IaC)
+       ↓
+7. ACM continues monitoring the CNAME forever
+       ↓
+8. ~60 days before expiry: ACM auto-renews — if CNAME still present,
+   new cert issued and silently rotated under the same ARN. Zero downtime
+```
+
+**Why DNS validation beats email validation:** auto-renewable. As long as the CNAME stays in place, the cert renews forever without human intervention. Email validation requires someone to click a link every renewal — fine for one cert, painful for fifty.
+
+### Where You Can Attach an ACM Cert
+
+| Service | Notes |
+| ------- | ----- |
+| **CloudFront distribution** | Cert **must be in `us-east-1`** regardless of where the rest of your infra lives |
+| **Application Load Balancer (ALB)** | Cert in **the same region as the ALB** |
+| **Network Load Balancer (NLB)** | TLS termination at NLB — cert in same region |
+| **API Gateway** | REST + HTTP APIs (custom domains) |
+| **Cognito user pool custom domain** | Cert must be in `us-east-1` (Cognito uses CloudFront under the hood) |
+| **AWS App Runner** | Custom domain certs |
+| **Elastic Beanstalk** | Via the underlying ALB/CLB |
+| **AWS Nitro Enclaves** | Specific use case |
+| **EC2 / your own web server (nginx, Apache)** | ❌ **Not directly** — private key can't be exported |
+
+**Exam trap:** *"Cert deployed to ALB but the CloudFront in front of it can't use the same cert"* → cert is in the wrong region (CloudFront needs `us-east-1`; ALB cert is wherever the ALB lives). Solution: **issue a second cert in `us-east-1`** for CloudFront, or use the same cert if you happen to be in `us-east-1` already.
+
+### ACM Private CA (PCA) — the Internal mTLS Story
+
+When you need certs trusted only inside your org (service-to-service mTLS, internal admin tools, IoT devices):
+
+| Feature | Detail |
+| ------- | ------ |
+| **CA hierarchy** | Root CA → Subordinate CAs → leaf certificates. Mirrors traditional PKI |
+| **Cost** | **$400/month per CA** + per-certificate issuance fee. Expensive — only pay for it when you actually need internal PKI |
+| **Use cases** | Kubernetes service mesh mTLS (Istio/Linkerd), microservice authentication, IoT device identity, internal HTTPS that you don't want public CAs to issue for |
+| **Integrates with** | ACM (PCA-issued certs can be deployed via ACM into ALB/CloudFront/etc. as internal-trust certs), Kubernetes cert-manager via AWS Privateca Issuer |
+| **vs Public ACM** | Public ACM issues certs trusted by every browser. PCA issues certs trusted only by clients that have your CA root |
+
+**Exam trigger:** *"internal mTLS between microservices in a private VPC"* → **ACM Private CA**, not public ACM.
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Buy TLS certs from a third party for an ALB"* → use **ACM public certs** (free + auto-renew)
+- *"Deploy ACM cert to nginx on EC2"* → can't — private key isn't exportable. Use Let's Encrypt + certbot, or a CloudFront/ALB in front
+- *"Use the ALB's regional cert for CloudFront"* → CloudFront needs the cert in **`us-east-1`**
+- *"Email-validate certs in an automated pipeline"* → use **DNS validation** so it's auto-renewable
+- *"Import a third-party cert and forget about it"* → **imported certs don't auto-renew**; set a CloudWatch alarm on expiry
+- *"Use public ACM for internal service-to-service mTLS"* → public CAs won't issue for internal hostnames; use **ACM Private CA**
+- *"Single cert covering example.com and api.example.com via wildcard `*.example.com`"* → wildcard only covers **one level** (`api.example.com`, but not `v1.api.example.com`); use a **multi-SAN cert**
+
+### Exam Triggers
+
+- *"Free TLS certs for an ALB / CloudFront / API Gateway"* → **AWS Certificate Manager (public)**
+- *"Automatic cert renewal, no manual steps"* → **ACM-issued cert + DNS validation**
+- *"Cert for CloudFront distribution"* → **ACM cert in `us-east-1`**
+- *"Internal mTLS between microservices"* → **ACM Private CA**
+- *"Migrated cert from another provider, want to keep using it"* → **Import into ACM** (no auto-renewal though)
+- *"Cover multiple subdomains with one cert"* → **wildcard `*.example.com`** or **multi-SAN cert**
+- *"Deploy cert to EC2 web server"* → ACM **can't export the private key** — use a CloudFront/ALB front, or use a non-ACM cert
+- *"Why did renewal fail?"* → DNS CNAME was removed, or email validation wasn't re-done
+- *"Issue private certs for VPN clients / IoT devices"* → **ACM Private CA** with a custom root distributed to those clients
+- *"Set a CloudWatch alarm on cert expiry"* → use **`DaysToExpiry` metric** (especially for imported certs that don't auto-renew)
+
+**The 80/20:** *ACM = managed TLS cert service. **Public certs are free + auto-renew** when issued by ACM with DNS validation. Attaches to **CloudFront (`us-east-1` only) / ALB / NLB / API Gateway / Cognito / App Runner** — not raw EC2 (no exportable private key). **Imported certs don't auto-renew.** For internal mTLS / service-to-service, use **ACM Private CA** ($400/month per CA, paid). Wildcards cover one subdomain level; multi-SAN covers multiple explicit domains. **ACM is to TLS in transit what KMS is to encryption at rest.***
+
+## AWS Secrets Manager
+
+**Anchored against HashiCorp Vault, but managed.** Secrets Manager stores, retrieves, and **automatically rotates** secrets (database credentials, API keys, OAuth tokens). Every secret is KMS-encrypted at rest. The headline feature is **native rotation** for AWS databases — no Lambda code required.
+
+### What Secrets Manager is NOT
+
+| Question | Service | Not Secrets Manager because... |
+| -------- | ------- | ------------------------------ |
+| *"Store cheap config values for my app"* | **SSM Parameter Store (Standard)** | Free up to 10,000 — Secrets Manager charges $0.40 per secret per month |
+| *"Encrypt arbitrary data"* | **AWS KMS** | KMS does the encryption; Secrets Manager stores secret lifecycle on top of KMS |
+| *"Manage TLS certificates"* | **AWS Certificate Manager (ACM)** | ACM provisions/renews certs — different lifecycle |
+| *"Human-facing password manager"* | **1Password / Bitwarden / Vault UI** | Secrets Manager is for *applications* fetching secrets, not humans browsing them |
+| *"Store binary blobs"* | **S3 + KMS** | Secrets Manager caps at 64 KB per secret |
+
+### Core Concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Secret** | Name + value (string up to 64 KB, usually JSON) + metadata + KMS encryption. Value can be any string, often a JSON blob like `{"username": "alice", "password": "..."}` |
+| **Staging labels** | Version pointers: **`AWSCURRENT`** (the live version), **`AWSPENDING`** (version being rotated to, mid-rotation), **`AWSPREVIOUS`** (last version, for rollback) |
+| **Automatic rotation** | Schedule-driven re-issuing of the secret. **Native** for RDS / Aurora / DocumentDB / Redshift. **Custom Lambda** for everything else (third-party APIs, SaaS, etc.) |
+| **Rotation strategies** | **Single-user** (one DB user whose password gets rotated — brief outage window) vs **Alternating-user** (two users, one always live — zero-downtime) |
+| **Resource policy** | Resource-based policy on the secret — used for **cross-account access** (which Parameter Store can't do) |
+| **Multi-region replication** | Native: pick a primary region + N replica regions. Updates to the primary propagate. Used for DR and globally distributed apps |
+| **GetRandomPassword API** | Generates cryptographically strong random passwords (with configurable length, character set) — you don't have to write the entropy code |
+| **Caching client library** | Official SDK for Java/Python/Node that caches secrets in memory to avoid the $0.05-per-10k-calls API cost |
+
+### How Rotation Actually Flows (numbered)
+
+Secrets Manager's rotation Lambda follows a strict four-step lifecycle. Whether AWS-managed (native) or your custom Lambda, all four steps must succeed for rotation to finish.
+
+```
+1. createSecret
+       ↓ Lambda generates a new secret value (or fetches from RDS, etc.)
+       ↓ Stores it under the AWSPENDING staging label
+       ↓ (AWSCURRENT still points to the old value at this stage)
+       ↓
+2. setSecret
+       ↓ Lambda updates the TARGET system with the new value
+       ↓ e.g. for RDS: ALTER USER appuser IDENTIFIED BY 'new-password'
+       ↓ The DB now accepts both old + new (during the transition)
+       ↓
+3. testSecret
+       ↓ Lambda verifies the new value works against the target
+       ↓ e.g. opens a new DB connection with the new credentials
+       ↓ If fails → rotation aborts, AWSPENDING discarded
+       ↓
+4. finishSecret
+       ↓ Lambda moves the AWSCURRENT label from old version → new version
+       ↓ Old version becomes AWSPREVIOUS
+       ↓ New value is now live for all consumers
+```
+
+**Why staging labels matter:** apps fetch via `AWSCURRENT`. The label move is atomic, so consumers either get the old value or the new value, never both. Rollback is just moving the label back to AWSPREVIOUS.
+
+### Single-User vs Alternating-User Rotation
+
+| | Single-user | Alternating-user |
+| - | ----------- | ---------------- |
+| Approach | One DB user; rotate its password | Two DB users (e.g. `app_user_1`, `app_user_2`) — one active, one being rotated |
+| Brief outage during rotation? | ✅ Yes (window between setSecret and finishSecret) | ❌ No — the inactive user is being rotated while the active one serves traffic |
+| Setup complexity | Lower | Higher (need to provision the second user, both granted same permissions) |
+| Use when | OK with occasional sub-second rotation hiccup | Zero-downtime required |
+
+**Exam trigger:** *"rotate RDS credentials with zero downtime"* → **alternating-user rotation strategy**.
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Store every config value in Secrets Manager"* → expensive; use **Parameter Store** for non-rotating config
+- *"Rotate credentials by manually editing the secret"* → defeats the purpose; configure **automatic rotation**
+- *"Use Secrets Manager for files > 64 KB"* → wrong tool; use S3 + KMS
+- *"Single-user rotation for a high-traffic production database"* → consider **alternating-user** to avoid the rotation outage window
+- *"App fetches the secret on every request"* → use the **caching client library** or Lambda extension; API calls add up
+- *"Share secrets between accounts by copying"* → use **resource policy** for cross-account access
+
+### Exam Triggers
+
+- *"Automatically rotate RDS / Aurora / DocumentDB credentials"* → **Secrets Manager native rotation**
+- *"Rotate credentials with zero downtime"* → **alternating-user rotation**
+- *"Cross-account access to a secret via resource policy"* → **Secrets Manager**
+- *"Replicate a secret across regions for DR"* → **Secrets Manager multi-region replication**
+- *"Generate cryptographically strong passwords via API"* → **`GetRandomPassword`**
+- *"Test rotation before going live"* → **AWSPENDING staging label**
+- *"Roll back to previous secret version"* → move **AWSCURRENT** back to **AWSPREVIOUS**
+- *"Rotate third-party API key (not an AWS database)"* → **custom Lambda rotation function**
+- *"Reduce Secrets Manager API costs"* → **caching client library** or **Lambda Secrets Manager extension**
+
+**The 80/20:** *Secrets Manager = managed secret lifecycle service. **Stores + retrieves + rotates** secrets, KMS-encrypted, $0.40/secret/month. **Native rotation** for RDS/Aurora/DocumentDB/Redshift; **custom Lambda** for everything else. **AWSCURRENT/AWSPENDING/AWSPREVIOUS** staging labels manage atomic version transitions. **Alternating-user** rotation = zero downtime. **Resource policy** enables cross-account sharing; **multi-region replication** for DR. **64 KB cap** per secret. Pairs with Parameter Store: hierarchical config in Parameter Store, rotating secrets in Secrets Manager, referenced from Parameter Store via `/aws/reference/secretsmanager/...`.*
+
+## AWS Systems Manager Parameter Store
+
+**Anchored against etcd or Consul KV — but free for most use cases and part of AWS Systems Manager.** Parameter Store is a managed key-value store for application **configuration** (and SecureString secrets too if you want). Standard tier is free up to 10,000 parameters per account per region — which is why most companies use it for config alongside Secrets Manager for true rotating secrets.
+
+### What Parameter Store is NOT
+
+| Question | Service | Not Parameter Store because... |
+| -------- | ------- | ------------------------------ |
+| *"Automatically rotate RDS credentials"* | **Secrets Manager** | Parameter Store has no built-in rotation — you'd build it with EventBridge + Lambda |
+| *"Cross-account secret sharing via resource policy"* | **Secrets Manager** | Parameter Store doesn't support resource policies — IAM only |
+| *"Multi-region replication of a value"* | **Secrets Manager** (or build with EventBridge + Lambda) | Parameter Store is per-region; no native replication |
+| *"Encrypt arbitrary data"* | **AWS KMS** | KMS does the encryption; Parameter Store SecureString uses KMS under the hood |
+| *"Database for app state"* | **DynamoDB / RDS** | Parameter Store has rate limits and is for *config*, not runtime data |
+| *"Store files / binary blobs"* | **S3** | 4 KB (Standard) / 8 KB (Advanced) cap per parameter |
+
+### Core Concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Parameter** | Name + value + type. The name is a **path** like `/myapp/prod/db/host` |
+| **Types** | **String** (plain text), **StringList** (comma-separated), **SecureString** (KMS-encrypted) |
+| **Tiers** | **Standard** — free, ≤10,000 params per account/region, 4 KB max value, no policies. **Advanced** — $0.05/param/month, ≤100,000 params, 8 KB max, supports parameter policies + change notifications |
+| **Hierarchical paths** | `/<app>/<env>/<service>/<key>` — fetch a whole tree with `GetParametersByPath` |
+| **Versioning** | Up to 100 versions per parameter. Reference a specific version via `:<n>` suffix |
+| **Public parameters** | AWS-published parameters (e.g. `/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64`) — read-only, free, auto-updated by AWS |
+| **Parameter policies** (Advanced only) | Expiration (auto-delete after date), expiration notification, no-change notification |
+| **References to Secrets Manager** | `/aws/reference/secretsmanager/<secret-name>` — Parameter Store transparently resolves to the secret. Lets your app read everything from one API |
+| **Integrations** | ECS task definitions (`valueFrom`), Lambda env vars, CodeBuild, CloudFormation dynamic references (`{{resolve:ssm:...}}`), EC2 user data |
+
+### Standard vs Advanced Tier — When to Upgrade
+
+| | Standard (free) | Advanced ($0.05/param/month) |
+| - | --------------- | ---------------------------- |
+| Max parameters per account/region | 10,000 | 100,000 |
+| Max value size | 4 KB | 8 KB |
+| Parameter policies | ❌ | ✅ (expiration, notification) |
+| Change notifications via EventBridge | ❌ | ✅ |
+
+**Decision rule:** Standard for almost everything. Only go Advanced if you need (a) > 10,000 params, (b) > 4 KB values, or (c) auto-expiration / change notifications.
+
+### Common Patterns
+
+#### Hierarchical configuration with `GetParametersByPath`
+
+```
+/myapp/prod/db/host        → "db.example.com"
+/myapp/prod/db/port        → "5432"
+/myapp/prod/db/username    → "appuser"
+/myapp/prod/feature-flags/dark-mode → "enabled"
+/myapp/prod/api/timeout-ms → "5000"
+```
+
+App calls `ssm:GetParametersByPath(Path="/myapp/prod/")` once at startup and gets the whole tree — cheap, fast, structured.
+
+#### The hybrid pattern (config in Parameter Store, secrets in Secrets Manager)
+
+```
+Parameter Store (free, hierarchical)
+├── /myapp/prod/db/host       → "db.example.com"
+├── /myapp/prod/db/port       → "5432"
+├── /myapp/prod/db/username   → "appuser"
+└── /myapp/prod/db/password   → /aws/reference/secretsmanager/myapp-prod-db-pwd
+
+Secrets Manager (paid, rotating)
+└── myapp-prod-db-pwd          → actual rotating password, auto-rotated every 30 days
+```
+
+The app reads everything from Parameter Store; rotating secrets are transparently resolved from Secrets Manager.
+
+#### Latest AMI lookup (public parameter)
+
+```bash
+aws ssm get-parameter \
+  --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64 \
+  --query 'Parameter.Value' --output text
+```
+
+Used in CloudFormation / Terraform / launch templates so you don't hard-code stale AMI IDs.
+
+### Secrets Manager vs Parameter Store — the Comparison
+
+The exam decision most people get wrong:
+
+| Feature | Parameter Store | Secrets Manager |
+| ------- | --------------- | --------------- |
+| **Pricing** | Standard: **free** (≤10,000). Advanced: $0.05/param/month | **$0.40/secret/month** + API call charges |
+| **Max value size** | 4 KB (Standard) / 8 KB (Advanced) | **64 KB** |
+| **Built-in rotation** | ❌ DIY with EventBridge + Lambda | ✅ **Native** for RDS / Aurora / DocumentDB / Redshift |
+| **Cross-account resource policy** | ❌ IAM only | ✅ Native |
+| **Multi-region replication** | ❌ DIY | ✅ Native |
+| **Hierarchical paths** | ✅ `/prod/db/password` | ❌ Flat namespace |
+| **Versioning** | ✅ up to 100 versions | ✅ with staging labels |
+| **Generated random passwords** | ❌ | ✅ `GetRandomPassword` |
+| **Stores arbitrary config + secrets** | ✅ Mix freely | ❌ Secrets only |
+| **Public parameters** (AWS-published) | ✅ | ❌ |
+
+#### The decision rule
+
+```
+Does the value need automatic rotation managed by AWS?
+  ├── YES → Secrets Manager
+  └── NO  → Does it need cross-account resource policies, multi-region replication,
+            or > 8 KB values?
+              ├── YES → Secrets Manager
+              └── NO  → Parameter Store Standard (free)
+```
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Use Secrets Manager for every config value"* → expensive at scale; **Parameter Store** is free for config
+- *"Store rotating DB credentials in Parameter Store"* → no native rotation; use **Secrets Manager**, or reference from Parameter Store
+- *"Hit Parameter Store on every Lambda invocation"* → rate limits + cold-start latency; cache locally or use Lambda extensions
+- *"Use Advanced tier for everything"* → unnecessary cost; Standard is enough for most params
+- *"Hard-code AMI IDs"* → use **public Parameter Store parameters** for latest-AMI lookup
+- *"Flat parameter names like `prod_db_host`"* → use hierarchical paths so `GetParametersByPath` works
+
+### Exam Triggers
+
+- *"Cheapest way to store 500 config values"* → **Parameter Store Standard** (free)
+- *"Fetch a whole tree of app config in one call"* → **`GetParametersByPath`**
+- *"Store latest Amazon Linux AMI by name"* → **Parameter Store public parameter** (`/aws/service/ami-amazon-linux-latest/...`)
+- *"Reference a Secrets Manager secret from Parameter Store"* → **`/aws/reference/secretsmanager/<name>`** syntax
+- *"Auto-expire a parameter after a date"* → **Parameter Store Advanced tier policy**
+- *"Notify on parameter change"* → **Advanced tier + EventBridge**
+- *"Inject config into ECS task definition without code changes"* → **`valueFrom` referencing Parameter Store** (or Secrets Manager)
+- *"App needs both config and rotating DB password"* → **Hybrid: Parameter Store for config + reference to Secrets Manager**
+
+**The 80/20:** *Parameter Store = part of SSM, **free up to 10,000 params** on Standard tier, hierarchical paths (`/app/env/key`), three types (String / StringList / SecureString-KMS). Use for **config + non-rotating secrets**. Pair with Secrets Manager via `/aws/reference/secretsmanager/...` reference syntax so apps read everything from one API but rotating secrets are managed by Secrets Manager. **Advanced tier** ($0.05/param/month) only when you need >10,000 params, >4 KB values, expiration policies, or change notifications. Public parameters give you AWS-published values like latest AMIs.*
 
 ## Amazon GuardDuty
 
