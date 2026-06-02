@@ -158,20 +158,39 @@
   - [Common Finding Types (worth recognising on the exam)](#common-finding-types-worth-recognising-on-the-exam)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-18)
   - [Exam Triggers](#exam-triggers-18)
+- [Amazon Inspector](#amazon-inspector)
+  - [What Inspector is NOT](#what-inspector-is-not)
+  - [Resource Types and Scan Modes](#resource-types-and-scan-modes)
+  - [Inspector v1 vs v2 — the historical context](#inspector-v1-vs-v2--the-historical-context)
+  - [How EC2 Scanning Actually Flows](#how-ec2-scanning-actually-flows)
+  - [ECR and Lambda — fully agentless (no choice to make)](#ecr-and-lambda--fully-agentless-no-choice-to-make)
+  - [Inspector vs GuardDuty (the comparison the exam loves)](#inspector-vs-guardduty-the-comparison-the-exam-loves)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-19)
+  - [Exam Triggers](#exam-triggers-19)
+- [Amazon Macie](#amazon-macie)
+  - [What Macie is NOT](#what-macie-is-not)
+  - [The Two Layers of Macie](#the-two-layers-of-macie)
+  - [What Macie Can Detect (Managed Data Identifiers)](#what-macie-can-detect-managed-data-identifiers)
+  - [How a Macie Scan Actually Flows](#how-a-macie-scan-actually-flows)
+  - [Why "Just S3"?](#why-just-s3)
+  - [Multi-account: Same Delegated Admin Pattern](#multi-account-same-delegated-admin-pattern)
+  - [The Trio Together](#the-trio-together)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-20)
+  - [Exam Triggers](#exam-triggers-20)
 - [AWS Security Hub](#aws-security-hub)
   - [What Security Hub is NOT](#what-security-hub-is-not)
   - [Core Concepts](#core-concepts-8)
   - [How Security Hub Pulls It All Together](#how-security-hub-pulls-it-all-together)
   - [Compliance Standards — the "what controls am I passing?" angle](#compliance-standards--the-what-controls-am-i-passing-angle)
-  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-19)
-  - [Exam Triggers](#exam-triggers-19)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-21)
+  - [Exam Triggers](#exam-triggers-21)
 - [AWS WAF (Web Application Firewall)](#aws-waf-web-application-firewall)
   - [What WAF is NOT](#what-waf-is-not)
   - [Core Concepts](#core-concepts-9)
   - [How a WAF Request Actually Flows](#how-a-waf-request-actually-flows)
   - [Where to Attach a Web ACL (and Why It Matters)](#where-to-attach-a-web-acl-and-why-it-matters)
-  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-20)
-  - [Exam Triggers](#exam-triggers-20)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-22)
+  - [Exam Triggers](#exam-triggers-22)
 - [AWS Shield + DDoS Resiliency (BP1–BP7)](#aws-shield--ddos-resiliency-bp1bp7)
   - [The BP1–BP7 Framework](#the-bp1bp7-framework)
   - [How the BPs Stack — Layered Defence Picture](#how-the-bps-stack--layered-defence-picture)
@@ -180,8 +199,8 @@
   - [How Shield Advanced Solves EDoS — Cost Protection](#how-shield-advanced-solves-edos--cost-protection)
   - [Architectural Mitigations (without Shield Advanced)](#architectural-mitigations-without-shield-advanced)
   - [When to Pay for Shield Advanced](#when-to-pay-for-shield-advanced)
-  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-21)
-  - [Exam Triggers](#exam-triggers-21)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-23)
+  - [Exam Triggers](#exam-triggers-23)
   - [The Mental Model](#the-mental-model)
 - [ECS (Elastic Container Service)](#ecs-elastic-container-service)
   - [ECS vs ASG + EC2](#ecs-vs-asg--ec2)
@@ -3689,6 +3708,265 @@ Does the value need automatic rotation managed by AWS?
 - *"Auto-quarantine compromised instance on finding"* → **GuardDuty finding → EventBridge → Lambda**
 
 **The 80/20:** *GuardDuty = AWS-native, agentless, ML-driven threat detection. Always-on sources: CloudTrail + VPC Flow + DNS. Optional add-ons: S3 / EKS / Malware / RDS / Lambda Protection + Runtime Monitoring. Emits **findings** (severity Low/Medium/High, with finding-type strings like `Backdoor:EC2/C&CActivity.B`). Every finding hits EventBridge → automate response (SNS, Lambda, Security Hub). For multi-account: **delegated administrator** in Organizations. Pairs with Security Hub (aggregation) and Detective (investigation).*
+
+## Amazon Inspector
+
+**Anchored as GuardDuty's sibling — but for software, not behaviour.**
+
+> *Inspector = "is this **software** dangerous?" (vulnerability scanner — mostly agentless).*
+> *GuardDuty = "is this **behaviour** dangerous?" (threat detector — mostly agentless).*
+
+Both lean agentless for the convenience win. Inspector needs an "agent" only on EC2, and even there it piggybacks on **SSM Agent** (already on AWS AMIs) rather than asking you to install something new.
+
+### What Inspector is NOT
+
+| Question | Service | Not Inspector because... |
+| -------- | ------- | ------------------------ |
+| *"Detect threats / suspicious behaviour"* | **Amazon GuardDuty** | GuardDuty = behavioural; Inspector = static analysis for known CVEs |
+| *"Classify sensitive data (PII / PHI) in S3"* | **Amazon Macie** | Macie inspects *data content*; Inspector inspects *software vulnerabilities* |
+| *"Investigate an incident across logs"* | **Amazon Detective** | Detective is forensic deep-dive; Inspector tells you what's vulnerable |
+| *"Compliance configuration evaluation"* | **AWS Config + Conformance Packs** | Config = is this resource configured correctly. Inspector = does this resource have known CVEs |
+| *"Aggregate findings org-wide"* | **AWS Security Hub** | Security Hub *consumes* Inspector findings; Inspector is one source |
+| *"Scan source code for vulnerabilities (SAST)"* | **CodeGuru Security / Amazon Q Developer** | Inspector scans *built artefacts and runtime images*, not source code |
+
+### Resource Types and Scan Modes
+
+Inspector v2 covers **three resource types**, with different scan mechanisms per type:
+
+| Resource | Scan mode | Agent? |
+| -------- | --------- | ------ |
+| **EC2 instances** | **Hybrid** — agent-based via SSM Agent by default, **falls back to agentless EBS snapshot scanning** when SSM isn't available | SSM Agent (piggybacked, not dedicated) |
+| **ECR container images** | **Fully agentless** server-side scan at push time + continuous re-scan when new CVEs are published | None |
+| **AWS Lambda functions** | **Fully agentless** scan of function code + layers + dependencies | None |
+
+So Inspector v2 is **mostly agentless**, with EC2 being the only exception — and even that doesn't need a dedicated Inspector agent.
+
+### Inspector v1 vs v2 — the historical context
+
+If a question mentions "Amazon Inspector" without a version, it's **v2**. v1 (Classic) is largely deprecated.
+
+| | **Inspector v1 (Classic)** | **Inspector v2 (current)** |
+| - | -------------------------- | --------------------------- |
+| Status | Deprecated — AWS pushed everyone to v2 | The exam answer |
+| Coverage | **EC2 only** | EC2 + ECR + Lambda |
+| Scanning model | **Point-in-time assessment runs** (you scheduled them) | **Continuous** scanning |
+| Agent | **Required dedicated Inspector Agent** on every EC2 | SSM Agent (already there); ECR + Lambda agentless |
+| Rules | Picked "rules packages" (CIS, OS Best Practices) | Built-in vulnerability database (CVEs) + network reachability |
+
+**Exam trap:** if a question says *"install the Inspector Agent on each EC2"* → that's v1, and the right answer is *"migrate to Inspector v2 which uses SSM"*.
+
+### How EC2 Scanning Actually Flows
+
+The dual-mode behaviour is the most testable Inspector detail:
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│  Mode 1: Agent-based (default when SSM is healthy)            │
+│                                                                │
+│  1. EC2 instance has SSM Agent (AWS AMIs include it)          │
+│         ↓                                                      │
+│  2. Inspector uses SSM to pull:                                │
+│       - Installed packages + versions                          │
+│       - Network configuration                                  │
+│         ↓                                                      │
+│  3. Inspector matches against CVE database                     │
+│         ↓                                                      │
+│  4. Findings emitted (continuous — re-evaluated on new CVEs)   │
+│                                                                │
+│  Pros: deep package-level visibility, real-time                │
+│  Cons: requires SSM Agent working + IAM role for SSM           │
+└───────────────────────────────────────────────────────────────┘
+
+┌───────────────────────────────────────────────────────────────┐
+│  Mode 2: Agentless (newer, 2023+)                              │
+│                                                                │
+│  1. Inspector takes an EBS snapshot of the instance's volume   │
+│         ↓                                                      │
+│  2. Snapshot mounted in Inspector's analysis environment       │
+│         ↓                                                      │
+│  3. File system + package metadata scanned offline             │
+│         ↓                                                      │
+│  4. Snapshot deleted; findings emitted                         │
+│                                                                │
+│  Pros: works without SSM, works on stopped instances,          │
+│        works on instances you can't modify (third-party AMIs)  │
+│  Cons: less rich (no runtime info), snapshot cost              │
+└───────────────────────────────────────────────────────────────┘
+```
+
+**Hybrid mode (default in v2):** Inspector uses agent-based when SSM is reachable, automatically falls back to agentless EBS snapshot scanning when it isn't. The "set and forget" answer.
+
+### ECR and Lambda — fully agentless (no choice to make)
+
+**ECR enhanced scanning:**
+- Image pushed to ECR → Inspector pulls metadata + scans for CVEs in OS packages + application dependencies (Python, Node, Java, Go, .NET, Ruby)
+- **Re-scans existing images** when new CVEs are published — older images become "newly vulnerable" without anyone re-pushing
+- No agent, no SSM, nothing to install
+
+**Lambda standard scanning:**
+- Inspector analyses the function's code + layers + dependencies
+- Identifies CVEs in third-party libraries
+- Lambda is fully managed — there's no instance to put an agent on
+
+### Inspector vs GuardDuty (the comparison the exam loves)
+
+| | **Amazon Inspector** | **Amazon GuardDuty** |
+| - | -------------------- | -------------------- |
+| **What it answers** | *"Do I have any known vulnerabilities?"* (CVEs, misconfigs) | *"Is something behaving maliciously?"* (threat detection) |
+| **Method** | Static analysis of installed software | Behavioural analysis of audit / network / DNS traffic |
+| **EC2** | Agent (SSM-based) **or** agentless (EBS snapshot) | Agentless via VPC Flow / CloudTrail / DNS. Optional Runtime Monitoring is agent-based |
+| **ECR** | Fully agentless image scan | N/A |
+| **Lambda** | Fully agentless code scan | Agentless (Lambda Protection — network activity) |
+| **Continuous?** | Continuous re-evaluation against latest CVE DB | Continuous behavioural analysis |
+| **Multi-account** | Delegated admin in Organizations | Delegated admin in Organizations |
+| **Output** | Findings → Security Hub | Findings → Security Hub |
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Install the Inspector Agent on each EC2"* → v1 thinking; v2 uses **SSM Agent** (already there)
+- *"Use Inspector to detect compromised instances making C2 calls"* → wrong service; that's **GuardDuty**
+- *"Use Inspector to scan S3 for sensitive data"* → wrong service; that's **Macie**
+- *"Scan container images only at push time"* → enable **continuous re-scan** so newly-disclosed CVEs flag older images
+- *"Run Inspector v1 assessment runs every month"* → v1 is point-in-time and deprecated; v2 is continuous
+- *"Inspector for Lambda needs an agent / layer"* → Lambda scanning is **fully agentless** — Inspector reads the code from the Lambda service
+- *"Skip SSM Agent on EC2 to save cost"* → you lose the rich agent-based scan; agentless EBS scan still works as fallback but with less detail
+
+### Exam Triggers
+
+- *"Continuous CVE scanning for EC2 / container images / Lambda"* → **Amazon Inspector v2**
+- *"Scan EC2 for OS package vulnerabilities without installing a new agent"* → **Inspector v2** uses **SSM Agent**
+- *"Scan EC2 instances you can't put SSM on (third-party AMI)"* → **Inspector v2 agentless EBS snapshot scanning**
+- *"Continuous CVE scanning for container images"* → **Inspector v2 ECR enhanced scanning** (agentless)
+- *"Find vulnerable dependencies in Lambda function code"* → **Inspector v2 Lambda standard scanning** (agentless)
+- *"Aggregate Inspector findings org-wide"* → **Security Hub + Inspector delegated admin**
+- *"Migrating from Inspector Classic — what changes?"* → no more dedicated agent (uses SSM), continuous instead of point-in-time, adds ECR + Lambda
+- *"Why is this old container image suddenly showing a finding?"* → **Inspector re-scans existing ECR images when new CVEs are disclosed**
+
+**The Mental Model:**
+
+> *Inspector = "is this **software** dangerous?" (vulnerability scanner — mostly agentless).*
+> *GuardDuty = "is this **behaviour** dangerous?" (threat detector — mostly agentless).*
+> *Both lean agentless. Inspector needs an "agent" only on EC2, and even there it piggybacks on SSM Agent rather than asking you to install anything new.*
+
+**The 80/20:** *Inspector v2 = continuous vulnerability scanner for **EC2 + ECR + Lambda**. ECR and Lambda are fully agentless. EC2 uses **SSM Agent** by default and falls back to **agentless EBS snapshot scanning** when SSM isn't available — no dedicated Inspector agent like the deprecated v1 had. Findings flow into **Security Hub** alongside GuardDuty's. The exam frames Inspector vs GuardDuty as "vulnerabilities (software) vs threats (behaviour)" — both important, both delegated-admin compatible.*
+
+## Amazon Macie
+
+**Anchored as the third sibling — but for S3 data, not behaviour or software.**
+
+> *GuardDuty = "is this **behaviour** dangerous?" (threat detector).*
+> *Inspector = "is this **software** dangerous?" (vulnerability scanner).*
+> *Macie = "is there **sensitive data** at risk in our S3 buckets?" (data classifier).*
+
+**Macie's one job: find and classify sensitive data in S3, and flag exposed buckets.** It doesn't scan EBS, EFS, RDS, DynamoDB, or anything else — **S3 only**. That's deliberate: S3 is where the *"company leaks 10M records"* breaches happen, so Macie targets the highest-blast-radius surface.
+
+### What Macie is NOT
+
+| Question | Service | Not Macie because... |
+| -------- | ------- | -------------------- |
+| *"Detect threats / malicious behaviour"* | **Amazon GuardDuty** | Macie classifies *data*; GuardDuty detects *behaviour* |
+| *"Find software vulnerabilities (CVEs)"* | **Amazon Inspector** | Inspector scans software; Macie scans data content |
+| *"Encrypt the data"* | **AWS KMS** | Macie finds where sensitive data lives; KMS encrypts it |
+| *"Block public S3 access at account level"* | **S3 Block Public Access** | Macie *reports* on it; BPA *enforces* it |
+| *"Scan PII in a database (RDS / DynamoDB)"* | **No native AWS service** | Export to S3, then Macie — or use a third-party DSPM tool |
+| *"Real-time DLP (block sensitive data uploads inline)"* | **No native AWS** | Macie is periodic discovery, not inline DLP |
+| *"Aggregate findings org-wide"* | **AWS Security Hub** | Security Hub *consumes* Macie findings as one source |
+
+### The Two Layers of Macie
+
+| Layer | What it does | Cost |
+| ----- | ------------ | ---- |
+| **Bucket-level posture monitoring** | Continuously evaluates every S3 bucket for: public accessibility, unencrypted, externally shared, missing Block Public Access | **Free** |
+| **Sensitive data discovery jobs** | Scans buckets/prefixes you target. Uses ML + regex + managed identifiers to find PII, PHI, credentials, financial data | **$1 per GB scanned** (1 GB/month free per account) |
+
+The pricing is the gotcha — bucket monitoring is virtually free, but **actually scanning content is expensive**. Most orgs target Macie at specific high-risk buckets, not the entire data lake.
+
+### What Macie Can Detect (Managed Data Identifiers)
+
+Macie ships with **150+ pre-built identifiers**:
+
+| Category | Examples |
+| -------- | -------- |
+| **Personal** | Names, addresses, dates of birth, phone numbers, email addresses |
+| **National IDs** | US SSN, UK National Insurance, French INSEE, German BSN, Canadian SIN |
+| **Financial** | Credit card numbers (with Luhn validation), IBAN, SWIFT codes, US bank routing |
+| **Health** | Medical record numbers, NHS numbers, HIPAA-relevant identifiers |
+| **Credentials** | AWS access keys, secret keys, SSH private keys, OAuth tokens, JWTs |
+| **Code** | API keys, database connection strings |
+
+Plus **custom data identifiers** with regex + keyword proximity (e.g. *"a 9-digit number within 50 characters of the word 'customer ID'"*).
+
+### How a Macie Scan Actually Flows
+
+```
+1. Enable Macie in the account / via Organizations delegated admin
+       ↓
+2. Macie immediately starts free bucket-level posture monitoring
+   (public buckets, unencrypted, externally shared → findings emitted)
+       ↓
+3. You configure a "sensitive data discovery job":
+     - Target: specific buckets, or all buckets matching a tag
+     - Schedule: one-time or recurring (daily/weekly)
+     - Identifiers: which built-in + custom rules to apply
+       ↓
+4. Macie reads objects from target buckets (sample or full scan)
+       ↓
+5. ML + regex + identifiers classify each object's contents
+       ↓
+6. Findings emitted with severity + sample of matched content:
+     - "Bucket X contains 1,200 objects with credit card numbers"
+     - "Object Y in bucket Z contains AWS access keys"
+       ↓
+7. Findings → EventBridge → Security Hub / SNS / Lambda for automation
+```
+
+### Why "Just S3"?
+
+Historically, the biggest data leak headlines come from S3 misconfigurations — public buckets, forgotten data dumps, dev environments containing prod data. Macie targets the surface with the worst track record.
+
+For other data stores there's **no native AWS PII scanner**:
+- **RDS / Aurora** — no Macie equivalent; export to S3 and scan, or use third-party DSPM tools (Cyera, BigID, Theom)
+- **DynamoDB** — same; export + scan
+- **EBS** — no equivalent; snapshot, mount, scan manually
+- **EFS / FSx** — no equivalent
+
+This is a known gap in AWS's data security story. Third-party DSPM (Data Security Posture Management) tools fill it.
+
+### Multi-account: Same Delegated Admin Pattern
+
+Like GuardDuty / Inspector / Security Hub, Macie supports a **delegated administrator** in Organizations. One security account sees Macie findings across all org accounts.
+
+### The Trio Together
+
+| Service | "Is this ___ dangerous?" | What it scans | Output |
+| ------- | ------------------------ | ------------- | ------ |
+| **GuardDuty** | Is this **behaviour** dangerous? | CloudTrail + VPC Flow + DNS (+ optional sources) | Behavioural findings → Security Hub |
+| **Inspector** | Is this **software** dangerous? | EC2 + ECR + Lambda | CVE findings → Security Hub |
+| **Macie** | Is there **sensitive data** at risk? | S3 buckets + objects | Data-classification findings → Security Hub |
+
+All three are AWS-native, mostly agentless, multi-account-aware via delegated admin, and feed Security Hub. Together they cover threats, vulnerabilities, and data exposure for an AWS environment.
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Use Macie to scan RDS for PII"* → Macie is **S3-only**; export to S3 first, or use a third-party DSPM tool
+- *"Run a full Macie scan across the entire data lake monthly"* → at $1/GB, this can cost more than the data is worth; **target specific high-risk buckets**
+- *"Use Macie to detect threats"* → wrong service; that's **GuardDuty**
+- *"Use Macie to find vulnerable packages"* → wrong service; that's **Inspector**
+- *"Use Macie as a real-time DLP to block sensitive uploads"* → Macie is **periodic discovery**, not inline. For inline blocking, you'd need an API Gateway / Lambda layer with custom logic, or a third-party DLP product
+- *"Skip Macie bucket monitoring"* → bucket-level posture monitoring is **free** and gives you "which buckets are public/unencrypted" — always-on value
+
+### Exam Triggers
+
+- *"Find PII / credit card numbers / SSNs in S3"* → **Amazon Macie**
+- *"Detect AWS access keys accidentally committed to S3"* → **Macie** (built-in identifier for AWS keys)
+- *"Identify publicly exposed S3 buckets cheaply"* → **Macie bucket posture monitoring** (free)
+- *"HIPAA compliance — find PHI in our data lake"* → **Macie with health identifiers**
+- *"Continuously classify sensitive data across all org accounts"* → **Macie + Organizations delegated admin**
+- *"Scan PII in RDS / DynamoDB"* → **Not native AWS** — export to S3, then Macie (or third-party DSPM)
+- *"Custom detection for our internal customer-ID format"* → **Macie custom data identifier** (regex + keyword proximity)
+- *"Why is Macie so expensive in our data lake?"* → $1/GB scanned; target specific buckets, not everything
+
+**The 80/20:** *Macie = sensitive-data classifier for **S3 only**. Two layers: **free bucket-level posture monitoring** (public/unencrypted/exposed buckets) + **paid sensitive data discovery jobs** ($1/GB scanned) using **150+ built-in identifiers** (PII, PHI, credentials, financial) plus custom regex+keyword rules. Findings flow into **Security Hub** alongside GuardDuty and Inspector. Multi-account via **delegated admin**. The trio: **GuardDuty (behaviour) + Inspector (software) + Macie (data)** = AWS's native detection coverage.*
 
 ## AWS Security Hub
 
