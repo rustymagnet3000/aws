@@ -120,44 +120,62 @@
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-13)
   - [Exam Triggers](#exam-triggers-13)
   - [Pricing Notes](#pricing-notes)
+- [AWS STS (Security Token Service)](#aws-sts-security-token-service)
+  - [What STS is NOT](#what-sts-is-not)
+  - [Core Concepts](#core-concepts-3)
+  - [How AssumeRole Actually Flows](#how-assumerole-actually-flows)
+  - [The External ID Pattern (Cross-Account from Third Parties)](#the-external-id-pattern-cross-account-from-third-parties)
+  - [Role Chaining Limits](#role-chaining-limits)
+  - [ABAC with Session Tags](#abac-with-session-tags)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-14)
+  - [Exam Triggers](#exam-triggers-14)
+- [Amazon Cognito](#amazon-cognito)
+  - [What Cognito is NOT](#what-cognito-is-not)
+  - [The Two Cognito Products (Constantly Confused)](#the-two-cognito-products-constantly-confused)
+  - [User Pool Deep Dive](#user-pool-deep-dive)
+  - [Identity Pool Deep Dive](#identity-pool-deep-dive)
+  - [When to Use Cognito vs Alternatives](#when-to-use-cognito-vs-alternatives)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-15)
+  - [Exam Triggers](#exam-triggers-15)
 - [AWS KMS (Key Management Service)](#aws-kms-key-management-service)
   - [What KMS is NOT](#what-kms-is-not)
-  - [Core Concepts](#core-concepts-3)
+  - [Core Concepts](#core-concepts-4)
   - [Envelope Encryption — How It Actually Flows](#envelope-encryption--how-it-actually-flows)
   - [Common Use Cases (where KMS hides underneath)](#common-use-cases-where-kms-hides-underneath)
   - [Key Policies vs IAM Policies — the Gotcha](#key-policies-vs-iam-policies--the-gotcha)
-  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-14)
-  - [Exam Triggers](#exam-triggers-14)
+  - [When to Use CloudHSM Instead](#when-to-use-cloudhsm-instead)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-16)
+  - [Exam Triggers](#exam-triggers-16)
 - [AWS Certificate Manager (ACM)](#aws-certificate-manager-acm)
   - [What ACM is NOT](#what-acm-is-not)
-  - [Core Concepts](#core-concepts-4)
+  - [Core Concepts](#core-concepts-5)
   - [How DNS Validation Actually Flows](#how-dns-validation-actually-flows)
   - [Where You Can Attach an ACM Cert](#where-you-can-attach-an-acm-cert)
   - [ACM Private CA (PCA) — the Internal mTLS Story](#acm-private-ca-pca--the-internal-mtls-story)
-  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-15)
-  - [Exam Triggers](#exam-triggers-15)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-17)
+  - [Exam Triggers](#exam-triggers-17)
 - [AWS Secrets Manager](#aws-secrets-manager)
   - [What Secrets Manager is NOT](#what-secrets-manager-is-not)
-  - [Core Concepts](#core-concepts-5)
+  - [Core Concepts](#core-concepts-6)
   - [How Rotation Actually Flows (numbered)](#how-rotation-actually-flows-numbered)
   - [Single-User vs Alternating-User Rotation](#single-user-vs-alternating-user-rotation)
-  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-16)
-  - [Exam Triggers](#exam-triggers-16)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-18)
+  - [Exam Triggers](#exam-triggers-18)
 - [AWS Systems Manager Parameter Store](#aws-systems-manager-parameter-store)
   - [What Parameter Store is NOT](#what-parameter-store-is-not)
-  - [Core Concepts](#core-concepts-6)
+  - [Core Concepts](#core-concepts-7)
   - [Standard vs Advanced Tier — When to Upgrade](#standard-vs-advanced-tier--when-to-upgrade)
   - [Common Patterns](#common-patterns)
   - [Secrets Manager vs Parameter Store — the Comparison](#secrets-manager-vs-parameter-store--the-comparison)
-  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-17)
-  - [Exam Triggers](#exam-triggers-17)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-19)
+  - [Exam Triggers](#exam-triggers-19)
 - [Amazon GuardDuty](#amazon-guardduty)
   - [What GuardDuty is NOT](#what-guardduty-is-not)
-  - [Core Concepts](#core-concepts-7)
+  - [Core Concepts](#core-concepts-8)
   - [How GuardDuty Actually Detects Things](#how-guardduty-actually-detects-things)
   - [Common Finding Types (worth recognising on the exam)](#common-finding-types-worth-recognising-on-the-exam)
-  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-18)
-  - [Exam Triggers](#exam-triggers-18)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-20)
+  - [Exam Triggers](#exam-triggers-20)
 - [Amazon Inspector](#amazon-inspector)
   - [What Inspector is NOT](#what-inspector-is-not)
   - [Resource Types and Scan Modes](#resource-types-and-scan-modes)
@@ -165,8 +183,8 @@
   - [How EC2 Scanning Actually Flows](#how-ec2-scanning-actually-flows)
   - [ECR and Lambda — fully agentless (no choice to make)](#ecr-and-lambda--fully-agentless-no-choice-to-make)
   - [Inspector vs GuardDuty (the comparison the exam loves)](#inspector-vs-guardduty-the-comparison-the-exam-loves)
-  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-19)
-  - [Exam Triggers](#exam-triggers-19)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-21)
+  - [Exam Triggers](#exam-triggers-21)
 - [Amazon Macie](#amazon-macie)
   - [What Macie is NOT](#what-macie-is-not)
   - [The Two Layers of Macie](#the-two-layers-of-macie)
@@ -175,22 +193,22 @@
   - [Why "Just S3"?](#why-just-s3)
   - [Multi-account: Same Delegated Admin Pattern](#multi-account-same-delegated-admin-pattern)
   - [The Trio Together](#the-trio-together)
-  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-20)
-  - [Exam Triggers](#exam-triggers-20)
-- [AWS Security Hub](#aws-security-hub)
-  - [What Security Hub is NOT](#what-security-hub-is-not)
-  - [Core Concepts](#core-concepts-8)
-  - [How Security Hub Pulls It All Together](#how-security-hub-pulls-it-all-together)
-  - [Compliance Standards — the "what controls am I passing?" angle](#compliance-standards--the-what-controls-am-i-passing-angle)
-  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-21)
-  - [Exam Triggers](#exam-triggers-21)
-- [AWS WAF (Web Application Firewall)](#aws-waf-web-application-firewall)
-  - [What WAF is NOT](#what-waf-is-not)
-  - [Core Concepts](#core-concepts-9)
-  - [How a WAF Request Actually Flows](#how-a-waf-request-actually-flows)
-  - [Where to Attach a Web ACL (and Why It Matters)](#where-to-attach-a-web-acl-and-why-it-matters)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-22)
   - [Exam Triggers](#exam-triggers-22)
+- [AWS Security Hub](#aws-security-hub)
+  - [What Security Hub is NOT](#what-security-hub-is-not)
+  - [Core Concepts](#core-concepts-9)
+  - [How Security Hub Pulls It All Together](#how-security-hub-pulls-it-all-together)
+  - [Compliance Standards — the "what controls am I passing?" angle](#compliance-standards--the-what-controls-am-i-passing-angle)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-23)
+  - [Exam Triggers](#exam-triggers-23)
+- [AWS WAF (Web Application Firewall)](#aws-waf-web-application-firewall)
+  - [What WAF is NOT](#what-waf-is-not)
+  - [Core Concepts](#core-concepts-10)
+  - [How a WAF Request Actually Flows](#how-a-waf-request-actually-flows)
+  - [Where to Attach a Web ACL (and Why It Matters)](#where-to-attach-a-web-acl-and-why-it-matters)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-24)
+  - [Exam Triggers](#exam-triggers-24)
 - [AWS Shield + DDoS Resiliency (BP1–BP7)](#aws-shield--ddos-resiliency-bp1bp7)
   - [The BP1–BP7 Framework](#the-bp1bp7-framework)
   - [How the BPs Stack — Layered Defence Picture](#how-the-bps-stack--layered-defence-picture)
@@ -199,9 +217,13 @@
   - [How Shield Advanced Solves EDoS — Cost Protection](#how-shield-advanced-solves-edos--cost-protection)
   - [Architectural Mitigations (without Shield Advanced)](#architectural-mitigations-without-shield-advanced)
   - [When to Pay for Shield Advanced](#when-to-pay-for-shield-advanced)
-  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-23)
-  - [Exam Triggers](#exam-triggers-23)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-25)
+  - [Exam Triggers](#exam-triggers-25)
   - [The Mental Model](#the-mental-model)
+- [AWS Network Firewall + Firewall Manager](#aws-network-firewall--firewall-manager)
+  - [AWS Network Firewall](#aws-network-firewall)
+  - [AWS Firewall Manager](#aws-firewall-manager)
+  - [The Combined Mental Model](#the-combined-mental-model)
 - [ECS (Elastic Container Service)](#ecs-elastic-container-service)
   - [ECS vs ASG + EC2](#ecs-vs-asg--ec2)
   - [Key concepts](#key-concepts)
@@ -3179,6 +3201,279 @@ User identity lives in AD. Identity Center reads group membership from AD. Permi
 
 **The 80/20:** *AWS Directory Service umbrella covers three flavours: **Managed Microsoft AD** (real MS AD on AWS DCs, supports trusts/Group Policy/schema), **AD Connector** (proxy to existing on-prem AD), **Simple AD** (Samba-based, cheap, no Microsoft-specific features). For hybrid AD with trust → Managed AD. For "on-prem AD is the source of truth" → AD Connector. For "I just need a basic LDAP" → Simple AD. Combine any of these with **IAM Identity Center** to give AD users SSO into the AWS console across all org accounts. Trusts are Managed AD only. Watch out: AD ≠ IAM ≠ Cognito ≠ Identity Center — different identity layers.*
 
+## AWS STS (Security Token Service)
+
+**Anchored as the universal "give me temporary AWS credentials" service.** Every cross-account access, every federated login, every role assumption in AWS goes through STS underneath. Most AWS services don't expose it directly — they call it on your behalf — but understanding STS is what lets you reason about *who is allowed to do what, when, and for how long*.
+
+### What STS is NOT
+
+| Question | Service | Not STS because... |
+| -------- | ------- | ------------------ |
+| *"Manage IAM users / roles / policies"* | **IAM** | IAM defines the rules; STS *issues credentials* based on them |
+| *"Workforce SSO into the AWS Console"* | **IAM Identity Center** | Identity Center uses STS underneath; you don't call STS directly |
+| *"Authenticate end users of my app"* | **Amazon Cognito** | Cognito for app users; STS for AWS principals (though Cognito identity pools use STS) |
+| *"Store and rotate secrets"* | **AWS Secrets Manager** | Secrets are *long-lived secrets*; STS issues *short-lived AWS credentials* |
+| *"Active Directory authentication"* | **AWS Managed Microsoft AD** | Different identity layer entirely |
+
+### Core Concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Temporary credentials** | A bundle: `AccessKeyId` + `SecretAccessKey` + `SessionToken` + `Expiration`. The session token is what marks it as STS-issued (vs long-lived IAM user keys) |
+| **`AssumeRole`** | The workhorse. A principal (user or role) assumes an IAM role; STS issues temporary credentials for that role |
+| **`AssumeRoleWithSAML`** | SAML 2.0 federation — corporate IdP (Okta, ADFS, Entra ID) → STS → AWS console / API |
+| **`AssumeRoleWithWebIdentity`** | OIDC federation — Google, Facebook, Cognito, Kubernetes service accounts (IRSA) → STS |
+| **`GetSessionToken`** | Short-lived credentials for an IAM user (typically used to enforce MFA before sensitive actions) |
+| **`GetFederationToken`** | Older federation pattern; mostly replaced by `AssumeRoleWith*` variants |
+| **Session policies** | Inline policy passed *at AssumeRole time* that further restricts the role's permissions for that session only |
+| **External ID** | Cross-account assume-role guard — prevents the "confused deputy" attack |
+| **Source identity** | Propagates the original caller's identity across role chains (audit visibility) |
+| **Session tags** | Key/value pairs attached at AssumeRole time — used for **ABAC** (attribute-based access control) |
+| **Role chaining** | Assume role A → from A, assume role B. Limited to **1 hop** and **1-hour** max session |
+| **Session duration** | Default 1 hour; configurable per role via `MaxSessionDuration` (up to 12 hours) |
+
+### How AssumeRole Actually Flows
+
+```
+1. Principal calls sts:AssumeRole(
+     RoleArn="arn:aws:iam::ACCT-B:role/CrossAccountAdmin",
+     RoleSessionName="alice-session",
+     ExternalId="...",          ← if cross-account third-party
+     SerialNumber + TokenCode,  ← if MFA required
+     DurationSeconds=3600       ← up to role's MaxSessionDuration
+   )
+       ↓
+2. STS validates the caller has sts:AssumeRole permission on the target role
+       ↓
+3. STS validates the role's TRUST POLICY allows this caller:
+     "Principal": { "AWS": "arn:aws:iam::ACCT-A:user/alice" }
+     "Condition": { "StringEquals": { "sts:ExternalId": "..." } }
+     "Condition": { "Bool": { "aws:MultiFactorAuthPresent": "true" } }
+       ↓
+4. STS returns temporary credentials:
+     {
+       "AccessKeyId":     "ASIA...",     ← note ASIA prefix = temporary
+       "SecretAccessKey": "...",
+       "SessionToken":    "FQoG...",     ← signs every request
+       "Expiration":      "2026-06-02T15:30:00Z"
+     }
+       ↓
+5. Caller uses temp creds for subsequent AWS API calls
+   (session token must be sent on EVERY request)
+       ↓
+6. When credentials expire → caller must AssumeRole again (refresh)
+```
+
+**Spot the temporary creds:** access key starts with `ASIA` (not `AKIA` for long-lived IAM user keys). Useful when debugging — you can tell at a glance which credentials a request used.
+
+### The External ID Pattern (Cross-Account from Third Parties)
+
+The **confused deputy problem**: a third-party SaaS (e.g. Datadog, Wiz) has many customers. If their assume-role permissions to *your* account aren't tied to a unique identifier, an attacker who's also their customer could trick the SaaS into doing things in your account.
+
+**The fix — external ID:**
+
+```json
+// In your account, the role's trust policy:
+{
+  "Effect": "Allow",
+  "Principal": { "AWS": "arn:aws:iam::THIRD-PARTY-ACCT:root" },
+  "Action": "sts:AssumeRole",
+  "Condition": {
+    "StringEquals": { "sts:ExternalId": "unique-string-generated-for-you" }
+  }
+}
+```
+
+The third party must pass the matching `ExternalId` on every `AssumeRole` call. Without it, no access — even with valid AWS credentials.
+
+**Exam trigger:** *"Cross-account assume role for a third-party service"* → **always use external ID**.
+
+### Role Chaining Limits
+
+A common gotcha:
+
+```
+User in Account A
+     ↓ AssumeRole
+Role 1 in Account A (session: 8 hours)
+     ↓ AssumeRole
+Role 2 in Account B (session: capped at 1 hour, regardless of role's MaxSessionDuration)
+     ↓ AssumeRole
+Role 3 in Account C → ❌ BLOCKED — role chain limit reached (max 1 hop after initial assumption)
+```
+
+**Rules:**
+- Max **1 hop** in a chain (counting from the first assumed role)
+- Chained sessions max out at **1 hour** (overrides MaxSessionDuration)
+
+If you see a question about *"the role chain failed after 1 hour"* — that's why.
+
+### ABAC with Session Tags
+
+Session tags let you implement **attribute-based access control** dynamically:
+
+```
+1. IdP / federation issues identity with attributes: dept=engineering
+       ↓
+2. AssumeRoleWithSAML passes session tag: PrincipalTag/dept=engineering
+       ↓
+3. IAM policy on resources:
+     "Condition": {
+       "StringEquals": { "aws:ResourceTag/dept": "${aws:PrincipalTag/dept}" }
+     }
+       ↓
+4. Principal can only access resources tagged with the same dept value
+```
+
+One policy serves N departments — instead of N separate policies per dept. Big win at scale.
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Long-lived access keys for cross-account access"* → use **AssumeRole + temp creds**
+- *"IAM user in every account"* → use **AssumeRole + cross-account IAM role** (or migrate to IAM Identity Center)
+- *"Share access keys with third party"* → use **AssumeRole + external ID**
+- *"Hard-code access keys in code"* → use **IAM role for EC2 / Lambda / ECS task** — STS issues credentials automatically via the metadata service
+- *"Allow `Principal: *` in a role trust policy"* → catastrophic; anyone can assume the role. Always scope to specific accounts/principals
+- *"Try to chain through 3 roles for cross-org access"* → fails at hop 2 due to chaining limit
+- *"Use `GetFederationToken` for new SAML integrations"* → legacy; use `AssumeRoleWithSAML`
+
+### Exam Triggers
+
+- *"Cross-account access"* → **`AssumeRole`** with cross-account trust policy
+- *"Federate corporate users (Okta, ADFS, Entra ID) to AWS"* → **`AssumeRoleWithSAML`** (or IAM Identity Center for multi-account)
+- *"Federate mobile/web app users to AWS"* → **`AssumeRoleWithWebIdentity`** or **Cognito identity pool**
+- *"Third-party tool needs AWS access"* → **`AssumeRole` + External ID**
+- *"Temporary credentials with MFA enforcement"* → **`GetSessionToken`** with MFA token
+- *"Propagate user identity across role chains for audit"* → **session tags + source identity**
+- *"Why did my chained role session only last 1 hour?"* → **role chaining limit** (caps at 1h regardless of MaxSessionDuration)
+- *"Dynamic permissions based on user attributes"* → **session tags + ABAC**
+- *"How do EC2 / Lambda / ECS get credentials without keys?"* → **IAM role + STS issues temp creds via instance / container metadata service**
+- *"How do I tell if credentials are temporary?"* → **access key starts with `ASIA`** (vs `AKIA` for IAM user)
+
+**The 80/20:** *STS = the credential factory for everything in AWS. Every cross-account `AssumeRole`, every federated login (SAML / OIDC), every temporary credential goes through STS. Key APIs: **`AssumeRole`** (general), **`AssumeRoleWithSAML`** (corporate IdP), **`AssumeRoleWithWebIdentity`** (OIDC / Cognito), **`GetSessionToken`** (MFA-protected user creds). Always use **External ID** for cross-account third-party access. **Role chaining** is limited to 1 hop, 1-hour sessions. **Session tags** enable ABAC. Temporary access keys start with `ASIA` (long-lived IAM user keys start with `AKIA`). Most AWS services call STS for you (EC2 instance profile, Lambda execution role, ECS task role) — you rarely call it directly.*
+
+## Amazon Cognito
+
+**Anchored against Auth0 / Okta Customer Identity — but AWS-native, cheaper at scale, less polished.** Cognito handles **end-user identity for your app**: signup, login, MFA, password reset, social federation, and optionally hands those users **temporary AWS credentials** so they can call AWS APIs directly. Constantly confused with IAM Identity Center — keep this straight: **Identity Center is for your employees logging into AWS Console; Cognito is for your app's customers**.
+
+### What Cognito is NOT
+
+| Question | Service | Not Cognito because... |
+| -------- | ------- | ---------------------- |
+| *"Workforce SSO into the AWS Console"* | **IAM Identity Center** | Identity Center is for *your employees* accessing AWS; Cognito is for *your app's customers* |
+| *"Active Directory for Windows workloads"* | **AWS Managed Microsoft AD** | Different identity layer |
+| *"Manage IAM users / roles in AWS"* | **IAM** | IAM is for AWS principals; Cognito is for app principals |
+| *"Store passwords for service accounts"* | **AWS Secrets Manager** | Secrets Manager = secrets storage; Cognito = user identity |
+| *"Cross-account access to AWS"* | **STS `AssumeRole`** | Cognito identity pools use STS underneath, but cross-account AWS access is STS's domain |
+
+### The Two Cognito Products (Constantly Confused)
+
+This is the most-tested distinction in the entire service. Get this right and you've nailed Cognito.
+
+| | **Cognito User Pool** | **Cognito Identity Pool** |
+| - | --------------------- | -------------------------- |
+| Purpose | **Authenticate your app's users** (signup, login, MFA) | **Give authenticated users temporary AWS credentials** |
+| Output | **JWT tokens** (ID token + access token + refresh token) | **Temporary AWS credentials** (via STS) |
+| Use to call | Your application's APIs (API Gateway with Cognito authoriser) | AWS services directly (S3, DynamoDB, etc.) |
+| Federates with | Social IdPs (Google, Facebook, Apple) + SAML/OIDC IdPs + User Pool itself | User Pool tokens, social IdPs, SAML, OIDC, developer-authenticated |
+| Replaces | Building your own auth system (Auth0, Firebase Auth) | Building your own STS exchange |
+| Lambda triggers | ✅ (pre-signup, post-confirmation, custom auth challenge, etc.) | ❌ |
+| Hosted UI | ✅ (drop-in login pages) | ❌ |
+
+**The flow that uses both:**
+
+```
+1. User opens your mobile app
+       ↓
+2. App calls Cognito User Pool → user signs up / logs in
+       ↓
+3. User Pool returns JWT (ID token containing user attributes + access token)
+       ↓
+   ─── now app needs to upload a profile photo to S3 ───
+       ↓
+4. App passes the JWT to Cognito Identity Pool
+       ↓
+5. Identity Pool calls STS AssumeRoleWithWebIdentity using the JWT
+       ↓
+6. STS returns temporary AWS credentials (mapped to either:
+     - "authenticated role" if the user signed in
+     - "unauthenticated role" if guest access is enabled)
+       ↓
+7. App uses those credentials to call S3 directly (PutObject on profile-photos/userId)
+```
+
+### User Pool Deep Dive
+
+| Feature | What it does |
+| ------- | ------------ |
+| **Hosted UI** | AWS-hosted signup / login / MFA pages (your-domain.auth.region.amazoncognito.com). Customisable CSS/logo |
+| **Custom UI** | Build your own UI; call Cognito APIs directly |
+| **MFA** | SMS, TOTP (authenticator apps), or adaptive (risk-based — flag suspicious logins for MFA) |
+| **Lambda triggers** | Custom logic at lifecycle stages: PreSignUp, PostConfirmation, PreAuthentication, PostAuthentication, CustomMessage, DefineAuthChallenge, etc. Use these for: blocking signups from disposable email domains, custom welcome emails, anti-abuse checks |
+| **Social federation** | Sign in with Google / Facebook / Apple / Amazon. User Pool stores a federated identity record |
+| **SAML/OIDC federation** | Enterprise customers — sign in with their corporate IdP |
+| **App clients** | Per-application credentials (web, mobile, server) with different scopes |
+| **OAuth 2.0 + OIDC flows** | Standard auth flows — Authorization Code, Implicit (legacy), Client Credentials |
+| **Adaptive authentication** | Detects risky sign-ins (new device, anomalous location) and triggers MFA dynamically |
+
+### Identity Pool Deep Dive
+
+| Feature | What it does |
+| ------- | ------------ |
+| **Identity providers** | Cognito User Pool, Google, Facebook, Apple, Amazon, OIDC, SAML, developer-authenticated identities (DAI), guest |
+| **Authenticated role** | IAM role assumed for signed-in users — scoped permissions to AWS resources they're allowed to touch |
+| **Unauthenticated role** | IAM role for guest / anonymous users (if you enable guest access) |
+| **Role mapping** | Conditional role selection based on user attributes (e.g. paid-tier users → role with more permissions) |
+| **Variable substitution** | IAM policies can reference `${cognito-identity.amazonaws.com:sub}` so each user only accesses their own S3 prefix / DynamoDB items |
+
+**Per-user prefix pattern (the classic):**
+
+```json
+// Authenticated role's policy
+{
+  "Effect": "Allow",
+  "Action": ["s3:GetObject", "s3:PutObject"],
+  "Resource": "arn:aws:s3:::user-uploads/${cognito-identity.amazonaws.com:sub}/*"
+}
+```
+
+Each user can only read/write their own folder. One role, N users, no IAM users created.
+
+### When to Use Cognito vs Alternatives
+
+| Need | Use |
+| ---- | --- |
+| Quick auth for a new SaaS app | **Cognito User Pool** (or Auth0/Firebase if you want a polished alternative) |
+| Mobile app users need to upload to S3 | **User Pool + Identity Pool** |
+| Enterprise customers sign in via their corporate SAML | **User Pool with SAML IdP** |
+| Workforce SSO into AWS Console | **IAM Identity Center**, not Cognito |
+| Active Directory authentication | **AWS Directory Service**, not Cognito |
+| Programmatic AWS access from EC2 / Lambda | **IAM role + STS**, not Cognito |
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Use Cognito for AWS Console access for employees"* → wrong service; that's **IAM Identity Center**
+- *"Confuse User Pool with Identity Pool"* → User Pool = authn for your app; Identity Pool = AWS credentials for app users
+- *"Store passwords in IAM users for app sign-up"* → IAM is for AWS, not app users; use **Cognito User Pool**
+- *"Build your own JWT issuer + AWS STS exchange"* → reinvent the wheel; **Cognito does both**
+- *"Use the user's same IAM access keys for app access"* → catastrophic; use **Cognito Identity Pool** to issue scoped temp creds per user
+- *"Per-user IAM user for each customer"* → doesn't scale; use **Identity Pool with `${cognito-identity.amazonaws.com:sub}` variable substitution**
+- *"Use Cognito for service-to-service auth"* → use **IAM roles + STS**
+
+### Exam Triggers
+
+- *"Sign up / log in / MFA for our app's users"* → **Cognito User Pool**
+- *"App users need to upload directly to S3 / read DynamoDB"* → **Cognito Identity Pool** (after authenticating against User Pool)
+- *"Social login (Google / Facebook / Apple)"* → **Cognito User Pool with social IdP**
+- *"Enterprise SAML federation for app users"* → **User Pool with SAML IdP**
+- *"Customise the signup flow with validation logic"* → **Lambda triggers** (PreSignUp / PostConfirmation)
+- *"App users get temporary AWS credentials"* → **Identity Pool**
+- *"Each user can only access their own S3 prefix"* → **Identity Pool authenticated role + `${cognito-identity.amazonaws.com:sub}` variable**
+- *"Hosted login page (no UI work)"* → **User Pool Hosted UI**
+- *"Risk-based MFA"* → **User Pool adaptive authentication**
+
+**The 80/20:** *Cognito = AWS-native customer identity service. **User Pool** = authn for your app (signup, login, MFA, federation, JWTs). **Identity Pool** = STS-backed exchange that gives authenticated users temporary AWS credentials (so the mobile app can upload to S3 directly without backend code). The two are independent products that pair together. **Use Cognito for app users; use IAM Identity Center for workforce / AWS Console access.** Lambda triggers customise signup/login flows. Variable substitution like `${cognito-identity.amazonaws.com:sub}` in IAM policies gives each user their own scoped slice of an S3 bucket / DynamoDB table.*
+
 ## AWS KMS (Key Management Service)
 
 **Anchored against HashiCorp Vault or a managed HSM.** KMS is the centralised, managed cryptographic key service that virtually every AWS service uses for encryption at rest. You don't usually call KMS directly — services like S3, EBS, RDS, Secrets Manager call it on your behalf.
@@ -3267,6 +3562,32 @@ Unlike most resource policies in AWS, a KMS **key policy is required** and acts 
 That `Principal: root` doesn't mean "the root user" — it means "any IAM principal in this account, subject to IAM policies". Without it, IAM policies granting KMS permissions don't work.
 
 **Exam trap:** *"Why can't this IAM user use the key despite having `kms:Decrypt` in their IAM policy?"* → **Key policy doesn't include them or doesn't defer to IAM**.
+
+### When to Use CloudHSM Instead
+
+CloudHSM is the **dedicated single-tenant hardware HSM** alternative to KMS. Same crypto operations, very different operational model.
+
+| | **AWS KMS** | **AWS CloudHSM** |
+| - | ----------- | ----------------- |
+| Tenancy | **Multi-tenant** (shared HSM, AWS-managed) | **Single-tenant** (you get your own HSM cluster) |
+| FIPS 140-2 level | **Level 3** for HSM module (overall service Level 2) | **Level 3** end-to-end |
+| Who controls keys | AWS manages HSMs; you control key policies + usage | **You** control the HSM, the keys, and the access |
+| Who can see keys | AWS staff can't access plaintext, but operationally AWS runs the HSMs | **Only you** — AWS has no access to the HSM cluster |
+| Cost | $1/key/month + API call charges | **~$1.45/hour per HSM** (~$1,050/month per HSM, typically 2+ for HA) |
+| Setup complexity | One click — instantly available | Provision cluster + manage client config + cross-account setup |
+| Use case | 95% of workloads | Compliance demanding HSM ownership; offload TLS termination from EC2; SQL Server TDE with own HSM; PKI root CA |
+| Integration with AWS services (S3, RDS, etc.) | ✅ Native | ⚠️ Indirect (via **KMS Custom Key Store** backed by CloudHSM) |
+
+**The bridge: KMS Custom Key Store** — back a KMS key with a CloudHSM cluster. KMS API surface stays the same (so S3, RDS, etc. work normally), but the underlying key material lives in *your* HSM. Best of both worlds for high-compliance workloads that still want AWS-service integration.
+
+**Exam triggers (CloudHSM-specific):**
+- *"FIPS 140-2 Level 3 single-tenant dedicated hardware"* → **CloudHSM**
+- *"Regulation requires AWS to have no access to our keys"* → **CloudHSM** (not KMS)
+- *"Offload SSL termination from EC2 to a dedicated HSM"* → **CloudHSM**
+- *"Run a private CA root key in dedicated hardware"* → **CloudHSM**
+- *"Get KMS-style integration but with my own HSM hardware"* → **KMS Custom Key Store + CloudHSM**
+
+For everything else (S3 encryption, EBS encryption, RDS encryption, Secrets Manager) → **KMS** is the right answer.
 
 ### Common Anti-patterns (exam wrong answers)
 
@@ -4506,6 +4827,167 @@ Detect the *combination* that signals "attack, not legitimate traffic". Rate lim
 > *Shield Standard keeps your site up during volumetric attacks. **Shield Advanced keeps your bank account up too.** Architectural defences (CloudFront caching, WAF rate limits, max-scale caps) reduce how much the attack costs in the first place; Shield Advanced cost protection refunds whatever leaks through.*
 
 **The 80/20:** *AWS Shield = DDoS protection. **Standard** = free + automatic, L3/L4 on CloudFront/Route 53/ELB. **Advanced** = $3k/month, adds L7 protection, **cost protection** (refunds for Auto Scaling / ELB / data transfer charges during verified attacks), **DRT** (DDoS Response Team) access, and EC2 Elastic IP protection. AWS's **BP1–BP7** DDoS Resiliency Best Practices map to specific services: BP1=CloudFront, BP2=Global Accelerator/Route 53, BP3=WAF, BP4=attack surface reduction, BP5=Auto Scaling, BP6=visibility (CloudWatch/GuardDuty), BP7=DRT. The exam references these labels directly. **Economic Denial of Service (EDoS)** is the cost-bankruptcy variant — Shield Advanced's cost protection is the answer.*
+
+## AWS Network Firewall + Firewall Manager
+
+Two services covered together because they're complementary and often confused. **Network Firewall** is a VPC-level firewall (the thing in the data path). **Firewall Manager** is org-wide central management of WAF + Shield + Network Firewall + Security Groups (the thing that *deploys* them consistently across all accounts).
+
+### AWS Network Firewall
+
+**Anchored against Palo Alto / Cisco ASA — but managed by AWS.** A true **VPC-level firewall** that sits in the data path and inspects every packet flowing in / out / through your VPCs. Layer 3 to Layer 7, stateful, supports Suricata rules.
+
+#### What Network Firewall is NOT
+
+| Question | Service | Not Network Firewall because... |
+| -------- | ------- | ------------------------------- |
+| *"L7 HTTP filtering at the edge"* | **AWS WAF** | WAF is HTTP/HTTPS only; Network Firewall handles all protocols |
+| *"Per-instance L4 stateful firewall"* | **Security Groups** | SGs attach to ENIs; Network Firewall sits in a subnet on the routing path |
+| *"Stateless subnet ACL"* | **NACLs** | NACLs are simple L4 allow/deny per subnet; Network Firewall is L3-L7 stateful |
+| *"DDoS protection"* | **AWS Shield** | Different concern; Network Firewall is for traffic filtering, not volumetric attacks |
+| *"Centrally manage firewall rules across the org"* | **AWS Firewall Manager** | Firewall Manager deploys Network Firewall configs; it's not the firewall itself |
+
+#### Core Concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Firewall** | The Network Firewall resource you create; attached to a VPC |
+| **Firewall endpoint** | The actual inspection point — one per AZ, placed in a **dedicated firewall subnet** |
+| **Firewall policy** | A collection of stateless + stateful rule groups; can be reused across firewalls |
+| **Stateless rules** | Standard 5-tuple match (src/dst IP/port + protocol) → pass / drop / forward to stateful engine |
+| **Stateful rules** | Full session tracking. Two rule formats: **standard 5-tuple** or **Suricata-compatible IDS/IPS rules** |
+| **Domain list rules** | Block / allow based on **HTTP Host header** or **TLS SNI** (e.g. *"block all egress except `*.amazonaws.com`"*) |
+| **Suricata rules** | Open-source IDS/IPS rule format — gives you access to rich community + commercial rule sets (Proofpoint ET, etc.) |
+
+#### Where Network Firewall Sits (the architecture pattern)
+
+```
+        Internet                                On-prem (via VPN/DX)
+            │                                          │
+            ▼                                          ▼
+       ┌────────────────────────────────────────────────────┐
+       │  Inspection VPC                                     │
+       │    ┌──────────────────────────────────────────┐    │
+       │    │  Network Firewall endpoints              │    │
+       │    │  (one per AZ in firewall subnet)         │    │
+       │    └──────────────────┬───────────────────────┘    │
+       └───────────────────────┼────────────────────────────┘
+                               │
+                  Transit Gateway routes ALL traffic through here
+                               │
+        ┌──────────────────────┼─────────────────────┐
+        ▼                      ▼                     ▼
+  ┌──────────┐         ┌──────────┐          ┌──────────┐
+  │ Prod VPC │         │ Dev VPC  │          │Shared VPC│
+  └──────────┘         └──────────┘          └──────────┘
+```
+
+**Classic pattern:** centralised inspection VPC with Network Firewall; Transit Gateway routes all spoke-VPC traffic through it. Every cross-VPC and east-west / north-south packet inspected.
+
+#### Use Cases
+
+- **Egress filtering** — *"VPC can only talk to specific external domains"* (e.g. only `*.amazonaws.com`, `github.com`)
+- **East-west inspection** — *"all traffic between VPCs must pass through inspection"* (PCI / FedRAMP requirement)
+- **IDS/IPS via Suricata rules** — signature-based detection of known exploits
+- **DNS filtering** — block resolution of malicious / unapproved domains
+- **Compliance** — required by many regulated frameworks for "deep packet inspection"
+
+#### Pricing (the gotcha)
+
+- **$0.395/hour per firewall endpoint** (one per AZ → $0.395 × N × 730 hours/month ≈ $290/month per AZ)
+- **$0.065/GB processed** — expensive at scale
+- Plus underlying Transit Gateway charges if using centralised inspection
+
+A multi-AZ deployment processing meaningful traffic easily runs **thousands of dollars per month**. Only deploy when you actually need it.
+
+#### Common Anti-patterns
+
+- *"Use Network Firewall instead of Security Groups"* → SGs are free + per-resource; use both
+- *"Network Firewall for L7 HTTP filtering of public sites"* → use **WAF** at CloudFront / ALB
+- *"Single-AZ Network Firewall"* → no HA; deploy one endpoint per AZ
+- *"Skip the dedicated firewall subnet"* → it's required architecturally
+- *"Deploy without Transit Gateway in a multi-VPC setup"* → ends up with one firewall per VPC, expensive; use centralised inspection VPC
+
+#### Exam Triggers
+
+- *"Inspect all VPC east-west traffic with deep packet inspection"* → **AWS Network Firewall**
+- *"Egress filter — VPC can only call specific external domains"* → **Network Firewall domain list rules**
+- *"IDS/IPS for VPC traffic using Suricata rules"* → **Network Firewall stateful rule groups**
+- *"Centralised inspection point for multiple VPCs"* → **Network Firewall in inspection VPC + Transit Gateway**
+- *"Block resolution of malicious domains at the network layer"* → **Network Firewall DNS / domain filtering** (or Route 53 Resolver DNS Firewall — both valid; see distinction below)
+
+**Note on Route 53 Resolver DNS Firewall:** related but different — Route 53 Resolver DNS Firewall filters DNS queries from your VPC. Network Firewall can do this too via domain list rules. Difference: DNS Firewall is cheaper and DNS-only; Network Firewall is broader (TLS SNI, protocols, deep inspection). For *"just block DNS resolution of bad domains"* → **Route 53 Resolver DNS Firewall** is the cheaper answer.
+
+### AWS Firewall Manager
+
+**Anchored as: Organizations meets security policies.** Centrally manage **WAF rule groups + Shield Advanced + Network Firewall configs + Security Groups + Route 53 Resolver DNS Firewall** across **all accounts** in your AWS Organization. Apply consistent rules to existing AND new resources automatically.
+
+#### What Firewall Manager is NOT
+
+| Question | Service | Not Firewall Manager because... |
+| -------- | ------- | ------------------------------- |
+| *"A firewall itself"* | **WAF / Network Firewall / Security Groups** | Firewall Manager *manages* other firewalls; it doesn't filter traffic itself |
+| *"Replace WAF / Shield / Network Firewall"* | Each underlying service | You still need (and pay for) the underlying services |
+| *"Centrally manage IAM"* | **AWS Organizations + SCPs / IAM Identity Center** | Different layer — those govern identity, Firewall Manager governs network/app security |
+| *"For a single account"* | Manage each firewall directly | Firewall Manager is overkill for one account; it's an **org-wide** tool |
+
+#### Requirements
+
+- **AWS Organizations** with all features enabled
+- **Firewall Manager delegated administrator** in a member account (typical security account)
+- **AWS Config enabled** in every account (Firewall Manager uses Config to detect non-compliant resources)
+
+#### What You Can Manage Through Firewall Manager
+
+| Resource type | Centrally managed |
+| ------------- | ----------------- |
+| **WAF rule groups** | Apply same WAF rules to all CloudFront / ALB / API Gateway across the org |
+| **Shield Advanced** | Onboard accounts to Shield Advanced; protect specified resources |
+| **AWS Network Firewall** | Deploy Network Firewall in every VPC; central rule sets |
+| **Security Groups** | Audit / enforce SG policies (e.g. *"no SG allowing 0.0.0.0/0 on port 22"*); also create "common" SGs accounts can reference |
+| **Route 53 Resolver DNS Firewall** | Deploy DNS Firewall rule groups across all VPCs |
+| **Palo Alto Networks Cloud NGFW** | Third-party integration |
+| **Fortigate Cloud Native Firewall** | Third-party integration |
+
+#### Use Cases
+
+- *"Apply this OWASP managed rule group to every ALB in every account"*
+- *"Ensure every VPC has a Network Firewall deployed with our standard rules"*
+- *"Audit all Security Groups across the org and flag any allowing SSH from the internet"*
+- *"Auto-onboard new accounts to Shield Advanced protection"*
+- *"Maintain a baseline of acceptable Security Groups, with auto-remediation for drift"*
+
+#### Cost
+
+**$100/month per policy per region.** Adds up — if you have 5 policies across 3 regions, that's $1,500/month just for Firewall Manager (plus the underlying WAF / Shield / Network Firewall costs).
+
+#### Common Anti-patterns
+
+- *"Use Firewall Manager for a single account"* → overkill; manage WAF / SGs directly
+- *"Skip AWS Config setup"* → Firewall Manager *requires* Config to detect non-compliance
+- *"Treat Firewall Manager as a firewall"* → it's a policy manager; it doesn't filter packets itself
+- *"Run Firewall Manager from the management account"* → use a **delegated administrator** (security/audit account)
+
+#### Exam Triggers
+
+- *"Centrally enforce WAF rules across all org accounts"* → **AWS Firewall Manager**
+- *"Audit Security Groups across all accounts for risky rules"* → **Firewall Manager SG audit policy**
+- *"Auto-onboard new accounts to Shield Advanced"* → **Firewall Manager Shield policy**
+- *"Apply consistent Network Firewall config to every VPC across the org"* → **Firewall Manager + Network Firewall**
+- *"Detect SGs allowing 0.0.0.0/0 on dangerous ports across the org"* → **Firewall Manager content audit policy**
+
+### The Combined Mental Model
+
+| Layer | Service | Scope |
+| ----- | ------- | ----- |
+| **L3/L4 stateful, per-resource** | **Security Group** | One ENI / resource |
+| **L4 stateless, per-subnet** | **NACL** | One subnet |
+| **L3-L7 stateful + IDS/IPS, per-VPC** | **Network Firewall** | VPC (often centralised in inspection VPC) |
+| **L7 HTTP/HTTPS** | **WAF** | CloudFront / ALB / API Gateway etc. |
+| **DNS query filtering** | **Route 53 Resolver DNS Firewall** | VPC |
+| **Volumetric DDoS L3/L4** | **AWS Shield (Standard/Advanced)** | CloudFront / Route 53 / ELB / Global Accelerator (Standard) + EC2 (Advanced) |
+| **Central management of all the above across an Org** | **AWS Firewall Manager** | Organization-wide |
+
+**The 80/20:** *Network Firewall = AWS-managed L3-L7 stateful firewall for VPCs. Sits in a dedicated firewall subnet; typical deployment is a centralised inspection VPC with all spoke VPCs routing through it via Transit Gateway. Supports Suricata IDS/IPS rules + domain list filtering. Expensive ($290+/month per AZ + $0.065/GB). Firewall Manager = central management of WAF + Shield + Network Firewall + Security Groups + Route 53 DNS Firewall across all org accounts. Requires AWS Organizations + Config + delegated admin. $100/policy/region/month. Use Firewall Manager when you have 10+ accounts and want consistent security policies; skip it for single-account or small setups.*
 
 ## ECS (Elastic Container Service)
 
