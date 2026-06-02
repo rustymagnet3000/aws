@@ -169,9 +169,20 @@
   - [What WAF is NOT](#what-waf-is-not)
   - [Core Concepts](#core-concepts-9)
   - [How a WAF Request Actually Flows](#how-a-waf-request-actually-flows)
-  - [Where to attach a Web ACL](#where-to-attach-a-web-acl)
+  - [Where to Attach a Web ACL (and Why It Matters)](#where-to-attach-a-web-acl-and-why-it-matters)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-20)
   - [Exam Triggers](#exam-triggers-20)
+- [AWS Shield + DDoS Resiliency (BP1–BP7)](#aws-shield--ddos-resiliency-bp1bp7)
+  - [The BP1–BP7 Framework](#the-bp1bp7-framework)
+  - [How the BPs Stack — Layered Defence Picture](#how-the-bps-stack--layered-defence-picture)
+  - [Shield Standard vs Shield Advanced](#shield-standard-vs-shield-advanced)
+  - [The EDoS Problem: Why DDoS Causes Cost Explosions](#the-edos-problem-why-ddos-causes-cost-explosions)
+  - [How Shield Advanced Solves EDoS — Cost Protection](#how-shield-advanced-solves-edos--cost-protection)
+  - [Architectural Mitigations (without Shield Advanced)](#architectural-mitigations-without-shield-advanced)
+  - [When to Pay for Shield Advanced](#when-to-pay-for-shield-advanced)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-21)
+  - [Exam Triggers](#exam-triggers-21)
+  - [The Mental Model](#the-mental-model)
 - [ECS (Elastic Container Service)](#ecs-elastic-container-service)
   - [ECS vs ASG + EC2](#ecs-vs-asg--ec2)
   - [Key concepts](#key-concepts)
@@ -3826,19 +3837,152 @@ Each standard is a list of **controls** (e.g. *"S3 buckets should have versionin
 
 **Priority matters:** put broad allow-list rules early (e.g. allow your monitoring vendor's IP set), then the broad managed rule groups, then narrow custom blocks.
 
-### Where to attach a Web ACL
+### Where to Attach a Web ACL (and Why It Matters)
 
-| Resource | When |
-| -------- | ---- |
-| **CloudFront distribution** | Global apps — filter at the edge, lowest latency. Web ACL is **Global** scope |
-| **Application Load Balancer (ALB)** | Regional apps. Web ACL is **Regional** scope |
-| **API Gateway (REST/HTTP API)** | API protection. Regional scope |
-| **AppSync GraphQL API** | GraphQL protection. Regional scope |
-| **App Runner service** | Regional scope |
-| **Cognito user pool** | Auth endpoint protection |
-| **Verified Access** | Workforce access |
+WAF isn't a service you "deploy" — it's a **filter you clip onto a layer of your stack**. The choice of which layer has real architectural consequences.
 
-**Exam decision:** if the app is global → CloudFront + WAF. If regional → ALB or API Gateway + WAF.
+#### The attachment points
+
+| Resource | Scope | Typical use |
+| -------- | ----- | ----------- |
+| **CloudFront distribution** | **Global** Web ACL (must live in `us-east-1`) | Internet-facing apps — filter at the edge |
+| **Application Load Balancer (ALB)** | Regional | Regional apps without CloudFront, or as defence-in-depth |
+| **API Gateway (REST/HTTP API)** | Regional | Serverless APIs without CloudFront |
+| **AppSync GraphQL API** | Regional | GraphQL endpoint protection |
+| **App Runner service** | Regional | App Runner custom domain |
+| **Cognito user pool** | Regional | Auth endpoint protection (combine with ATP for credential stuffing) |
+| **Verified Access** | Regional | Workforce zero-trust endpoint |
+
+#### What the choice actually means
+
+```
+                       ┌─────────────────────────────────┐
+                       │     Attacker / legitimate user  │
+                       └──────────────┬──────────────────┘
+                                      │ HTTPS request
+            ┌─────────────────────────▼──────────────────────────┐
+            │ ① CloudFront edge location (one of 400+ globally)  │
+            │    ← WAF "Global" Web ACL filters HERE             │
+            │    ✓ Earliest possible block                       │
+            │    ✓ No bandwidth into your region for blocked req │
+            │    ✓ Latency for blocked req = tens of ms          │
+            └─────────────────────────┬──────────────────────────┘
+                                      │ (allowed requests only)
+                                      ▼
+                       ┌──────────────────────────────────┐
+                       │   Your AWS region (eu-west-1)    │
+                       │                                  │
+                       │   ② Application Load Balancer    │
+                       │   ← WAF "Regional" Web ACL HERE  │
+                       │      ✓ Inside your VPC           │
+                       │      ✓ Sees decrypted requests   │
+                       │                                  │
+                       │   OR ② API Gateway / AppSync /   │
+                       │      App Runner / Cognito        │
+                       │   ← Regional Web ACL HERE        │
+                       │                                  │
+                       │            ↓ origin (ECS/Lambda/EC2) │
+                       └──────────────────────────────────┘
+```
+
+#### Why earlier is almost always better
+
+| Concern | CloudFront (edge) | ALB / API Gateway (region) |
+| ------- | ----------------- | -------------------------- |
+| **Where is the malicious request blocked?** | Nearest edge to the attacker | After traversing the internet to your region |
+| **Bandwidth into your region for blocked req** | None | Full request + TLS termination cost |
+| **Origin resource consumption** | Origin never sees blocked req | Origin handles TLS, sees the connection |
+| **Volumetric attack absorption** | CloudFront's globally distributed capacity | Single region's capacity |
+| **Latency for blocked requests** | Low (closest edge) | Higher (must reach region) |
+| **TLS body inspection** | Yes (CloudFront terminates TLS) | Yes |
+
+**Principle:** filter as early as possible. WAF on CloudFront is the gold standard for any internet-facing app.
+
+#### The Global vs Regional Web ACL distinction
+
+There are **two flavours** of Web ACL — they look identical but live in different services:
+
+| | Global Web ACL | Regional Web ACL |
+| - | -------------- | ---------------- |
+| Can attach to | **CloudFront only** | ALB, API Gateway, AppSync, App Runner, Cognito, Verified Access |
+| Region it lives in | **`us-east-1` always** (even if CloudFront serves globally) | Same region as the resource |
+| Same rules / managed rule groups available? | Yes | Yes |
+| Pricing | Same per-WCU model | Same |
+
+**Exam trap:** *"I have CloudFront in front of an ALB in eu-west-1; can I share one Web ACL?"* → **No.** CloudFront needs a Global Web ACL in `us-east-1`; ALB needs a Regional Web ACL in eu-west-1. Same rules, two ACL resources.
+
+#### The bypass risk if you only WAF at ALB (or only at CloudFront)
+
+The gotcha the exam loves:
+
+```
+Setup: CloudFront (NO WAF) → ALB (NO WAF)
+
+Attacker discovers the ALB's direct DNS name (DNS history,
+certificate transparency logs, accidentally-public Terraform state):
+  myapp-alb-1234567890.eu-west-1.elb.amazonaws.com
+       ↓
+Request hits ALB directly, bypassing CloudFront entirely
+       ↓
+No WAF inspection → ❌ malicious request reaches origin
+```
+
+**The proper defence — CloudFront + WAF + restricted ALB:**
+
+```
+Setup: CloudFront (WAF) → ALB (restricted to only accept CloudFront)
+
+  - WAF on CloudFront blocks bad requests at the edge
+  - ALB security group only allows traffic from CloudFront's managed
+    prefix list (com.amazonaws.global.cloudfront.origin-facing)
+  - PLUS a custom X-Origin-Verify header (CloudFront sets it; ALB
+    requires it) — defeats prefix-list spoofing
+       ↓
+  Direct ALB attack: blocked by SG + header check
+  Normal traffic: hits CloudFront → WAF inspected → forwarded to ALB
+```
+
+Without restricting the ALB, **WAF on CloudFront alone is bypassable**. Always pair edge WAF with origin lockdown.
+
+#### Multi-layer WAF (defence in depth)
+
+Higher-security workloads attach WAF at **both** CloudFront and ALB:
+
+```
+CloudFront WAF
+  - Block: known bad IPs, geo restrictions, bulk volumetric patterns
+  - Block: OWASP managed rules (broad, edge-relevant)
+  - Rate limit: per-IP global limits
+       ↓
+ALB WAF
+  - Block: more specific business-logic rules
+  - Block: API-specific patterns (path-based, body-based)
+  - Rate limit: per-endpoint regional limits
+```
+
+Common in fintech / healthtech / government where regulations demand layered controls. Overkill for most apps — CloudFront alone is enough.
+
+#### How the choice maps to common architectures
+
+| Architecture | Where WAF goes | Why |
+| ------------ | -------------- | --- |
+| **Global SPA + REST API** (CloudFront + ALB / API Gateway) | **WAF on CloudFront** | Filter at edge; restrict origin to only accept CloudFront traffic |
+| **Regional API only** (ALB → ECS / EC2) | **WAF on ALB** | No CloudFront in the picture |
+| **Serverless REST API** (API Gateway + Lambda) | **WAF on API Gateway** | No CloudFront, no ALB |
+| **GraphQL** (AppSync) | **WAF on AppSync** | Direct integration |
+| **High-security / regulated** | **WAF on CloudFront AND on ALB/API Gateway** | Layered controls |
+| **Cognito user pool** (login / signup endpoints) | **WAF on Cognito user pool** | ATP for credential stuffing; ACFP for fake signups |
+
+#### Attachment-point exam triggers
+
+| Question | Answer |
+| -------- | ------ |
+| *"Global app — where to attach WAF?"* | **CloudFront** (Global Web ACL in `us-east-1`) |
+| *"Regional API, no CloudFront — where?"* | **ALB or API Gateway** (Regional Web ACL, same region) |
+| *"Attacker bypassed CloudFront and hit ALB directly"* | Either put WAF on ALB too, **or** restrict ALB to only accept CloudFront (prefix list + header check) |
+| *"Why doesn't my regional Web ACL work on CloudFront?"* | CloudFront needs **Global** Web ACL in `us-east-1` |
+| *"Protect login endpoint from credential stuffing"* | **WAF on Cognito user pool** with **Account Takeover Prevention** |
+| *"Defence-in-depth — multiple layers of WAF"* | **WAF on CloudFront + WAF on ALB** with different rule sets |
 
 ### Common Anti-patterns (exam wrong answers)
 
@@ -3865,6 +4009,225 @@ Each standard is a list of **controls** (e.g. *"S3 buckets should have versionin
 - *"Global app — filter at the edge"* → **WAF on CloudFront** (not ALB)
 
 **The 80/20:** *WAF = Layer-7 HTTP firewall as a managed service. Attaches to CloudFront (global), ALB / API Gateway / AppSync / App Runner / Cognito (regional). **Rules** with conditions (IP, geo, rate, regex, SQLi, XSS, body inspection) → actions (Allow / Block / Count / CAPTCHA / Challenge). **AWS Managed Rule Groups** cover OWASP Top 10, SQLi, bot control. **Web ACL Capacity Units (WCU)** cap rule complexity. Paid features: **Bot Control**, **ATP** (credential stuffing), **ACFP** (fake signups). Multi-account → **AWS Firewall Manager**. WAF ≠ Shield (DDoS) ≠ Security Groups (L3/L4) ≠ Network Firewall (VPC-level).*
+
+## AWS Shield + DDoS Resiliency (BP1–BP7)
+
+**Anchored against Cloudflare DDoS protection.** AWS Shield is the **DDoS protection service** — Standard is free and automatic; Advanced is the paid tier with cost protection and DRT (DDoS Response Team) access. But Shield isn't a standalone story — it's part of a wider framework AWS calls the **DDoS Resiliency Best Practices (BP1–BP7)**, which the exam references by name.
+
+### The BP1–BP7 Framework
+
+AWS's *DDoS Resiliency Best Practices* whitepaper organises mitigations into numbered Best Practices. The exam (especially Security Specialty) phrases questions like *"Which AWS service maps to BP3?"* — so the labels are worth memorising.
+
+| Code | Best Practice | What it maps to | Defends against |
+| ---- | ------------- | --------------- | --------------- |
+| **BP1** | **Edge location mitigation** | **CloudFront** | Absorbs volumetric L3/L4 attacks at AWS's 400+ POPs; only HTTP/S reaches your origin |
+| **BP2** | **DDoS-resilient reference architecture** | **Global Accelerator + Route 53** | Anycast IPs (Global Accelerator) and DNS-level resilience absorb attacks |
+| **BP3** | **Web application layer defence** | **AWS WAF** | Layer 7 attacks: SQL injection, XSS, HTTP floods, slowloris, scraping, rate-based |
+| **BP4** | **Attack surface reduction** | Security Groups + NACLs + private subnets + bastion design | Don't expose what doesn't need to be public |
+| **BP5** | **Scale to absorb attacks** | **ELB + Auto Scaling** | Horizontal scaling soaks up volumetric attacks; ELB itself is highly resilient |
+| **BP6** | **Operational visibility** | **CloudWatch + GuardDuty + Shield Advanced metrics** | See attacks happening — detect them before users complain |
+| **BP7** | **Engage AWS DDoS Response Team (DRT)** | **Shield Advanced subscription** | 24/7 access to AWS's DDoS specialists during attacks |
+
+(Numbering shifts slightly across whitepaper versions — BP4 and BP5 sometimes swap — but **BP1 = CloudFront** and **BP3 = WAF** are stable references.)
+
+### How the BPs Stack — Layered Defence Picture
+
+```
+                       Internet — attack traffic
+                                  │
+                                  ▼
+       ┌────────────────────────────────────────────────────────┐
+       │  ROUTE 53 / GLOBAL ACCELERATOR  (BP2)                  │
+       │  ✓ Anycast — attack absorbed across regions             │
+       │  ✓ Always-on Shield Standard for L3/L4 here             │
+       └────────────────────────┬───────────────────────────────┘
+                                ▼
+       ┌────────────────────────────────────────────────────────┐
+       │  CLOUDFRONT  (BP1)                                     │
+       │  ✓ Volumetric L3/L4 absorbed at edge                    │
+       │  ✓ Only HTTP/HTTPS reaches your region                  │
+       │  ✓ Shield Standard auto-protects                        │
+       └────────────────────────┬───────────────────────────────┘
+                                ▼
+       ┌────────────────────────────────────────────────────────┐
+       │  AWS WAF on CloudFront  (BP3)                          │
+       │  ✓ Layer 7 attacks blocked                              │
+       │  ✓ Rate-based rules, OWASP managed rules                │
+       │  ✓ Bot Control / ATP for app-layer attacks              │
+       └────────────────────────┬───────────────────────────────┘
+                                ▼
+       ┌────────────────────────────────────────────────────────┐
+       │  ALB + Auto Scaling + private subnets  (BP4 + BP5)     │
+       │  ✓ Origin not directly exposed                          │
+       │  ✓ Scales horizontally during attack                    │
+       └────────────────────────┬───────────────────────────────┘
+                                ▼
+                        Your origin (ECS / Lambda / EC2)
+
+       Throughout: CloudWatch + GuardDuty + Shield Advanced metrics  (BP6)
+       During attack: AWS DRT engagement via Shield Advanced  (BP7)
+```
+
+### Shield Standard vs Shield Advanced
+
+| | **Shield Standard** | **Shield Advanced** |
+| - | ------------------- | -------------------- |
+| Cost | **Free** — automatic for all AWS customers | **$3,000/month per organization** + data transfer fees |
+| Scope | L3/L4 attacks on CloudFront, Route 53, Global Accelerator, ELB | Everything in Standard, plus L7, EC2, sophisticated/large attacks |
+| WAF included? | ❌ (WAF charged separately) | ✅ AWS WAF included free |
+| DRT (DDoS Response Team) access | ❌ | ✅ 24/7 via Support |
+| **Cost protection** (refunds for scaling during attack) | ❌ | ✅ **The killer feature** |
+| Advanced attack metrics | ❌ | ✅ via CloudWatch |
+| Health-based detection | ❌ | ✅ (integrates with Route 53 health checks) |
+| Real-time attack visibility | Basic | Detailed |
+| Protects EC2 directly (Elastic IPs) | ❌ | ✅ |
+
+### The EDoS Problem: Why DDoS Causes Cost Explosions
+
+The naive interpretation of "scale to absorb attacks" (BP5) misses a critical risk. **Economic Denial of Service (EDoS)** is when the attack's goal isn't downtime — it's bankrupting you:
+
+```
+Attacker fires 100k req/s at your ALB
+       ↓
+ALB scales (no problem — AWS absorbs ALB itself)
+       ↓
+Origin EC2/ECS hits CPU/request thresholds
+       ↓
+Auto Scaling spins up MORE instances to handle the load
+       ↓
+Attack continues, MORE instances spin up
+       ↓
+You wake up to:
+  - 200 EC2 instances running ($$$/hour)
+  - Massive ELB data transfer bill
+  - Massive CloudFront data-out bill
+  - Massive Route 53 query bill
+  - Plus WAF inspected-request charges
+       ↓
+Bill arrives. Site stayed up, but the cost might be six figures.
+```
+
+Even a *successful* DDoS defence can cost tens-to-hundreds of thousands in scaling charges.
+
+### How Shield Advanced Solves EDoS — Cost Protection
+
+The single most important feature of Shield Advanced. AWS refunds the scaling charges incurred during a **verified DDoS event**:
+
+| Service | Costs refunded |
+| ------- | -------------- |
+| **EC2** (Auto Scaling spin-ups) | ✅ |
+| **Elastic Load Balancing** (data transfer + LCU charges) | ✅ |
+| **CloudFront** (data out) | ✅ |
+| **Route 53** (additional queries) | ✅ |
+| **Global Accelerator** (data transfer) | ✅ |
+
+**The catch:** must be verified as a DDoS by AWS (open a case with DRT). Genuine traffic spikes that aren't attacks → not refunded.
+
+**The economics:** $3,000/month is **DDoS insurance**. One serious attack might cost $50k–$500k in scaling charges. Cost protection refunds that. Shield Advanced pays for itself many times over in a single attack.
+
+### Architectural Mitigations (without Shield Advanced)
+
+If you can't justify $36k/year, engineer your way around the cost risk:
+
+#### 1. Heavy CloudFront caching
+
+```
+Attacker fires 100k req/s
+       ↓
+CloudFront serves cached responses from edge for 99% of requests
+       ↓
+Origin only sees ~1k req/s (cache misses only)
+       ↓
+No Auto Scaling triggered. Cost bounded.
+```
+
+A well-cached site is **mostly immune to volumetric L7 attacks**. CloudFront's per-request cost is tiny ($0.0075 per 10k requests) vs scaling an entire fleet.
+
+#### 2. WAF rate-based rules
+
+```
+Web ACL rule:
+  rate_based_rule(limit=2000 req per IP per 5 min) → Block
+
+Attacker's botnet exceeds rate from each IP
+       ↓
+Requests blocked at WAF ($0.60 per million inspected)
+       ↓
+Never reach the origin → no scaling trigger
+```
+
+WAF rate-based rules are the **single most cost-effective** L7 DDoS mitigation.
+
+#### 3. Auto Scaling maximum limits
+
+Set a **hard maximum** on your Auto Scaling group (e.g. `max = 50`). Under attack, the group caps at 50 instances. Site degrades (some users get errors) but cost is bounded.
+
+Trade-off: availability vs cost. Most teams pick a max that's 2–3× normal peak — enough headroom for legitimate spikes, ceiling on attack-driven scaling.
+
+#### 4. AWS Budgets + Budget Actions
+
+```
+Budget: $5,000 / day
+  → Alert at 80%
+  → Action at 100%: apply restrictive IAM, stop specific services
+```
+
+AWS Budgets can take **automated actions** when thresholds are breached. Risky if misconfigured — most teams configure alarms first, manual actions second.
+
+#### 5. CloudWatch Composite Alarms
+
+```
+Composite alarm:
+  IF (RequestCount > 10× baseline)
+  AND (4xx/5xx errors elevated)
+  AND (estimated cost rate > $500/hour)
+  THEN page on-call + Lambda to scale-cap or rate-limit
+```
+
+Detect the *combination* that signals "attack, not legitimate traffic". Rate limits alone fire on legitimate spikes (Black Friday).
+
+### When to Pay for Shield Advanced
+
+| Workload | Shield Advanced? | Why |
+| -------- | ---------------- | --- |
+| Small SaaS, marketing site, blog | ❌ | $36k/year too much; caching + rate limits are enough |
+| Mid-size e-commerce | 🟡 | Depends on revenue-at-risk. If one-hour outage costs >$10k, consider it |
+| Fintech / banking / payments | ✅ | Cost protection alone justifies it; plus DRT access |
+| Online gaming with real-time servers | ✅ | Hard to cache; high attack surface |
+| Government / public sector | ✅ | Compliance + uptime requirements |
+| Streaming / media | ✅ | Heavily attacked; CloudFront-heavy already so cost protection compounds |
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Use Shield Standard for full DDoS protection"* → Shield Standard is L3/L4 only on specific services; for full coverage including L7, you need WAF + Shield Standard, or Shield Advanced
+- *"WAF alone is enough for DDoS"* → WAF handles L7; volumetric L3/L4 needs CloudFront + Shield Standard
+- *"Scale to absorb without cost guardrails"* → leads to EDoS bills; use Auto Scaling max limits + WAF rate-based rules at minimum
+- *"Pay for Shield Advanced for a small marketing site"* → wasteful; architectural defences suffice
+- *"Skip CloudFront for a 'simple' app"* → missing BP1; you're exposing the origin directly
+- *"Restrict Auto Scaling max to current peak"* → first legitimate spike (sale, viral post) will cause outage
+- *"Rely on Shield to refund without enabling Shield Advanced"* → cost protection is **Advanced-only**
+
+### Exam Triggers
+
+- *"Free, automatic DDoS protection on CloudFront / Route 53 / ELB"* → **AWS Shield Standard**
+- *"DDoS protection with DRT access and cost protection"* → **AWS Shield Advanced** ($3k/month)
+- *"Mitigate volumetric attack before it reaches origin"* → **CloudFront (BP1)** + Shield
+- *"Block HTTP flood / Layer 7 attack"* → **AWS WAF (BP3)** + rate-based rule
+- *"Scale during attack to absorb load"* → **ALB + Auto Scaling (BP5)**
+- *"Refund EC2 / ALB / Route 53 scaling costs incurred during DDoS"* → **Shield Advanced cost protection**
+- *"Prevent runaway Auto Scaling cost during attack"* → **WAF rate-based rules + Auto Scaling max + CloudFront caching**
+- *"24/7 DDoS response team engagement"* → **Shield Advanced (BP7)**
+- *"What is an Economic Denial of Service (EDoS) attack?"* → Attack aiming to **inflate AWS bill** via uncontrolled scaling; Shield Advanced cost protection mitigates
+- *"Why is BP5 (scale to absorb) safe?"* → Combined with **cost protection + CloudFront caching + WAF rate limits**
+- *"Which BP maps to AWS WAF?"* → **BP3** (web application layer defence)
+- *"Which BP maps to CloudFront?"* → **BP1** (edge location mitigation)
+- *"Protect on-prem origin from DDoS"* → **CloudFront + Shield + WAF**, accelerated via Global Accelerator
+
+### The Mental Model
+
+> *Shield Standard keeps your site up during volumetric attacks. **Shield Advanced keeps your bank account up too.** Architectural defences (CloudFront caching, WAF rate limits, max-scale caps) reduce how much the attack costs in the first place; Shield Advanced cost protection refunds whatever leaks through.*
+
+**The 80/20:** *AWS Shield = DDoS protection. **Standard** = free + automatic, L3/L4 on CloudFront/Route 53/ELB. **Advanced** = $3k/month, adds L7 protection, **cost protection** (refunds for Auto Scaling / ELB / data transfer charges during verified attacks), **DRT** (DDoS Response Team) access, and EC2 Elastic IP protection. AWS's **BP1–BP7** DDoS Resiliency Best Practices map to specific services: BP1=CloudFront, BP2=Global Accelerator/Route 53, BP3=WAF, BP4=attack surface reduction, BP5=Auto Scaling, BP6=visibility (CloudWatch/GuardDuty), BP7=DRT. The exam references these labels directly. **Economic Denial of Service (EDoS)** is the cost-bankruptcy variant — Shield Advanced's cost protection is the answer.*
 
 ## ECS (Elastic Container Service)
 
