@@ -28,8 +28,16 @@
   - [VPC Peering](#vpc-peering)
   - [Transit Gateway](#transit-gateway)
   - [PrivateLink](#privatelink)
+  - [DNS in a VPC](#dns-in-a-vpc)
+  - [VPC Sharing via AWS RAM](#vpc-sharing-via-aws-ram)
+  - [Amazon VPC Lattice](#amazon-vpc-lattice)
+  - [AWS Cloud WAN](#aws-cloud-wan)
+  - [AWS VPC IP Address Manager (IPAM)](#aws-vpc-ip-address-manager-ipam)
   - [VPC Flow Logs](#vpc-flow-logs)
+  - [Reachability Analyzer and Network Access Analyzer](#reachability-analyzer-and-network-access-analyzer)
   - [Direct Connect and Site-to-Site VPN](#direct-connect-and-site-to-site-vpn)
+  - [AWS Client VPN](#aws-client-vpn)
+  - [Gateway Load Balancer (GWLB)](#gateway-load-balancer-gwlb)
   - [VPC Anti-patterns (exam wrong answers)](#vpc-anti-patterns-exam-wrong-answers)
   - [VPC Exam Triggers](#vpc-exam-triggers)
 - [EFS](#efs)
@@ -800,6 +808,8 @@ Public subnet route table:
 
 An instance also needs a **public IP** or **Elastic IP** to be reachable from the internet — the IGW alone isn't enough.
 
+**For IPv6 outbound only — Egress-Only Internet Gateway:** IPv6 addresses are *all* globally routable (no NAT in IPv6), so a regular NAT Gateway doesn't apply. The **Egress-Only Internet Gateway** is the IPv6 equivalent — lets IPv6 instances initiate **outbound** connections but blocks all **unsolicited inbound** traffic. Attaches to the VPC; route table entry: `::/0 → eigw-xxx`. Exam trigger: *"private IPv6 instances need to make outbound API calls but not be reachable from the internet"* → **Egress-Only IGW**.
+
 ### NAT Gateway vs NAT Instance
 
 Private subnets need a way to reach the internet for outbound traffic (package updates, third-party APIs) **without** being reachable inbound. A NAT does the translation.
@@ -820,6 +830,8 @@ Multi-AZ NAT setup:
   Private subnet in 1a → NAT GW in 1a → IGW
   Private subnet in 1b → NAT GW in 1b → IGW   ← independent failure domains
 ```
+
+**The 55,000 connection limit gotcha:** a single NAT Gateway supports up to **55,000 simultaneous connections per unique destination (IP + port)**. If hundreds of EC2 instances all hammer the same external endpoint (e.g. a popular SaaS API on the same hostname:port), you can exhaust this and see intermittent connection failures — but only to *that* destination. Calls to other destinations work fine. **Fix:** distribute traffic across multiple destinations / endpoints, deploy multiple NAT Gateways in the same AZ + split subnets across them, or use **VPC Endpoints** for AWS services to bypass NAT entirely. Exam trigger: *"hundreds of EC2 instances seeing intermittent connection drops to a single external API but other traffic works"* → **NAT Gateway 55k connection limit per destination**.
 
 ### Route Tables
 
@@ -925,6 +937,46 @@ A hub-and-spoke router for many VPCs (and on-prem networks). Solves the N² peer
 
 **Exam shortcut:** "connect many VPCs and on-prem" → Transit Gateway. "Two VPCs" → VPC Peering (cheaper).
 
+#### Transit Gateway Deeper Bits
+
+**Attachment types** — what you can plug into a TGW:
+
+| Attachment | What it connects |
+| ---------- | ---------------- |
+| **VPC** | A VPC in the same region |
+| **VPN** | Site-to-Site VPN tunnel |
+| **Direct Connect Gateway** | Direct Connect physical connection (multi-region) |
+| **Transit Gateway Peering** | Another TGW (same or cross-region) |
+| **Connect** | SD-WAN / third-party appliance integration (GRE + BGP) |
+
+**TGW route tables** — each TGW has multiple route tables, and each attachment is associated with one. This lets you create **segmented network topologies**:
+
+```
+Default TGW route table → all spokes route to each other
+                  ↓ OR ↓
+Segmented setup:
+  - "Prod" route table: only prod VPCs route to each other + shared services
+  - "Dev" route table: only dev VPCs route to each other + shared services
+  - "Shared services" route table: visible to everyone
+
+Result: full isolation between Prod and Dev without separate TGWs.
+```
+
+This is how large orgs implement **network segmentation** for compliance (PCI workloads in one segment, dev in another, both able to reach shared services like DNS / monitoring).
+
+**TGW sharing via RAM** — A central networking account owns the TGW; other accounts attach their VPCs to it via **AWS Resource Access Manager**. Standard multi-account hub-and-spoke pattern.
+
+**TGW Network Manager** — Visualises your TGW topology across regions on a global map. Useful for hybrid network operations + troubleshooting.
+
+**Inter-region TGW peering** — Connect TGWs in different regions; traffic stays on the AWS backbone. The standard "global private network" pattern uses one TGW per region, peered together.
+
+**Exam triggers:**
+- *"Segment prod and dev networks in a hub-and-spoke topology"* → **TGW with multiple route tables**
+- *"Share a TGW across 50 accounts"* → **TGW + AWS RAM**
+- *"Connect TGWs in different regions"* → **TGW peering attachments**
+- *"Integrate SD-WAN appliances with TGW"* → **TGW Connect attachment** (GRE + BGP)
+- *"Visualise multi-region TGW topology"* → **TGW Network Manager**
+
 ### PrivateLink
 
 Expose a service running in **your** VPC to **other** VPCs (or accounts) without peering, without overlapping CIDR concerns, without internet.
@@ -942,6 +994,221 @@ Consumer VPC:    [Interface Endpoint] → reaches your service via private IPs
 
 Use case: SaaS providers exposing their product to customers' VPCs (Snowflake, Datadog, etc. all use PrivateLink).
 
+### DNS in a VPC
+
+DNS is one of the most under-explained parts of AWS networking — but it's tested heavily in hybrid scenarios. Two layers to understand:
+
+#### Amazon-provided DNS (the always-on default)
+
+Every VPC has an Amazon-provided DNS resolver at **`VPC CIDR + 2`** (e.g. for `10.0.0.0/16`, the resolver lives at `10.0.0.2`). It handles:
+
+- **Public DNS** — any internet domain (`amazon.com`, `github.com`)
+- **VPC-internal DNS** — EC2 instance hostnames (`ip-10-0-1-23.eu-west-1.compute.internal`)
+- **AWS service endpoints** — `s3.amazonaws.com`, etc.
+
+It's enabled by the VPC attributes `enableDnsSupport` (provides the resolver) and `enableDnsHostnames` (instances get DNS names).
+
+#### Private Hosted Zones (Route 53)
+
+A Route 53 hosted zone that resolves **only inside specified VPCs**. Used for internal service discovery without exposing names publicly.
+
+```
+Private hosted zone: corp.internal
+  api.corp.internal     → 10.0.1.50
+  db.corp.internal      → 10.0.2.30
+  
+Resolves only from VPCs explicitly associated with this zone.
+External resolvers (8.8.8.8, etc.) return NXDOMAIN.
+```
+
+#### Route 53 Resolver Endpoints — Hybrid DNS
+
+This is where exam questions live. When you connect on-prem to AWS, **DNS doesn't automatically work both ways** — Amazon's resolver isn't reachable from on-prem, and your on-prem DNS isn't reachable from VPCs. Route 53 Resolver bridges this:
+
+| Endpoint type | Direction | Use case |
+| ------------- | --------- | -------- |
+| **Inbound resolver endpoint** | **On-prem → AWS** | On-prem servers can resolve AWS private hosted zones (e.g. `api.corp.internal`). ENIs in the VPC get IPs that on-prem points DNS at |
+| **Outbound resolver endpoint** | **AWS → on-prem** | EC2 instances can resolve on-prem-only names (e.g. `legacy-app.internal.corp.com`). Uses **forwarding rules** to send specific domains to on-prem DNS |
+
+```
+Hybrid DNS architecture:
+
+  On-prem corporate DNS                  AWS VPC
+  ─────────────────────                  ───────────────
+                                         
+  Resolves *.corp.com           ┌─→ Inbound Resolver Endpoint
+                                │   (ENIs in VPC; on-prem DNS forwards
+  ─── 8.8.8.8 for public ───────┤    *.aws.corp.com queries here)
+                                │
+                                │
+   Outbound Resolver Endpoint ──┤
+   (forwarding rules:           │
+    *.internal.corp.com   ──────┴─→ corporate DNS over VPN/DX
+    routes to on-prem DNS)
+```
+
+**Exam triggers:**
+- *"On-prem servers need to resolve AWS private hosted zone names"* → **Inbound Resolver Endpoint**
+- *"EC2 instances need to resolve on-prem internal domains"* → **Outbound Resolver Endpoint + forwarding rules**
+- *"Bidirectional DNS between AWS and on-prem"* → **Inbound + Outbound + Forwarding Rules**
+- *"Block resolution of malicious domains from a VPC"* → **Route 53 Resolver DNS Firewall**
+
+#### DHCP Option Sets
+
+You can override what DNS / NTP servers a VPC's instances get via **DHCP option sets**. Common use: point instances at custom DNS (on-prem corporate DNS) instead of the Amazon-provided resolver.
+
+| Setting | Use |
+| ------- | --- |
+| `domain-name-servers` | List of DNS server IPs (e.g. `10.1.1.10, 10.1.1.11` for on-prem DNS) |
+| `domain-name` | Default search domain (`corp.example.com`) |
+| `ntp-servers` | NTP server IPs |
+| `netbios-name-servers` | Legacy Windows naming |
+
+Exam trigger: *"All EC2 instances in our VPC must use our on-prem DNS servers"* → **custom DHCP option set with `domain-name-servers` set to on-prem IPs**.
+
+### VPC Sharing via AWS RAM
+
+A pattern for multi-account networks: **one account owns the VPC; other accounts deploy resources into shared subnets**.
+
+```
+Network account (owner)
+  └── VPC: 10.0.0.0/16
+        ├── Subnet A (shared with App Team 1's account)
+        ├── Subnet B (shared with App Team 2's account)
+        └── Subnet C (shared with Data Team's account)
+              ↓
+        Each participant account deploys EC2 / RDS / ALB into its
+        designated subnets — without owning the VPC itself
+```
+
+#### Why use VPC Sharing?
+
+- **Centralised network governance** — one team owns CIDRs, route tables, peering, IGW/NAT, security baselines
+- **No duplicate NAT Gateways** — participants share the owner's NAT, saving $$
+- **Simpler hybrid connectivity** — DX / VPN attaches once to the owner's VPC, all participants benefit
+- **Cleaner security** — Security Groups in participant accounts can reference each other across the shared VPC
+
+#### What participants CAN and CANNOT do
+
+| Action | Owner | Participant |
+| ------ | ----- | ----------- |
+| Create / delete the VPC | ✅ | ❌ |
+| Manage CIDRs, route tables, IGW, NAT | ✅ | ❌ |
+| Manage VPN, peering, Transit Gateway attachments | ✅ | ❌ |
+| Create subnets | ✅ | ❌ |
+| Deploy EC2 / RDS / ALB into shared subnets | ✅ | ✅ |
+| Create Security Groups + reference them across accounts | ✅ | ✅ |
+
+#### VPC Sharing vs VPC Peering vs Transit Gateway
+
+| Pattern | When |
+| ------- | ---- |
+| **VPC Sharing (RAM)** | Many teams / accounts that should appear to share one network. **Owner pays NAT/data** |
+| **VPC Peering** | A few VPCs (typically own by separate teams) that need to talk to each other. **Each VPC pays its own NAT/etc.** |
+| **Transit Gateway** | Many VPCs that need transitive connectivity + hybrid; each VPC is independent |
+
+**Exam triggers:**
+- *"Centralised networking team manages one VPC; app teams deploy into shared subnets"* → **VPC Sharing via RAM**
+- *"Avoid paying for NAT Gateway in every account"* → **VPC Sharing** (one NAT, all participants use it)
+- *"Multi-account architecture with shared DX / VPN"* → **VPC Sharing** (or TGW with shared attachments)
+
+### Amazon VPC Lattice
+
+**Anchored as a managed service mesh for AWS.** A newer (2023) **application-layer connectivity layer** for service-to-service communication — across VPCs, accounts, and on-prem. Handles auth, routing, observability, traffic management for HTTP/HTTPS calls *without* peering or PrivateLink complexity.
+
+#### Core concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Service network** | Logical grouping that contains services and clients. The "fabric" |
+| **Service** | A discoverable endpoint (Lambda, ECS service, ALB target, K8s pod, IP target) |
+| **Listener** | The protocol (HTTP / HTTPS) + port + routing rules |
+| **Target group** | Where requests land (similar to ELB target groups) |
+| **Authentication** | None / IAM auth (uses SigV4 — like the AWS API) |
+
+#### Why VPC Lattice exists
+
+Without Lattice, service-to-service across VPCs / accounts means **PrivateLink, peering, or TGW** — each with its own setup overhead. Lattice replaces that with:
+
+- **No peering, no NAT** — services discoverable by friendly DNS names regardless of underlying VPC
+- **IAM-native auth** — caller's IAM identity authorises the call (no API keys to manage)
+- **Built-in observability** — CloudWatch metrics, access logs out of the box
+- **Multi-target-type** — same listener can route to ALB, NLB, Lambda, ECS, K8s, IP, by weight or path
+
+#### When VPC Lattice vs Other Patterns
+
+| Question | Use |
+| -------- | --- |
+| *"East-west service-to-service across VPCs / accounts, HTTP-based"* | **VPC Lattice** |
+| *"Expose a SaaS to many customer VPCs"* | **PrivateLink** (Lattice is for *internal* connectivity) |
+| *"Cross-VPC routing for arbitrary protocols (not just HTTP)"* | **Transit Gateway** |
+| *"Public internet-facing app"* | **CloudFront + ALB / API Gateway** |
+
+**Exam triggers:**
+- *"Connect microservices across multiple VPCs without managing peering"* → **VPC Lattice**
+- *"IAM-based service-to-service auth across accounts"* → **VPC Lattice with SigV4 auth**
+- *"Friendly DNS for cross-VPC service calls"* → **VPC Lattice**
+
+### AWS Cloud WAN
+
+**Anchored as Transit Gateway's bigger sibling for multi-region networks.** Cloud WAN gives you a **global network policy in JSON**; AWS provisions the underlying TGWs, peerings, and attachments to match. Think of it as Terraform-for-network-architecture.
+
+#### Core concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Global network** | The top-level Cloud WAN resource — one per organisation |
+| **Core network policy** | JSON document declaring your desired network topology (segments, regions, routing) |
+| **Core Network Edges** (CNEs) | AWS-provisioned regional networking nodes (effectively TGWs under the hood) |
+| **Segments** | Network-level isolation (like TGW route tables, but declarative) |
+| **Attachments** | VPCs, VPNs, Direct Connect, TGWs all attach to CNEs |
+
+#### Cloud WAN vs Transit Gateway
+
+| | **Transit Gateway** | **AWS Cloud WAN** |
+| - | ------------------- | ----------------- |
+| Setup | Manual: create TGW per region + peerings + route tables | **Declarative policy in JSON** — AWS builds it |
+| Multi-region | Manual TGW peering | **Native multi-region** |
+| Segmentation | TGW route tables | **First-class segments** |
+| Visibility | TGW Network Manager (optional add-on) | **Built-in global dashboard** |
+| Maturity | Mature, widely used | Newer (2022+); enterprise pattern |
+| Cost | Per-attachment + data | Higher overhead — only worth it at multi-region scale |
+
+**Decision:** small / single-region → **TGW**. 5+ regions, declarative IaC for network → **Cloud WAN**.
+
+**Exam triggers:**
+- *"Declarative multi-region network policy"* → **AWS Cloud WAN**
+- *"Manage a global network of 8+ regions as code"* → **AWS Cloud WAN**
+- *"Single-region or two-region setup"* → **Transit Gateway** is sufficient
+
+### AWS VPC IP Address Manager (IPAM)
+
+**Anchored as IP-CIDR-planning-as-code.** IPAM is AWS's tool for **centrally planning, tracking, and auto-allocating IP CIDRs** across your org's VPCs. Useful once you outgrow "we'll assign CIDRs by hand in a spreadsheet."
+
+#### Core concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **IPAM pool** | A hierarchical CIDR space you've reserved (e.g. `10.0.0.0/8` at the top) |
+| **Sub-pools** | Carve top pool into regional / per-account / per-environment sub-pools |
+| **Auto-allocation** | New VPCs get CIDRs auto-assigned from the appropriate pool — no conflicts, no overlaps |
+| **Public IPAM** | Manage BYOIP (Bring-Your-Own-IP) address space too |
+| **Monitoring** | Track utilisation; alert when a pool nears exhaustion |
+
+#### When IPAM is worth it
+
+- 50+ VPCs across many accounts
+- Risk of accidentally allocating overlapping CIDRs (which would break peering / TGW)
+- Compliance — need an audit trail of who got which CIDR when
+- BYOIP address space management
+
+For small orgs, IPAM is overkill — just track CIDRs in a spreadsheet or Terraform variables.
+
+**Exam triggers:**
+- *"Centrally plan and prevent overlapping CIDRs across many accounts"* → **AWS IPAM**
+- *"Auto-allocate CIDRs to new VPCs from a reserved pool"* → **IPAM with auto-allocation**
+- *"Manage BYOIP across the org"* → **IPAM public pool**
+
 ### VPC Flow Logs
 
 Capture metadata about IP traffic in your VPC. Useful for security forensics, troubleshooting connectivity ("why is this blocked?"), and traffic analysis.
@@ -955,6 +1222,56 @@ Capture metadata about IP traffic in your VPC. Useful for security forensics, tr
 **Exam triggers:**
 - *"why is traffic being blocked between two instances"* → enable VPC Flow Logs, look for REJECT entries
 - *"audit which IPs accessed our database"* → VPC Flow Logs on the RDS ENI
+
+### Reachability Analyzer and Network Access Analyzer
+
+Two complementary troubleshooting / governance tools for VPC connectivity. Often confused — they answer different questions.
+
+| | **Reachability Analyzer** | **Network Access Analyzer** |
+| - | ------------------------- | ---------------------------- |
+| Answers | *"Can host A reach host B right now?"* (point-to-point test) | *"What network access exists across the org?"* (continuous posture analysis) |
+| Scope | One source + one destination | Whole VPC / org |
+| Output | Detailed path showing every hop, every SG/NACL/route/IGW rule it passes through (or where it fails) | List of resources that match a "Network Access Scope" you define |
+| Use case | *"Why can't my Lambda reach RDS?"* — gives you the exact rule blocking | *"Find every VPC with an internet path to RDS"* — catches misconfigurations org-wide |
+| Pricing | $0.10 per analysis | Per Network Access Scope analysed |
+
+#### Reachability Analyzer — the path debugger
+
+```
+Source: EC2 instance i-aaa  (10.0.1.10, eu-west-1a)
+Destination: RDS instance db-xxx  (10.0.10.20, eu-west-1a)
+
+Result: NOT REACHABLE
+
+Path:
+  1. ENI eni-source              → ✓ allowed
+  2. Subnet route table          → ✓ local route to 10.0.0.0/16
+  3. Security Group (source)     → ✓ outbound allows 0.0.0.0/0:3306
+  4. NACL (source subnet)        → ✓ allows outbound
+  5. Subnet route table (dest)   → ✓ local route
+  6. NACL (dest subnet)          → ✓ allows inbound
+  7. Security Group (dest)       → ❌ DENIED — no inbound rule for 10.0.1.10:3306
+                                    (RDS SG only allows from sg-app, not direct CIDRs)
+
+→ Fix: either add the source CIDR to the RDS SG, or attach sg-app to the source EC2
+```
+
+This is the level of detail it gives you — every layer of the AWS networking stack inspected, with the exact rule that blocks (or allows) clearly identified.
+
+#### Network Access Analyzer — the posture analyser
+
+You define a **Network Access Scope** (e.g. *"any internet-facing resource that can reach a database subnet"*), and the analyser finds every match across your VPCs and accounts.
+
+Built-in scopes include:
+- *Resources with direct internet connectivity*
+- *Internet-facing resources reaching sensitive subnets*
+- *Cross-VPC connectivity through peering*
+
+**Exam triggers:**
+- *"Why can't host A reach host B?"* → **Reachability Analyzer**
+- *"Find every VPC with internet-reachable databases"* → **Network Access Analyzer**
+- *"Show the exact rule blocking traffic"* → **Reachability Analyzer**
+- *"Audit network exposure across the org"* → **Network Access Analyzer**
 
 ### Direct Connect and Site-to-Site VPN
 
@@ -971,6 +1288,193 @@ Two ways to connect on-prem to AWS:
 
 **Hybrid pattern:** Direct Connect for production traffic, VPN as a backup if the DX link fails.
 
+#### Direct Connect Deeper Bits
+
+**Virtual Interfaces (VIFs)** — the logical channel on top of the physical DX line. Three types, each tested:
+
+| VIF type | Connects to | Use |
+| -------- | ----------- | --- |
+| **Private VIF** | A single VPC (via Virtual Private Gateway) | Reach private resources in one VPC |
+| **Transit VIF** | A **Direct Connect Gateway** which attaches to a **Transit Gateway** | Reach many VPCs (often multi-region) via TGW |
+| **Public VIF** | AWS **public endpoints** (S3, DynamoDB, etc.) — but **not the public internet** | Avoid the public internet for AWS public-service access |
+
+**Direct Connect Gateway** — multi-region glue. One DX physical connection can reach VPCs in **multiple regions** by attaching the DX Gateway to a Virtual Private Gateway (per region) or a Transit Gateway.
+
+**Hosted vs Dedicated connections:**
+
+| | **Dedicated** | **Hosted** |
+| - | ------------- | ---------- |
+| Provided by | AWS directly | An AWS Partner |
+| Bandwidth options | 1, 10, 100 Gbps (fixed) | 50 Mbps up to 10 Gbps (flexible) |
+| Setup time | Weeks (physical install) | Days (partner provisions a slice of their existing port) |
+| Cost | Higher (whole port for you) | Lower (sharing physical infrastructure) |
+
+**Link Aggregation Group (LAG)** — bundle multiple DX connections into one logical link for higher bandwidth + redundancy.
+
+**Encryption options on DX:**
+
+By default, **DX traffic is NOT encrypted** (it's a private line, but plaintext). For encryption:
+
+| Option | How |
+| ------ | --- |
+| **MACsec** | Hardware-level Layer 2 encryption on the DX port. Requires supported hardware + the 10/100 Gbps tiers |
+| **Site-to-Site VPN over DX** | Run a VPN tunnel inside the DX connection — gets you IPsec encryption with DX's low/consistent latency |
+| **Application-layer TLS** | Just use TLS for the actual traffic (web apps); DX adds privacy + consistency, app provides encryption |
+
+**Exam trap:** *"DX connection is private so it's encrypted"* → **wrong**. DX is private but not encrypted by default. Use **MACsec** or **VPN over DX** if encryption is required.
+
+#### Site-to-Site VPN Deeper Bits
+
+**Dual-tunnel HA** — every Site-to-Site VPN automatically gets **two tunnels** to different AWS endpoints. Your customer gateway should be configured to use both (active/active or active/standby).
+
+**Static vs dynamic (BGP) routing:**
+
+| | **Static routing** | **BGP routing** |
+| - | ------------------ | --------------- |
+| Setup | Manually configure routes on both sides | Use BGP to exchange routes dynamically |
+| Failover | Manual | Automatic — BGP detects tunnel down + reroutes |
+| When | Small, stable network | Recommended for production / scale |
+
+**Accelerated Site-to-Site VPN** — uses **AWS Global Accelerator** under the hood to route VPN traffic over the AWS backbone from the nearest edge location. Lower + more consistent latency. ~10% extra cost.
+
+**VPN CloudHub** — a hub-and-spoke topology using a single Virtual Private Gateway to connect **multiple on-prem sites** via VPN. Each site terminates its VPN at the VGW; the VGW routes between them. *Cheap multi-site hybrid pattern* without needing a TGW.
+
+**Exam triggers:**
+- *"Connect AWS to multiple remote offices, cheap and simple"* → **VPN CloudHub** (single VGW, multiple customer gateways)
+- *"Direct Connect failover to VPN"* → **VPN as backup with BGP for automatic failover**
+- *"Lower-latency VPN over the public internet"* → **Accelerated Site-to-Site VPN** (uses Global Accelerator)
+- *"Encrypt traffic over Direct Connect"* → **MACsec** or **VPN over DX**
+
+### AWS Client VPN
+
+**Anchored as workforce VPN: laptops → AWS.** Site-to-Site VPN connects entire networks; **Client VPN connects individual users**. The exam constantly tests the distinction.
+
+#### Client VPN vs Site-to-Site VPN
+
+| | **Site-to-Site VPN** | **AWS Client VPN** |
+| - | --------------------- | ------------------- |
+| What it connects | **Whole on-prem network** to VPC | **Individual user laptops / devices** to VPC |
+| Protocol | IPsec (industry standard) | TLS (OpenVPN-compatible) |
+| Client software | None — uses customer gateway (hardware/router) | **AWS Client VPN client** (or any OpenVPN client) |
+| Auth | Pre-shared key / certificate | **Active Directory**, **SAML / Identity Center**, or **mutual TLS** (certs) |
+| Use case | Office / data centre to AWS | Remote employees / contractors accessing AWS private resources |
+| Pricing | Per-tunnel-hour | Per-endpoint-hour + per-connected-user-hour |
+
+#### Core Client VPN concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Client VPN endpoint** | The VPN entry point you create; users connect to it |
+| **Target network associations** | Which subnets the endpoint can reach (you associate ≥1 subnets) |
+| **Authorisation rules** | Per-CIDR / per-group rules controlling who can reach what |
+| **Connection log** | CloudWatch Logs of who connected when (audit trail) |
+| **Split-tunnel** | Only traffic to AWS goes through the VPN; everything else uses the user's local internet — better UX, less load on the endpoint |
+| **Full-tunnel** | ALL user traffic routed through AWS — useful for centralised inspection, less private for users |
+
+#### Typical flow
+
+```
+1. User opens AWS VPN Client on their laptop
+       ↓
+2. Authenticates (e.g. SAML via Okta / IAM Identity Center)
+       ↓
+3. TLS tunnel established to the Client VPN endpoint
+       ↓
+4. User assigned an IP from the endpoint's CIDR pool
+       ↓
+5. Authorisation rules evaluate: "is this user/group allowed to reach 10.0.10.0/24?"
+       ↓
+6. If allowed, user can reach private resources (RDS, internal apps) as if on the VPC
+```
+
+**Exam triggers:**
+- *"Remote employees need to access private RDS / internal apps in VPC"* → **AWS Client VPN**
+- *"Connect a remote office to AWS"* → **Site-to-Site VPN** (not Client VPN)
+- *"Federate Client VPN with Active Directory or Okta"* → **Client VPN with AD / SAML auth**
+- *"Only AWS-bound traffic should go through the VPN"* → **Split-tunnel mode**
+- *"Audit who connected when"* → **Client VPN connection logs to CloudWatch**
+
+### Gateway Load Balancer (GWLB)
+
+**Anchored as: a transparent L3 load balancer for inline traffic appliances.** GWLB lets you deploy fleets of **third-party security/network appliances** (Palo Alto, Check Point, Fortinet firewalls, IDS/IPS like Snort/Suricata) and have ALL VPC traffic transparently flow through them for inspection — without any changes to the source/destination of the traffic.
+
+#### What problem GWLB solves
+
+Before GWLB: deploying inline 3rd-party appliances in AWS meant:
+- Routing traffic to an EC2 instance running the appliance
+- Single instance = SPoF + bandwidth bottleneck
+- No native load balancing of the appliances themselves
+- Appliances had to do their own NAT / source-IP-rewriting
+
+GWLB makes appliance fleets:
+- **Transparent** (preserve original source IP)
+- **Horizontally scalable** (just add more appliances)
+- **Highly available** (auto-replaces unhealthy ones)
+- **Inline in the data path** (no DNS tricks needed)
+
+#### Core concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Gateway Load Balancer** | The actual load balancer — sits in a "security VPC" |
+| **GENEVE encapsulation** | The protocol GWLB uses to forward traffic to appliances (UDP/6081). Wraps the original IP packet so the appliance sees true source/dest |
+| **Target group** | The appliances behind the GWLB (EC2 instances running firewall/IDS software) |
+| **Gateway Load Balancer Endpoint (GWLBE)** | An ENI in your *service VPC* that traffic routes to — acts as the "front door" |
+| **Service consumer model** | Like PrivateLink: security team runs the GWLB; app teams' VPCs connect via GWLBEs |
+
+#### The architectural pattern
+
+```
+       Internet
+           │
+           ▼
+   ┌──────────────────┐
+   │ Public Subnet    │
+   │ (route table:    │
+   │  default route   │
+   │  to GWLBE)       │
+   └────────┬─────────┘
+            │
+            ▼
+   ┌──────────────────┐               ┌────────────────────────┐
+   │ GWLBE (in your   │ ←──GENEVE──→  │ Security VPC           │
+   │ VPC)             │               │   Gateway Load         │
+   └────────┬─────────┘               │   Balancer             │
+            │                          │       │                │
+            │ (after inspection,       │       ▼                │
+            │  traffic returns)        │   Appliance fleet      │
+            ▼                          │   (Palo Alto / etc.)   │
+   ┌──────────────────┐               └────────────────────────┘
+   │ Private Subnet   │
+   │ (app instances)  │
+   └──────────────────┘
+```
+
+Traffic flows: **app VPC → GWLBE → GENEVE-tunnelled to Security VPC → through appliance fleet → returned to app VPC**. The app sees no change.
+
+#### GWLB vs AWS Network Firewall
+
+| | **AWS Network Firewall** | **Gateway Load Balancer** |
+| - | ------------------------ | -------------------------- |
+| What it is | A fully managed firewall (AWS provides the engine) | A load balancer for **3rd-party** appliances you bring |
+| Engine | AWS-managed Suricata + custom rules | Whatever appliance you deploy (Palo Alto, Check Point, Fortinet, Snort, custom) |
+| Use when | You want AWS-managed firewall, no licence to buy | You already have a 3rd-party security vendor + their cloud offering |
+| Maintenance | AWS patches | You patch (or AMI vendor) |
+
+**Decision:** new build, no existing vendor preference → **Network Firewall**. Existing relationship with Palo Alto / Check Point / Fortinet and want their cloud edition → **GWLB + their appliance**.
+
+#### Common Anti-patterns
+
+- *"Use ALB for inline firewall inspection"* — ALB is L7 HTTP, not transparent. Use GWLB
+- *"Single appliance EC2 with route table pointing to it"* — no HA, no scaling. Use GWLB-fronted fleet
+- *"GWLB for L7 HTTP routing"* — wrong tool. GWLB is transparent L3; use ALB for L7
+
+**Exam triggers:**
+- *"Deploy a fleet of 3rd-party firewalls / IDS that scales horizontally"* → **GWLB**
+- *"Transparent inline traffic inspection without changing source/dest IPs"* → **GWLB** (uses GENEVE)
+- *"Centralised security appliance inspection across many VPCs"* → **GWLB in security VPC + GWLBEs in app VPCs**
+- *"My existing Palo Alto / Check Point / Fortinet team wants to run their cloud appliance in AWS"* → **GWLB + vendor's AMI**
+
 ### VPC Anti-patterns (exam wrong answers)
 
 - **Attaching security groups to SQS/SNS/S3/DynamoDB** — these don't have ENIs. Use IAM + resource policy, plus VPC endpoints if you need the traffic to stay private.
@@ -980,6 +1484,16 @@ Two ways to connect on-prem to AWS:
 - **Relying on a tight SG with a public IP** — public IPs still attract noise; private subnet + ALB is stronger.
 - **Trying to use NACL deny rules for application-level access control** — too brittle and far from the app. Use SG + IAM + WAF closer to the resource.
 - **Putting Lambda in a VPC by default** — only do it if Lambda needs to reach private resources (RDS, ElastiCache). VPC attachment loses internet access (unless NAT) and adds cold-start cost.
+- **Hundreds of EC2 instances calling the same external API through one NAT Gateway** — hits the **55k connection limit per destination**. Use VPC Endpoints (for AWS services) or distribute traffic.
+- **Site-to-Site VPN for individual remote employees** — wrong tool; that's **AWS Client VPN**.
+- **Trusting DX is encrypted by default** — it's not. Use **MACsec** or **VPN over DX**.
+- **Manually managing CIDRs across 50+ accounts in a spreadsheet** — error-prone; use **IPAM**.
+- **Spinning up appliances on standalone EC2 for inline inspection** — no HA, no scaling. Use **GWLB**.
+- **Single TGW route table for prod + dev** — no segmentation. Use **multiple TGW route tables**.
+- **Hand-managed multi-region TGW peerings + attachments** — at scale, consider **AWS Cloud WAN** declarative policy.
+- **Cross-VPC service-to-service via PrivateLink for HTTP microservices** — works but heavy. Consider **VPC Lattice** for HTTP service mesh.
+- **On-prem servers can't resolve AWS private hosted zone names** — need an **Inbound Resolver Endpoint**.
+- **EC2 instances can't resolve on-prem internal domains** — need an **Outbound Resolver Endpoint + forwarding rules**.
 
 ### VPC Exam Triggers
 
@@ -995,6 +1509,33 @@ Two ways to connect on-prem to AWS:
 - *"on-prem to AWS, fast to set up, encrypted"* → Site-to-Site VPN
 - *"expose my VPC-hosted SaaS to customer VPCs"* → PrivateLink (NLB + VPC Endpoint Service)
 - *"block a malicious IP range across the whole subnet"* → NACL deny rule (SGs are allow-only)
+- *"private IPv6 instances need outbound internet only"* → **Egress-Only Internet Gateway**
+- *"hundreds of EC2 instances dropping connections to the same API endpoint"* → NAT Gateway **55k connection limit per destination**
+- *"on-prem servers need to resolve AWS private hosted zone names"* → **Route 53 Resolver Inbound endpoint**
+- *"EC2 needs to resolve on-prem internal domains"* → **Route 53 Resolver Outbound endpoint + forwarding rules**
+- *"central networking team manages one VPC; app teams deploy resources into shared subnets"* → **VPC Sharing via AWS RAM**
+- *"avoid duplicate NAT Gateways across many accounts"* → **VPC Sharing** (participants use the owner's NAT)
+- *"east-west microservice connectivity across VPCs with IAM auth"* → **VPC Lattice**
+- *"declarative multi-region network policy"* → **AWS Cloud WAN**
+- *"centrally manage CIDRs across many accounts, prevent overlap"* → **AWS IPAM**
+- *"point all VPC instances at on-prem DNS servers"* → **custom DHCP option set**
+- *"segment prod and dev networks via TGW"* → **TGW with multiple route tables**
+- *"connect TGWs across regions"* → **TGW peering attachments**
+- *"why can't host A reach host B? show me the exact rule blocking"* → **Reachability Analyzer**
+- *"audit network exposure across the org continuously"* → **Network Access Analyzer**
+- *"Direct Connect needs to reach VPCs in multiple regions"* → **Direct Connect Gateway**
+- *"reach AWS public services (S3) over Direct Connect, avoiding the internet"* → **Public VIF**
+- *"DX with TGW for many-VPC hybrid"* → **Transit VIF + Direct Connect Gateway + TGW**
+- *"encrypt traffic over Direct Connect"* → **MACsec** (hardware-level) or **VPN over DX** (IPsec)
+- *"connect multiple remote offices to AWS via VPN cheaply"* → **VPN CloudHub** (one VGW, multiple customer gateways)
+- *"automatic failover for Site-to-Site VPN"* → **BGP dynamic routing**
+- *"lower-latency VPN by using AWS backbone"* → **Accelerated Site-to-Site VPN**
+- *"remote employees / laptops need access to private resources in VPC"* → **AWS Client VPN**
+- *"only AWS-bound traffic goes through the Client VPN"* → **split-tunnel mode**
+- *"Client VPN auth via Okta / Identity Center / Active Directory"* → **SAML / AD auth**
+- *"deploy a fleet of 3rd-party firewalls / IDS that scales"* → **Gateway Load Balancer (GWLB)**
+- *"transparent L3 inline inspection without changing source/dest IPs"* → **GWLB with GENEVE**
+- *"centralised security appliance VPC inspecting traffic from many app VPCs"* → **GWLB + GWLBEs**
 
 ## EFS
 
