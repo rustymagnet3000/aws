@@ -2519,6 +2519,7 @@ The simplest end-to-end Config story — one rule, one violation, one auto-fix.
 **Step 1 — Enable the rule (one click).** AWS ships a managed rule called **`s3-bucket-public-read-prohibited`**. You enable it. No code.
 
 **Step 2 — Someone screws up.** A developer debugging a new bucket runs:
+
 ```bash
 aws s3api put-bucket-acl --bucket marketing-assets --acl public-read
 ```
@@ -2551,6 +2552,7 @@ EventBridge → SSM Automation → aws s3api put-bucket-acl --acl private
 **With Config:** one checkbox enables the rule, it evaluates the moment a bucket changes (not on a poll), and dashboard + history + EventBridge come free.
 
 **The pattern, generalised:**
+
 ```
 1. Pick a rule (managed or custom): "X must be true of resource Y"
 2. Enable it
@@ -3151,6 +3153,7 @@ For CLI use: `aws configure sso` walks Alice through setup; `aws sso login` open
 - **MFA enforcement** configured at the Identity Center level — applies to every login
 
 Common patterns:
+
 ```
 ReadOnly                  → AWS managed: ReadOnlyAccess
 BillingAdmin              → AWS managed: AWSBillingReadOnlyAccess + custom budget actions
