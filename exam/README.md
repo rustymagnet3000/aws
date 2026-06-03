@@ -814,14 +814,22 @@ An instance also needs a **public IP** or **Elastic IP** to be reachable from th
 
 Private subnets need a way to reach the internet for outbound traffic (package updates, third-party APIs) **without** being reachable inbound. A NAT does the translation.
 
-| | NAT Gateway | NAT Instance |
-| - | ----------- | ------------ |
-| What it is | Managed AWS service | Regular EC2 instance you manage |
-| Scaling | Up to 45 Gbps, automatic | Limited by instance size, manual |
-| Patching/HA | AWS handles it | You handle it |
-| Cost | ~$0.045/hour + ~$0.045/GB processed | EC2 hourly + data |
-| AZ scope | Single AZ — needs one per AZ for HA | Single AZ |
-| Use | Default choice | Legacy, cost-optimisation in dev |
+**Status note:** AWS's official NAT instance AMI (`amzn-ami-vpc-nat`) was **deprecated in December 2020** — AWS no longer patches or updates it. The *capability* isn't removed: you can still run a NAT instance on any Linux AMI with `iptables` MASQUERADE configured. The popular modern community AMI is **[fck-nat](https://fck-nat.dev)** — drop-in NAT instance on a `t4g.nano` for ~$3/month. Most exam questions assume NAT Gateway as the default; NAT Instance still appears as the **cost-optimisation answer** for low-traffic / dev environments.
+
+| | NAT Gateway | NAT Instance (e.g. fck-nat) |
+| - | ----------- | --------------------------- |
+| What it is | Managed AWS service | EC2 instance you manage (AWS AMI deprecated 2020; use fck-nat or your own) |
+| Scaling | Up to 100 Gbps, automatic | Instance-size-limited (5 Gbps on `t4g.nano`, more on bigger) |
+| Patching / HA | AWS handles it | You patch the OS; you set up Auto Scaling for HA |
+| Cost (idle) | ~$0.045/hour × 730h ≈ **~$33/month per AZ** | `t4g.nano` ≈ **~$3/month per AZ** |
+| Cost (data) | + ~$0.045/GB processed | Just normal EC2 data transfer |
+| Cost — typical multi-AZ dev VPC | ~$99/month (3 AZs idle) before data | ~$9/month for 3 × t4g.nano |
+| AZ scope | Single AZ — one per AZ for HA | Single AZ — one per AZ for HA |
+| Security group on the NAT | ❌ NAT Gateway has no SG | ✅ NAT Instance is just an EC2 — full SG control |
+| Port forwarding (inbound DNAT) | ❌ | ✅ |
+| Bastion + NAT combined | ❌ | ✅ (the box can do both jobs) |
+| Connection limit | 55k per unique destination IP+port | Limited by ephemeral port range + instance memory |
+| Use | **Default choice for production** | **Cost-optimisation for dev / low-traffic**; specialised needs (port forward, custom iptables, bastion combo) |
 
 **The HA trap:** a NAT Gateway lives in **one AZ**. If you put all private subnets through a single NAT Gateway in `eu-west-1a` and that AZ fails, private subnets in `eu-west-1b` also lose internet (they were routing through the dead NAT). **Fix:** one NAT Gateway per AZ, each private subnet routes to its own AZ's NAT.
 
@@ -832,6 +840,16 @@ Multi-AZ NAT setup:
 ```
 
 **The 55,000 connection limit gotcha:** a single NAT Gateway supports up to **55,000 simultaneous connections per unique destination (IP + port)**. If hundreds of EC2 instances all hammer the same external endpoint (e.g. a popular SaaS API on the same hostname:port), you can exhaust this and see intermittent connection failures — but only to *that* destination. Calls to other destinations work fine. **Fix:** distribute traffic across multiple destinations / endpoints, deploy multiple NAT Gateways in the same AZ + split subnets across them, or use **VPC Endpoints** for AWS services to bypass NAT entirely. Exam trigger: *"hundreds of EC2 instances seeing intermittent connection drops to a single external API but other traffic works"* → **NAT Gateway 55k connection limit per destination**.
+
+**NAT exam triggers:**
+
+- *"Default NAT for production"* → **NAT Gateway**
+- *"Most cost-effective NAT for low-traffic dev environment"* → **NAT Instance** (10× cheaper than NAT GW)
+- *"NAT with port forwarding (inbound DNAT)"* → **NAT Instance** — NAT GW doesn't support it
+- *"Attach a security group to my NAT"* → **NAT Instance** — NAT GW has no SG
+- *"Highly available, scalable, managed NAT"* → **NAT Gateway one-per-AZ**
+- *"AWS-provided NAT instance AMI"* → **deprecated since 2020** — use community AMIs (fck-nat) or NAT GW
+- *"Combine bastion + NAT on a single instance"* → **NAT Instance** (one EC2 doing both jobs)
 
 ### Route Tables
 
