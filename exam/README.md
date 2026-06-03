@@ -143,6 +143,7 @@
   - [Envelope Encryption — How It Actually Flows](#envelope-encryption--how-it-actually-flows)
   - [Common Use Cases (where KMS hides underneath)](#common-use-cases-where-kms-hides-underneath)
   - [Key Policies vs IAM Policies — the Gotcha](#key-policies-vs-iam-policies--the-gotcha)
+  - [Worked Example: S3 Cross-Bucket Replication with SSE-KMS](#worked-example-s3-cross-bucket-replication-with-sse-kms)
   - [When to Use CloudHSM Instead](#when-to-use-cloudhsm-instead)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-16)
   - [Exam Triggers](#exam-triggers-16)
@@ -3562,6 +3563,96 @@ Unlike most resource policies in AWS, a KMS **key policy is required** and acts 
 That `Principal: root` doesn't mean "the root user" — it means "any IAM principal in this account, subject to IAM policies". Without it, IAM policies granting KMS permissions don't work.
 
 **Exam trap:** *"Why can't this IAM user use the key despite having `kms:Decrypt` in their IAM policy?"* → **Key policy doesn't include them or doesn't defer to IAM**.
+
+### Worked Example: S3 Cross-Bucket Replication with SSE-KMS
+
+The classic exam scenario that ties KMS + IAM + S3 + key policies together. Setup:
+
+> *Source bucket encrypted with SSE-KMS (Key A). Target bucket encrypted with SSE-KMS (Key B). You configure S3 replication, both buckets, both KMS keys exist. **Replication is still not working.** What's missing?*
+
+The answer hinges on **three commonly-missed pieces**, in order of how often they trip people up:
+
+#### 1. The opt-in flag (most commonly missed)
+
+By default, S3 replication **silently skips** SSE-KMS encrypted objects. You have to explicitly opt in via `SseKmsEncryptedObjects.Status = Enabled` in the replication rule:
+
+```json
+{
+  "Rules": [{
+    "SourceSelectionCriteria": {
+      "SseKmsEncryptedObjects": {
+        "Status": "Enabled"          ← THE OPT-IN
+      }
+    },
+    "Destination": {
+      "Bucket": "arn:aws:s3:::target-bucket",
+      "EncryptionConfiguration": {
+        "ReplicaKmsKeyID": "arn:aws:kms:region:acct:key/TARGET-KEY-ID"
+      }
+    }
+  }]
+}
+```
+
+Without this flag, replication appears to "work" — unencrypted objects flow through, metrics look healthy — but every KMS-encrypted object is silently absent at the target. Brutal to debug.
+
+#### 2. The replication IAM role's KMS permissions
+
+S3 replication runs as an IAM role that S3 assumes. To replicate a KMS-encrypted object, the role must be able to **decrypt** with the source key and **encrypt** with the target key:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["kms:Decrypt"],
+  "Resource": "arn:aws:kms:region:acct:key/SOURCE-KEY-ID"
+},
+{
+  "Effect": "Allow",
+  "Action": ["kms:Encrypt", "kms:GenerateDataKey"],
+  "Resource": "arn:aws:kms:region:acct:key/TARGET-KEY-ID"
+}
+```
+
+Without this, the replication role can replicate **unencrypted** objects fine — but every SSE-KMS object fails.
+
+#### 3. The KMS key policies on BOTH keys
+
+Remember the double-gate from the previous subsection: **key policies are required; IAM alone doesn't grant access**. So both keys' key policies must also allow the replication role:
+
+- **Source key policy:** allow the replication role to `kms:Decrypt`
+- **Target key policy:** allow the replication role to `kms:Encrypt` + `kms:GenerateDataKey`
+
+Missing either key policy entry → replication still fails, even with perfect IAM policy.
+
+#### The full checklist (in order of "most commonly missing")
+
+```
+1. ✅ SseKmsEncryptedObjects.Status = Enabled in the replication rule
+2. ✅ Replication IAM role has KMS perms (Decrypt on source, Encrypt + GenerateDataKey on target)
+3. ✅ Source KMS key policy grants the replication role kms:Decrypt
+4. ✅ Target KMS key policy grants the replication role kms:Encrypt + kms:GenerateDataKey
+5. ✅ Destination config specifies ReplicaKmsKeyID
+6. ✅ Source bucket has versioning enabled (replication requires it)
+7. ✅ Target bucket has versioning enabled
+8. ✅ Replication role trust policy allows s3.amazonaws.com to assume it
+```
+
+#### Why this trips people up
+
+The console UI buries the opt-in. You click through "create replication rule," select source / destination / role, and the rule appears "configured" — nothing flags that KMS-encrypted objects need a separate opt-in. People often only discover this when an audit finds half the data missing at the target.
+
+#### The Mental Model
+
+> *S3 replication is "S3 service acting as a courier." It can deliver an unencrypted parcel just by knowing where to take it. But if the parcel is locked (KMS-encrypted), the courier needs the key to open it AND the key to lock the new parcel at the destination. The courier's keychain = the IAM role's KMS permissions. The lockmaker's permission slip = the KMS key policy. The shipping order has to specifically say "yes, also deliver locked parcels" — that's the SseKmsEncryptedObjects opt-in.*
+
+#### Exam framing variants
+
+| Question phrasing | Most likely answer |
+| ----------------- | ------------------ |
+| *"Replication configured, KMS keys exist, KMS-encrypted objects aren't replicating"* | **Opt-in: `SseKmsEncryptedObjects: Enabled` in the rule** |
+| *"Replication role exists, KMS keys exist, replication fails for encrypted objects"* | **Role needs `kms:Decrypt` on source + `kms:Encrypt`/`kms:GenerateDataKey` on target; both key policies must also allow the role** |
+| *"Cross-region replication with KMS"* | Plus **multi-region key** OR re-encryption with target-region key during copy |
+| *"Cross-account replication with KMS"* | Plus **target bucket policy** allowing source account's replication role to write |
 
 ### When to Use CloudHSM Instead
 
