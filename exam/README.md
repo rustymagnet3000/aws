@@ -932,11 +932,132 @@ The `local` route to the VPC CIDR is automatic and immutable — that's why subn
 
 ### NACLs (Network ACLs)
 
-- **Stateless** — you must allow inbound **and** outbound separately. If you only allow inbound on port 443, the response packet (on an ephemeral port) is dropped on the way out unless you also allow that.
-- **Attached to subnets** (not ENIs) — every resource in the subnet shares the NACL.
-- **Allow AND deny rules** — useful for explicit blocks (e.g. block a known-bad IP range).
-- **Rules evaluated in order** — lowest rule number first; first match wins.
-- **Default NACL** allows all traffic. **Custom NACLs** start denying everything.
+A NACL is a **stateless, subnet-level firewall** with both Allow and Deny rules. Most teams set it up once and forget it — but when it bites, it's usually because of the **stateless + ephemeral ports** combination. That's the part the exam loves.
+
+#### Core properties
+
+- **Stateless** — you must allow inbound **and** outbound separately. The return traffic is **not** auto-allowed (unlike Security Groups). This is the source of most NACL incidents
+- **Attached to subnets** — every resource in the subnet shares the NACL
+- **One subnet → one NACL** — but one NACL can be associated with many subnets
+- **Allow AND Deny rules** — unlike SGs which are allow-only. Useful for explicit IP blocks
+- **Rules evaluated in order** — lowest rule number first; **first match wins** (then evaluation stops)
+- **Implicit final `*` deny** — every NACL ends with an invisible `* → DENY ALL` that you can't remove
+- **Default NACL** allows all inbound + outbound. **Custom NACLs** start denying everything
+- **Per-VPC** — can't share NACLs across VPCs
+- **Filters traffic *crossing* subnet boundaries only** — traffic *within* a subnet is not inspected by the NACL
+
+#### The ephemeral port trap (most-tested NACL gotcha)
+
+> *"I allowed port 443 inbound. Why are my HTTPS connections still failing?"*
+
+Because the **response** goes out on the **client's ephemeral port**, not on port 443. With a stateless NACL, you need a rule for that too.
+
+```
+   Client (1.2.3.4, ephemeral port 51234)
+         │
+         │ SYN  src=1.2.3.4:51234  dst=10.0.1.10:443
+         ▼
+   ┌───────────────────────┐
+   │ Subnet NACL — inbound │
+   │ Rule: ALLOW 443       │  ✅ accept
+   └─────────┬─────────────┘
+             ▼
+         Your server processes the request
+             │
+             │ SYN+ACK  src=10.0.1.10:443  dst=1.2.3.4:51234
+             ▼
+   ┌────────────────────────┐
+   │ Subnet NACL — outbound │
+   │ Rule: ALLOW 443?       │  ❌ no — destination port is 51234, not 443
+   │ Implicit * DENY        │  → packet dropped
+   └────────────────────────┘
+```
+
+**The fix:** outbound NACL rules must allow the **ephemeral port range** as destination, because that's where the response is heading (the client's ephemeral port). For typical clients:
+
+| Client OS / runtime | Ephemeral port range |
+| -------------------- | -------------------- |
+| **Linux** (default) | 32768 – 60999 |
+| **Windows** | 49152 – 65535 |
+| **AWS Lambda / NAT Gateway** | 1024 – 65535 |
+| **Safe blanket rule** | **1024 – 65535** (covers all clients) |
+
+Most outbound NACL rules look like `ALLOW TCP 1024-65535` — that's the response channel for inbound services.
+
+**Mental model:** *Stateless NACLs need a rule for the response port — and the response port is the **client's** ephemeral port, not your service port. The outbound NACL rule isn't for your service speaking outbound; it's for sending responses back to clients on their ephemeral ports.*
+
+#### Rule numbering convention
+
+Rules are evaluated lowest-number first. **Leave gaps between rule numbers** so you can insert new rules later without renumbering:
+
+```
+100   ALLOW  TCP   443       0.0.0.0/0        (HTTPS)
+200   ALLOW  TCP   80        0.0.0.0/0        (HTTP)
+300   DENY   ALL   ALL       1.2.3.4/32       (block specific bad IP)
+*     DENY   ALL   ALL       0.0.0.0/0        (implicit, can't remove)
+```
+
+If a new rule needs to come between rules 100 and 200, you can number it 150 without renumbering anything. Gap-based numbering (100, 200, 300…) is the convention.
+
+**First match wins:** if rule 100 allows the traffic, rule 200 is never evaluated. **Order your DENY rules before broader ALLOW rules** if you want them to win.
+
+#### NACLs only filter subnet-boundary traffic
+
+Traffic *between* two instances **in the same subnet** is not inspected by the NACL — only traffic that **enters or leaves** the subnet hits the NACL. This catches people out:
+
+```
+Subnet 10.0.1.0/24, NACL denies inbound on port 22:
+
+  Instance A (10.0.1.10) → Instance B (10.0.1.20) on port 22 → ✅ ALLOWED
+    (traffic stays within the subnet, never crosses NACL boundary)
+
+  External (1.2.3.4) → Instance B (10.0.1.20) on port 22 → ❌ BLOCKED
+    (crosses into the subnet, NACL evaluates)
+```
+
+If you want to block intra-subnet traffic, that's a **Security Group** job — NACLs can't.
+
+#### ICMP handling (ping)
+
+ICMP doesn't use ports — it uses **types and codes**:
+
+| ICMP message | Type | Code |
+| ------------ | ---- | ---- |
+| Echo Request (ping out) | 8 | 0 |
+| Echo Reply (ping response) | 0 | 0 |
+| Destination Unreachable | 3 | 0–15 |
+
+For ping to work through a NACL, you need:
+- Inbound: `ALLOW ICMP, type 8, code 0` (the echo request arriving)
+- Outbound: `ALLOW ICMP, type 0, code 0` (the echo reply going back)
+
+Or — if your instance is initiating the ping outbound:
+- Outbound: `ALLOW ICMP, type 8, code 0`
+- Inbound: `ALLOW ICMP, type 0, code 0`
+
+Exam trigger: *"ping fails from outside the VPC even though SG allows ICMP"* → NACL is missing the echo reply rule.
+
+#### When NACLs are actually the right tool
+
+NACLs aren't just "block malicious IPs." Real use cases:
+
+| Use case | Why NACL not SG |
+| -------- | --------------- |
+| **Block a known-bad IP range** | SGs are allow-only — can't deny |
+| **PCI / regulatory subnet segregation** | Auditor wants a subnet-level firewall rule that's independent of per-instance config |
+| **Defence in depth** — second layer after SG | Two independent filtering layers reduce blast radius of a misconfigured SG |
+| **Compliance — audit trail of denies** | NACL deny rules show explicit policy. Combine with VPC Flow Logs `REJECT` entries for forensics |
+| **Subnet-wide allow lists** for sensitive subnets | "Only this CIDR range can reach the DB subnet" — applies regardless of which instance is there |
+
+#### Exam triggers
+
+- *"Block a specific IP range from reaching the whole subnet"* → **NACL deny rule** (SGs are allow-only)
+- *"I allowed port 443 inbound but HTTPS still fails"* → **NACL outbound missing ephemeral port range** (1024-65535)
+- *"Why does ping fail through my NACL?"* → **Missing ICMP echo reply rule** (type 0)
+- *"Two instances in the same subnet can talk despite the NACL deny"* → **NACLs don't filter intra-subnet traffic**; use Security Groups
+- *"Why is rule 200 not taking effect?"* → **Rule 100 already matched** (first-match-wins; reorder)
+- *"Default NACL behaviour vs new custom NACL"* → Default allows all; custom starts deny-all
+- *"Defence in depth at the subnet layer for PCI"* → **NACL** (auditor wants subnet-level rules)
 
 ### Security Groups vs NACLs
 
