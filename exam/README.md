@@ -19,6 +19,7 @@
   - [Subnets](#subnets)
   - [Internet Gateway (IGW)](#internet-gateway-igw)
   - [NAT Gateway vs NAT Instance](#nat-gateway-vs-nat-instance)
+  - [Centralised NAT (Egress VPC Pattern)](#centralised-nat-egress-vpc-pattern)
   - [Route Tables](#route-tables)
   - [Security Groups](#security-groups)
   - [NACLs (Network ACLs)](#nacls-network-acls)
@@ -850,6 +851,62 @@ Multi-AZ NAT setup:
 - *"Highly available, scalable, managed NAT"* → **NAT Gateway one-per-AZ**
 - *"AWS-provided NAT instance AMI"* → **deprecated since 2020** — use community AMIs (fck-nat) or NAT GW
 - *"Combine bastion + NAT on a single instance"* → **NAT Instance** (one EC2 doing both jobs)
+
+### Centralised NAT (Egress VPC Pattern)
+
+The default is "NAT Gateway in every VPC." At scale this gets expensive fast — 20 VPCs × 3 AZs = **60 NAT Gateways × ~$33/month idle = ~$2,000/month** before any data charges. The fix is **centralised NAT**: deploy NAT Gateways in **one shared egress VPC** and route every other VPC's outbound traffic through it via Transit Gateway.
+
+```
+                    Internet
+                        │
+                        ▼
+              ┌───────────────────────────┐
+              │  CENTRAL EGRESS VPC       │
+              │    NAT GW (per AZ)        │
+              │    + optional Network     │
+              │      Firewall / WAF       │
+              └─────────────┬─────────────┘
+                            │
+                    Transit Gateway
+                            │
+              ┌─────────────┼─────────────┐
+              ▼             ▼             ▼
+            VPC A         VPC B         VPC C
+        (no NAT GW)   (no NAT GW)   (no NAT GW)
+        Route table:  Route table:  Route table:
+        0.0.0.0/0     0.0.0.0/0     0.0.0.0/0
+            → TGW         → TGW         → TGW
+```
+
+Spoke VPCs send `0.0.0.0/0` to the TGW; TGW forwards to the egress VPC; the egress VPC's NAT Gateway handles the SNAT; response returns the same path.
+
+#### Why centralised NAT wins
+
+| Driver | Impact |
+| ------ | ------ |
+| **Cost** | 60 NAT Gateways → 3 NAT Gateways = **~$2,000/month → ~$99/month** before data. By far the most common reason orgs adopt it |
+| **Centralised egress filtering** | One place to attach **AWS Network Firewall** for egress inspection, one place to monitor Flow Logs |
+| **Consistent egress IPs** | All VPCs egress from the same handful of public IPs — useful when **whitelisting at third parties** (SaaS APIs, customer firewalls) |
+| **Simpler management** | Central networking team owns NAT + firewall; spoke teams don't manage networking primitives |
+| **Easier compliance** | All outbound traffic auditable in one place |
+
+#### The trade-offs
+
+| Trade-off | Detail |
+| --------- | ------ |
+| **TGW data processing charges** | Every cross-VPC packet incurs TGW data charges (~$0.02/GB). At very high volume this can eat the NAT savings — do the maths |
+| **Asymmetric routing risk** | If response packets come back via a different path, sessions break. Careful TGW route-table design needed |
+| **Single egress VPC = blast radius** | Mitigate with multi-AZ NAT Gateways in the egress VPC (you'd do this anyway) |
+| **Cross-region complexity** | Multi-region setups need TGW peering or per-region egress VPCs |
+| **Doesn't help VPC Endpoint traffic** | Traffic to S3/DynamoDB via Gateway endpoints bypasses NAT entirely anyway — that's still the right pattern for AWS-service traffic |
+
+#### Exam triggers
+
+- *"Reduce NAT Gateway costs across many VPCs"* → **Centralised egress VPC**
+- *"30 VPCs, want to consolidate NAT"* → **Centralised egress VPC + TGW**
+- *"Consistent public egress IPs across all our AWS accounts"* → **Centralised NAT in egress VPC**
+- *"Centrally inspect all outbound traffic from our VPCs"* → **Centralised egress + AWS Network Firewall**
+- *"Simpler management of NAT across the org"* → **Centralised egress VPC pattern**
 
 ### Route Tables
 
