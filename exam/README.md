@@ -1083,18 +1083,200 @@ NACLs aren't just "block malicious IPs." Real use cases:
 
 ### VPC Endpoints
 
-A VPC Endpoint lets resources in your VPC reach AWS services **without going over the public internet** (no NAT Gateway, no IGW). Two types:
+A VPC Endpoint lets resources in your VPC reach AWS services **without going over the public internet** (no NAT Gateway, no IGW). Two completely different mechanisms under the same name — knowing which is which is the most-tested VPC topic on the SAA exam.
 
-| | Gateway Endpoint | Interface Endpoint |
-| - | ---------------- | ------------------ |
-| Services | **S3 and DynamoDB only** | Almost every other AWS service (SQS, SNS, Kinesis, Secrets Manager, KMS, etc.) |
-| How | Adds a route to your route table | Creates an ENI in your subnet with a private IP |
-| Cost | **Free** | ~$0.01/hour per endpoint per AZ + per-GB data |
-| DNS | Service uses public DNS, traffic stays private | Endpoint gets a regional DNS name (or enables private DNS to override the public one) |
-| Security control | Endpoint policy | Endpoint policy + **security group** (on the ENI) |
-| Powered by | Custom routing | PrivateLink |
+#### The Two Flavours — Full Comparison
 
-**Exam shortcut:** "S3 or DynamoDB without going through NAT" → **Gateway endpoint** (free). Anything else → **Interface endpoint**.
+| | **Gateway Endpoint** | **Interface Endpoint** |
+| - | -------------------- | ----------------------- |
+| Services supported | **S3 and DynamoDB only** (just these two) | Almost every other AWS service: SQS, SNS, Kinesis, KMS, Secrets Manager, EC2 API, ECR, CloudWatch Logs, Step Functions, API Gateway, Systems Manager, Athena, Glue, etc. |
+| Underlying mechanism | **Custom routing entry** in your VPC route table pointing at the endpoint | **ENI created in each chosen subnet** with a private IP |
+| Cost | **Free** (no hourly charge, no data charge) | **~$0.01/hour per endpoint per AZ** + **~$0.01/GB processed** |
+| DNS | Public DNS unchanged; **routing decides** what's private | Endpoint gets a **regional DNS name**; **Private DNS option** rewrites the public DNS to resolve to the endpoint's private IPs |
+| Security control | **Endpoint policy** (resource policy on the endpoint) | **Endpoint policy + Security Group** (on the ENI) |
+| Reachable from on-prem (via DX / VPN) | ❌ **No** — Gateway endpoints work only from inside the VPC's route table | ✅ **Yes** — on-prem can reach the ENI's private IP via DX/VPN |
+| Reachable from peered VPC | ❌ **No** (edge-to-edge routing limitation) | ❌ Not directly (PrivateLink limitation) — needs its own endpoint in each VPC |
+| Powered by | Custom routing | **PrivateLink** (Interface endpoints ARE PrivateLink under the hood) |
+| HA / multi-AZ | Inherently HA — route entry applies to all subnets in the VPC | **You** decide which AZs to deploy ENIs in — pay per AZ |
+| Max per VPC | 255 per service | No hard cap; cost-bound |
+
+**The 90% shortcut:** *"S3 or DynamoDB privately"* → **Gateway endpoint** (free). *"Any other AWS service privately"* → **Interface endpoint** (paid).
+
+#### How Each Endpoint Actually Routes a Request
+
+```
+GATEWAY ENDPOINT (S3 / DynamoDB):
+
+  EC2 in private subnet
+       │
+       │ aws s3 ls s3://bucket
+       ▼
+  Public DNS: s3.eu-west-1.amazonaws.com → 52.x.y.z (PUBLIC IP)
+       │
+       │ but route table for this subnet contains:
+       │   pl-6da54004 (S3 prefix list) → vpce-xxx (Gateway Endpoint)
+       │
+       ▼
+  Traffic routes via Gateway Endpoint → S3 (over AWS backbone)
+  Never touches the internet, never hits NAT.
+```
+
+The clever bit: Gateway endpoints use **prefix lists** (`pl-xxx`) that contain all current S3 / DynamoDB IPs in the region. The route table sends those prefixes to the endpoint, not to NAT/IGW.
+
+```
+INTERFACE ENDPOINT (e.g. KMS, Secrets Manager, ECR):
+
+  EC2 in private subnet
+       │
+       │ aws kms decrypt ...
+       ▼
+  Without Private DNS:
+    Public DNS: kms.eu-west-1.amazonaws.com → public IP → blocked (no NAT)
+    Must use:   vpce-xxx-yyy.kms.eu-west-1.vpce.amazonaws.com → ENI's private IP
+    → app code change needed
+
+  With Private DNS enabled (the default for AWS services):
+    Public DNS: kms.eu-west-1.amazonaws.com → **rewritten to private IP**
+    → app code stays the same; transparently routes via ENI
+       ↓
+  Traffic enters the ENI in the AZ → AWS backbone → service
+```
+
+**Private DNS magic:** when enabled, the VPC's resolver returns the endpoint's private IP for the *public* service hostname. Apps using the standard SDK / hostname keep working with no code changes.
+
+#### Endpoint Policies — IAM for the Endpoint
+
+Every endpoint has its own resource-based policy that controls **what API calls can pass through this endpoint** (independent of the caller's IAM). Default is "allow all" — tighten when you need to.
+
+**Example: Gateway endpoint restricted to a specific bucket:**
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": "*",
+    "Action": "s3:*",
+    "Resource": [
+      "arn:aws:s3:::my-app-data",
+      "arn:aws:s3:::my-app-data/*"
+    ]
+  }]
+}
+```
+
+Any request through this endpoint can only touch `my-app-data`. Calls to other S3 buckets via this endpoint fail — even if IAM allows.
+
+**Use cases for endpoint policies:**
+- **Data exfiltration control** — endpoint can only reach approved S3 buckets in your org. Stops attackers from `aws s3 cp` to their own bucket via your endpoint
+- **Allow-list of approved AWS services** — restrict an Interface endpoint to specific API actions
+- **Cross-account governance** — limit which accounts' resources a VPC can reach
+
+#### S3 Has THREE Access Patterns Now
+
+S3 is special — it's the only service with both endpoint types **plus** a third "direct via internet" option:
+
+| Pattern | When |
+| ------- | ---- |
+| **Gateway Endpoint** | Default choice from VPC. Free. Works only from inside the VPC's route table |
+| **Interface Endpoint (PrivateLink for S3)** | When you need access **from on-prem** (via DX/VPN), or **cross-region**, or applying Security Groups. Paid |
+| **Direct via NAT + IGW** | Treating S3 as a public service. Standard internet egress costs apply. Almost never the right answer for VPC workloads |
+
+The S3 Interface endpoint is newer (2021). Why it matters:
+- **From on-prem:** an Interface endpoint's ENI has a private IP reachable over DX/VPN. The Gateway endpoint can't do this — its routing only works from inside the VPC
+- **Security Groups on S3 traffic:** Interface endpoint = ENI = SG. Gateway endpoint has no SG, only endpoint policy
+- **Cost:** Interface endpoint is paid; Gateway is free. Use Interface only when you need its specific capabilities
+
+#### Multi-AZ Deployment for Interface Endpoints
+
+Interface endpoints create one ENI per subnet you deploy them into. For HA:
+
+```
+VPC: eu-west-1
+  ├── Private subnet in 1a → Interface endpoint ENI (10.0.1.50)
+  ├── Private subnet in 1b → Interface endpoint ENI (10.0.2.50)
+  └── Private subnet in 1c → Interface endpoint ENI (10.0.3.50)
+
+Cost: 3 AZs × ~$0.01/hour × 730h = ~$22/month per endpoint
+```
+
+If you only deploy to one AZ and that AZ fails, the endpoint is unreachable for everyone — even instances in other AZs (their DNS resolves to the dead ENI). **Always deploy multi-AZ for production endpoints**, accepting the cost.
+
+#### Endpoints from On-Prem (the DX / VPN gotcha)
+
+A common multi-cloud / hybrid question:
+
+| Endpoint type | Reachable from on-prem (via DX or VPN)? |
+| ------------- | ---------------------------------------- |
+| **Gateway endpoint** | ❌ **No** — Gateway endpoints work only via VPC route tables. On-prem traffic enters the VPC but can't use the Gateway endpoint route |
+| **Interface endpoint** | ✅ **Yes** — the ENI has a private IP reachable over DX/VPN |
+
+**Exam trigger:** *"On-prem needs to reach S3 privately via Direct Connect"* → **S3 Interface endpoint** (Gateway won't work from on-prem).
+
+#### Cost Economics — When Endpoints Pay Off
+
+The accounting question: when does an endpoint save money vs just using NAT?
+
+```
+NAT Gateway costs:
+  $0.045/hour idle (per AZ) + $0.045/GB processed
+
+Interface Endpoint costs:
+  $0.01/hour (per AZ) + $0.01/GB processed
+
+Gateway Endpoint costs:
+  Free
+```
+
+**Break-even for a single Interface endpoint vs NAT:**
+- Hourly: $0.01/hour < $0.045/hour → endpoint is cheaper at idle
+- Per GB: $0.01/GB < $0.045/GB → endpoint is cheaper per byte
+
+**But the gotcha:** you typically have **NAT anyway** for other internet egress. Adding an Interface endpoint *adds* hourly cost on top of NAT — only worth it if you process enough GB to offset.
+
+**Rule of thumb:** Interface endpoint pays off vs NAT at roughly **20+ GB/month** of traffic to that specific service. Below that, NAT alone is cheaper. Above, endpoint wins (especially at scale).
+
+**Gateway endpoints** (S3 / DynamoDB): always enable them. They're free, and any S3/DynamoDB traffic that would otherwise traverse NAT now bypasses it — pure savings.
+
+#### Common Services and Which Endpoint They Use
+
+| Service | Endpoint type |
+| ------- | ------------- |
+| **S3** | Gateway (default) or Interface (for on-prem / SG / cross-region) |
+| **DynamoDB** | **Gateway only** — no Interface endpoint available |
+| **KMS, Secrets Manager, SSM, Lambda, ECR, CloudWatch Logs, SQS, SNS, Kinesis, Step Functions** | Interface |
+| **EC2 API, EBS API, Auto Scaling** | Interface |
+| **Athena, Glue, EMR, Redshift, RDS API** | Interface |
+| **API Gateway** (PrivateLink for execute-api) | Interface |
+| **Bedrock, SageMaker, Comprehend** | Interface |
+| **STS, IAM** | Interface (STS regional endpoints) |
+| **Anything else with a public API** | Almost always Interface |
+
+#### Common Anti-patterns and Gotchas
+
+- *"Use Interface endpoint for S3 by default"* → wasteful unless you specifically need it; **Gateway endpoint is free**
+- *"DynamoDB Interface endpoint"* → doesn't exist; **Gateway only**
+- *"Single-AZ Interface endpoint in production"* → single point of failure; deploy across all AZs your workloads live in
+- *"Endpoint policies are optional"* → for exfiltration-sensitive workloads, **always** scope endpoints to approved resources only
+- *"Disable Private DNS"* → then your app code must use the verbose `vpce-xxx.s3.region.vpce.amazonaws.com` hostname instead of the standard one. Almost always leave Private DNS enabled
+- *"Gateway endpoint reachable from on-prem"* → no; **Interface endpoint** is required for hybrid access
+- *"Interface endpoint without Security Group"* → SG defaults to "allow all in the same SG" — usually you want to tighten this
+- *"Endpoint replaces NAT Gateway for AWS services"* → partially. If your workload ONLY talks to AWS services + you have endpoints for all of them, you can remove NAT. Common in regulated environments
+
+#### Expanded Exam Triggers
+
+- *"S3 access from VPC, free, no internet"* → **Gateway endpoint**
+- *"DynamoDB access from VPC, no internet"* → **Gateway endpoint** (only option for DynamoDB)
+- *"KMS / Secrets Manager / SSM access from VPC privately"* → **Interface endpoint**
+- *"S3 access from on-prem via Direct Connect privately"* → **S3 Interface endpoint** (Gateway won't work from on-prem)
+- *"Restrict VPC endpoint to specific S3 buckets only"* → **Endpoint policy** with `Resource` restriction
+- *"Apply security group to S3 traffic"* → **S3 Interface endpoint** (Gateway has no SG)
+- *"Eliminate NAT Gateway costs for VPC workloads"* → **Gateway endpoints for S3/DynamoDB + Interface endpoints for all needed AWS services**
+- *"App code expects public AWS hostname"* → **Enable Private DNS** on Interface endpoint
+- *"Endpoint HA in production"* → **Deploy Interface endpoint ENIs in every AZ** the workload uses
+- *"Why does my Lambda in VPC fail to call Secrets Manager?"* → no Interface endpoint + no NAT route (Lambda-in-VPC loses default internet)
+- *"Prevent data exfiltration to attacker's S3 bucket"* → **Endpoint policy** scoping `Resource` to approved bucket ARNs
+- *"Cross-region S3 access privately"* → **S3 Interface endpoint** (Gateway endpoint is region-local)
 
 ### ENI-backed vs Public Endpoint Services
 
