@@ -1064,14 +1064,22 @@ NACLs aren't just "block malicious IPs." Real use cases:
 | | Security Group | NACL |
 | - | -------------- | ---- |
 | Attached to | ENI (instance) | Subnet |
-| Stateful? | Yes — return traffic auto-allowed | No — must allow both directions |
-| Rule types | Allow only | Allow + Deny |
-| Rule evaluation | All rules evaluated (any allow → permitted) | Ordered, first match wins |
-| Reference other SGs | Yes (by SG ID) | No (CIDR only) |
+| Granularity | **Per-resource** (granular) | **Per-subnet** (blanket) |
+| Stateful? | ✅ Yes — return traffic auto-allowed | ❌ No — must allow both directions |
+| Ephemeral port handling | **Automatic** (stateful) | **You must allow the response port range yourself** (e.g. 1024-65535 outbound) |
+| Rule types | **Allow only** | **Allow + Deny** |
+| Rule evaluation | All rules evaluated; any allow → permitted | **Ordered**, first match wins |
+| Implicit final deny? | No — unmatched is just denied | ✅ Yes — visible `*` rule you can't remove |
+| Filters intra-subnet traffic? | ✅ Yes (each ENI evaluated) | ❌ No — only filters traffic *crossing* subnet boundary |
+| Reference other SGs by ID | ✅ Yes (`sg-xxx` as source/dest) | ❌ No — CIDR only |
+| Reference other accounts' SGs | ✅ Yes (cross-account peering) | ❌ No |
+| Max rules | 60 inbound + 60 outbound per SG, 5 SGs per ENI | 20 rules per direction (soft limit, raisable) |
 | Default for new | Deny all inbound, allow all outbound | Custom: deny all. Default: allow all |
-| Use case | Day-to-day "who can talk to this resource" | Subnet-wide block/allow, deny lists |
+| Use case | Day-to-day "who can talk to this resource" | Subnet-wide block/allow, deny lists, defence-in-depth |
 
 **The exam shortcut:** SG is the default tool. NACL is for when you specifically need a **deny** (e.g. block a malicious IP range) or a subnet-wide rule that's independent of per-instance config.
+
+**Quick mental model:** *Security Group is a stateful per-instance firewall (think `iptables` on the host). NACL is a stateless per-subnet ACL (think router ACL). They stack: traffic must pass both. SGs do the heavy lifting; NACLs handle blanket bans and defence in depth.*
 
 ### VPC Endpoints
 
