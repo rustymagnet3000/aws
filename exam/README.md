@@ -1124,6 +1124,131 @@ A 1:1 connection between two VPCs — they can route to each other as if they we
 
 The transitive routing limit is why peering doesn't scale past a handful of VPCs — N VPCs need N² peerings.
 
+#### Acceptance Workflow (the cross-account handshake)
+
+Peering uses a request/accept model:
+
+```
+1. VPC A's owner: CreateVpcPeeringConnection (RequesterVpc=A, AccepterVpc=B)
+       ↓
+2. Connection enters `pending-acceptance` state
+       ↓
+3. VPC B's owner: AcceptVpcPeeringConnection
+       ↓
+4. State transitions to `active`
+       ↓
+5. NOW both sides update route tables to point the peer's CIDR at the connection
+```
+
+**Cross-account gotcha:** request expires after **7 days** if not accepted. *"Why isn't my cross-account peering working?"* — common answer: accepter never accepted.
+
+**Cross-region cross-account** combines both: requester picks the accepter's region + account ID; accepter sees the request in their console / via the API in that region.
+
+#### Routing — Both Directions Required
+
+Peering creates the *capability* to route. **Both VPCs must update their route tables** for actual traffic flow. Single-side updates fix nothing.
+
+```
+VPC A (10.0.0.0/16) peered with VPC B (10.1.0.0/16) via pcx-abc123:
+
+VPC A route table:                  VPC B route table:
+  10.0.0.0/16 → local                 10.1.0.0/16 → local
+  10.1.0.0/16 → pcx-abc123  ← add!    10.0.0.0/16 → pcx-abc123  ← add!
+  0.0.0.0/0   → igw-xxx               0.0.0.0/0   → nat-yyy
+```
+
+If only VPC A has the peering route, A sends packets to B, but B's response goes to its default route (e.g. NAT or `local`) and never makes it back. Asymmetric routing kills the session.
+
+#### Security Group References Across Peering
+
+You **can** reference a Security Group ID in a peered VPC — but only for **intra-region peering**:
+
+| | Intra-region peering | Cross-region peering |
+| - | -------------------- | --------------------- |
+| Reference peer's SG by ID (`sg-xxx`) | ✅ Yes | ❌ No — CIDR only |
+| Reference peer's CIDR | ✅ Yes | ✅ Yes |
+
+So `sg-app-tier` in VPC A can have an inbound rule allowing `sg-db-tier` from VPC B (if same region). Cross-region peering forces you back to IP-based rules.
+
+#### DNS Resolution Across Peering
+
+By default, instances in VPC A can't resolve VPC B's private DNS hostnames. Two flags control this — set on **each side**:
+
+```
+VPC A: enableDnsResolutionFromRemoteVpc = true (allows A to resolve B's hostnames)
+VPC B: enableDnsResolutionFromRemoteVpc = true (allows B to resolve A's hostnames)
+```
+
+**Route 53 private hosted zones** don't auto-cross peering either. You must **explicitly associate** the private hosted zone with the peered VPC for it to resolve there.
+
+**Exam trigger:** *"VPC A can reach VPC B by IP but DNS lookups fail"* → **DNS resolution across peering not enabled**, or **private hosted zone not associated with the peer**.
+
+#### Edge-to-Edge Routing Limitation (the killer gotcha)
+
+A peered VPC **cannot use** the other VPC's **IGW, NAT Gateway, VPN, or Direct Connect**. Peering only routes between the two VPCs — never beyond.
+
+```
+        Internet
+            │
+            ▼
+   ┌────────────────────┐
+   │ VPC B              │
+   │   NAT Gateway      │
+   │   IGW              │
+   └────────┬───────────┘
+            │ peering
+            ▼
+   ┌────────────────────┐
+   │ VPC A (no NAT/IGW) │  ← Can A reach the internet via B's NAT?
+   │                    │  ❌ NO. Edge-to-edge routing not allowed
+   └────────────────────┘
+```
+
+You **cannot** use peering to create a "hub" VPC that handles internet egress for many spokes. That's exactly the problem **Transit Gateway** (with a centralised egress VPC) solves.
+
+Other things you can't do across peering:
+- Spoke VPC sends `0.0.0.0/0` traffic via hub VPC's IGW → blocked
+- Spoke VPC uses hub VPC's NAT Gateway → blocked
+- Spoke VPC reaches on-prem via hub VPC's VPN / Direct Connect → blocked
+- Spoke VPC reaches a service exposed via PrivateLink in hub VPC → blocked (the endpoint ENI is reachable, but it's a VPC-private service)
+
+The list of "can't cross peering" is essentially: **anything that exits the peered VPC to somewhere else**.
+
+#### Cross-Region Peering Specifics
+
+| Property | Detail |
+| -------- | ------ |
+| **Encryption** | Encrypted by default since 2018 — uses AES-256 over the AWS backbone |
+| **MTU** | 1500 only — **no jumbo frames** (intra-region peering supports 9001) |
+| **Data charges** | ~$0.02/GB each direction (cheaper than Transit Gateway cross-region for low volume) |
+| **SG references** | ❌ Not supported — CIDR only |
+| **Setup** | Same request/accept flow; requester specifies the accepter's region |
+
+#### VPC Peering vs Transit Gateway vs PrivateLink — when to use which
+
+| Need | Choose | Why |
+| ---- | ------ | --- |
+| **2–3 VPCs, all-to-all connectivity** | **VPC Peering** | Cheaper; no TGW attachment fees; direct routing |
+| **Many VPCs (5+) needing transitive connectivity** | **Transit Gateway** | Peering N² problem becomes painful past a handful |
+| **Cross-region with just 2 VPCs** | **VPC Peering** (cross-region) | TGW cross-region peering adds ~$0.05/hour per attachment + data charges |
+| **Spoke VPCs need hub VPC's NAT / VPN / Direct Connect** | **Transit Gateway** | Peering's edge-to-edge limitation blocks this |
+| **Expose a single service to many consumers, possibly with overlapping CIDRs** | **PrivateLink** | Peering needs non-overlapping CIDRs; PrivateLink doesn't care |
+| **Cross-account, single service exposure** | **PrivateLink** | Don't expose the whole VPC; expose only the NLB-fronted service |
+| **Many accounts share one team's VPC** | **VPC Sharing via RAM** | Participants deploy directly into shared subnets — no peering at all |
+
+#### Updated exam triggers
+
+- *"Connect 2 VPCs, simplest pattern"* → **VPC Peering**
+- *"Cross-account peering not working after creation"* → **Accepter hasn't accepted** the request (expires after 7 days)
+- *"DNS resolution failing across peering"* → **enable `enableDnsResolutionFromRemoteVpc`** on both sides, **associate private hosted zone** with peer VPC
+- *"Can a peered VPC use the other VPC's NAT Gateway?"* → **No** — edge-to-edge routing not supported. Use **Transit Gateway** with centralised egress
+- *"Can a peered VPC reach on-prem via the other VPC's Direct Connect?"* → **No** — same limitation
+- *"Cross-region peering — is it encrypted?"* → **Yes**, by default since 2018
+- *"Reference peer's SG by ID"* → **Intra-region peering only**; cross-region forces CIDR
+- *"Why is traffic not flowing despite active peering?"* → **Route tables not updated** on both sides
+- *"3 VPCs need full connectivity"* → **3 peering connections** (A↔B, B↔C, A↔C) or **TGW**
+- *"30 VPCs need full connectivity"* → **Transit Gateway** (don't do 435 peerings)
+
 ### Transit Gateway
 
 A hub-and-spoke router for many VPCs (and on-prem networks). Solves the N² peering problem.
