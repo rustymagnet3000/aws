@@ -19,6 +19,7 @@
   - [Subnets](#subnets)
   - [Internet Gateway (IGW)](#internet-gateway-igw)
   - [NAT Gateway vs NAT Instance](#nat-gateway-vs-nat-instance)
+  - [Centralised NAT (Egress VPC Pattern)](#centralised-nat-egress-vpc-pattern)
   - [Route Tables](#route-tables)
   - [Security Groups](#security-groups)
   - [NACLs (Network ACLs)](#nacls-network-acls)
@@ -814,14 +815,22 @@ An instance also needs a **public IP** or **Elastic IP** to be reachable from th
 
 Private subnets need a way to reach the internet for outbound traffic (package updates, third-party APIs) **without** being reachable inbound. A NAT does the translation.
 
-| | NAT Gateway | NAT Instance |
-| - | ----------- | ------------ |
-| What it is | Managed AWS service | Regular EC2 instance you manage |
-| Scaling | Up to 45 Gbps, automatic | Limited by instance size, manual |
-| Patching/HA | AWS handles it | You handle it |
-| Cost | ~$0.045/hour + ~$0.045/GB processed | EC2 hourly + data |
-| AZ scope | Single AZ — needs one per AZ for HA | Single AZ |
-| Use | Default choice | Legacy, cost-optimisation in dev |
+**Status note:** AWS's official NAT instance AMI (`amzn-ami-vpc-nat`) was **deprecated in December 2020** — AWS no longer patches or updates it. The *capability* isn't removed: you can still run a NAT instance on any Linux AMI with `iptables` MASQUERADE configured. The popular modern community AMI is **[fck-nat](https://fck-nat.dev)** — drop-in NAT instance on a `t4g.nano` for ~$3/month. Most exam questions assume NAT Gateway as the default; NAT Instance still appears as the **cost-optimisation answer** for low-traffic / dev environments.
+
+| | NAT Gateway | NAT Instance (e.g. fck-nat) |
+| - | ----------- | --------------------------- |
+| What it is | Managed AWS service | EC2 instance you manage (AWS AMI deprecated 2020; use fck-nat or your own) |
+| Scaling | Up to 100 Gbps, automatic | Instance-size-limited (5 Gbps on `t4g.nano`, more on bigger) |
+| Patching / HA | AWS handles it | You patch the OS; you set up Auto Scaling for HA |
+| Cost (idle) | ~$0.045/hour × 730h ≈ **~$33/month per AZ** | `t4g.nano` ≈ **~$3/month per AZ** |
+| Cost (data) | + ~$0.045/GB processed | Just normal EC2 data transfer |
+| Cost — typical multi-AZ dev VPC | ~$99/month (3 AZs idle) before data | ~$9/month for 3 × t4g.nano |
+| AZ scope | Single AZ — one per AZ for HA | Single AZ — one per AZ for HA |
+| Security group on the NAT | ❌ NAT Gateway has no SG | ✅ NAT Instance is just an EC2 — full SG control |
+| Port forwarding (inbound DNAT) | ❌ | ✅ |
+| Bastion + NAT combined | ❌ | ✅ (the box can do both jobs) |
+| Connection limit | 55k per unique destination IP+port | Limited by ephemeral port range + instance memory |
+| Use | **Default choice for production** | **Cost-optimisation for dev / low-traffic**; specialised needs (port forward, custom iptables, bastion combo) |
 
 **The HA trap:** a NAT Gateway lives in **one AZ**. If you put all private subnets through a single NAT Gateway in `eu-west-1a` and that AZ fails, private subnets in `eu-west-1b` also lose internet (they were routing through the dead NAT). **Fix:** one NAT Gateway per AZ, each private subnet routes to its own AZ's NAT.
 
@@ -832,6 +841,72 @@ Multi-AZ NAT setup:
 ```
 
 **The 55,000 connection limit gotcha:** a single NAT Gateway supports up to **55,000 simultaneous connections per unique destination (IP + port)**. If hundreds of EC2 instances all hammer the same external endpoint (e.g. a popular SaaS API on the same hostname:port), you can exhaust this and see intermittent connection failures — but only to *that* destination. Calls to other destinations work fine. **Fix:** distribute traffic across multiple destinations / endpoints, deploy multiple NAT Gateways in the same AZ + split subnets across them, or use **VPC Endpoints** for AWS services to bypass NAT entirely. Exam trigger: *"hundreds of EC2 instances seeing intermittent connection drops to a single external API but other traffic works"* → **NAT Gateway 55k connection limit per destination**.
+
+**NAT exam triggers:**
+
+- *"Default NAT for production"* → **NAT Gateway**
+- *"Most cost-effective NAT for low-traffic dev environment"* → **NAT Instance** (10× cheaper than NAT GW)
+- *"NAT with port forwarding (inbound DNAT)"* → **NAT Instance** — NAT GW doesn't support it
+- *"Attach a security group to my NAT"* → **NAT Instance** — NAT GW has no SG
+- *"Highly available, scalable, managed NAT"* → **NAT Gateway one-per-AZ**
+- *"AWS-provided NAT instance AMI"* → **deprecated since 2020** — use community AMIs (fck-nat) or NAT GW
+- *"Combine bastion + NAT on a single instance"* → **NAT Instance** (one EC2 doing both jobs)
+
+### Centralised NAT (Egress VPC Pattern)
+
+The default is "NAT Gateway in every VPC." At scale this gets expensive fast — 20 VPCs × 3 AZs = **60 NAT Gateways × ~$33/month idle = ~$2,000/month** before any data charges. The fix is **centralised NAT**: deploy NAT Gateways in **one shared egress VPC** and route every other VPC's outbound traffic through it via Transit Gateway.
+
+```
+                    Internet
+                        │
+                        ▼
+              ┌───────────────────────────┐
+              │  CENTRAL EGRESS VPC       │
+              │    NAT GW (per AZ)        │
+              │    + optional Network     │
+              │      Firewall / WAF       │
+              └─────────────┬─────────────┘
+                            │
+                    Transit Gateway
+                            │
+              ┌─────────────┼─────────────┐
+              ▼             ▼             ▼
+            VPC A         VPC B         VPC C
+        (no NAT GW)   (no NAT GW)   (no NAT GW)
+        Route table:  Route table:  Route table:
+        0.0.0.0/0     0.0.0.0/0     0.0.0.0/0
+            → TGW         → TGW         → TGW
+```
+
+Spoke VPCs send `0.0.0.0/0` to the TGW; TGW forwards to the egress VPC; the egress VPC's NAT Gateway handles the SNAT; response returns the same path.
+
+#### Why centralised NAT wins
+
+| Driver | Impact |
+| ------ | ------ |
+| **Cost** | 60 NAT Gateways → 3 NAT Gateways = **~$2,000/month → ~$99/month** before data. By far the most common reason orgs adopt it |
+| **Centralised egress filtering** | One place to attach **AWS Network Firewall** for egress inspection, one place to monitor Flow Logs |
+| **Consistent egress IPs** | All VPCs egress from the same handful of public IPs — useful when **whitelisting at third parties** (SaaS APIs, customer firewalls) |
+| **Simpler management** | Central networking team owns NAT + firewall; spoke teams don't manage networking primitives |
+| **Easier compliance** | All outbound traffic auditable in one place |
+
+#### The trade-offs
+
+| Trade-off | Detail |
+| --------- | ------ |
+| **TGW data processing charges** | Every cross-VPC packet incurs TGW data charges (~$0.02/GB). At very high volume this can eat the NAT savings — do the maths |
+| **Asymmetric routing risk** | If response packets come back via a different path, sessions break. Careful TGW route-table design needed |
+| **Single egress VPC = blast radius** | Mitigate with multi-AZ NAT Gateways in the egress VPC (you'd do this anyway) |
+| **Cross-region complexity** | Multi-region setups need TGW peering or per-region egress VPCs |
+| **Doesn't help VPC Endpoint traffic** | Traffic to S3/DynamoDB via Gateway endpoints bypasses NAT entirely anyway — that's still the right pattern for AWS-service traffic |
+
+#### Exam triggers
+
+- *"Reduce NAT Gateway costs across many VPCs"* → **Centralised egress VPC**
+- *"30 VPCs, want to consolidate NAT"* → **Centralised egress VPC + TGW**
+- *"Consistent public egress IPs across all our AWS accounts"* → **Centralised NAT in egress VPC**
+- *"Centrally inspect all outbound traffic from our VPCs"* → **Centralised egress + AWS Network Firewall**
+- *"Simpler management of NAT across the org"* → **Centralised egress VPC pattern**
 
 ### Route Tables
 
@@ -857,25 +932,154 @@ The `local` route to the VPC CIDR is automatic and immutable — that's why subn
 
 ### NACLs (Network ACLs)
 
-- **Stateless** — you must allow inbound **and** outbound separately. If you only allow inbound on port 443, the response packet (on an ephemeral port) is dropped on the way out unless you also allow that.
-- **Attached to subnets** (not ENIs) — every resource in the subnet shares the NACL.
-- **Allow AND deny rules** — useful for explicit blocks (e.g. block a known-bad IP range).
-- **Rules evaluated in order** — lowest rule number first; first match wins.
-- **Default NACL** allows all traffic. **Custom NACLs** start denying everything.
+A NACL is a **stateless, subnet-level firewall** with both Allow and Deny rules. Most teams set it up once and forget it — but when it bites, it's usually because of the **stateless + ephemeral ports** combination. That's the part the exam loves.
+
+#### Core properties
+
+- **Stateless** — you must allow inbound **and** outbound separately. The return traffic is **not** auto-allowed (unlike Security Groups). This is the source of most NACL incidents
+- **Attached to subnets** — every resource in the subnet shares the NACL
+- **One subnet → one NACL** — but one NACL can be associated with many subnets
+- **Allow AND Deny rules** — unlike SGs which are allow-only. Useful for explicit IP blocks
+- **Rules evaluated in order** — lowest rule number first; **first match wins** (then evaluation stops)
+- **Implicit final `*` deny** — every NACL ends with an invisible `* → DENY ALL` that you can't remove
+- **Default NACL** allows all inbound + outbound. **Custom NACLs** start denying everything
+- **Per-VPC** — can't share NACLs across VPCs
+- **Filters traffic *crossing* subnet boundaries only** — traffic *within* a subnet is not inspected by the NACL
+
+#### The ephemeral port trap (most-tested NACL gotcha)
+
+> *"I allowed port 443 inbound. Why are my HTTPS connections still failing?"*
+
+Because the **response** goes out on the **client's ephemeral port**, not on port 443. With a stateless NACL, you need a rule for that too.
+
+```
+   Client (1.2.3.4, ephemeral port 51234)
+         │
+         │ SYN  src=1.2.3.4:51234  dst=10.0.1.10:443
+         ▼
+   ┌───────────────────────┐
+   │ Subnet NACL — inbound │
+   │ Rule: ALLOW 443       │  ✅ accept
+   └─────────┬─────────────┘
+             ▼
+         Your server processes the request
+             │
+             │ SYN+ACK  src=10.0.1.10:443  dst=1.2.3.4:51234
+             ▼
+   ┌────────────────────────┐
+   │ Subnet NACL — outbound │
+   │ Rule: ALLOW 443?       │  ❌ no — destination port is 51234, not 443
+   │ Implicit * DENY        │  → packet dropped
+   └────────────────────────┘
+```
+
+**The fix:** outbound NACL rules must allow the **ephemeral port range** as destination, because that's where the response is heading (the client's ephemeral port). For typical clients:
+
+| Client OS / runtime | Ephemeral port range |
+| -------------------- | -------------------- |
+| **Linux** (default) | 32768 – 60999 |
+| **Windows** | 49152 – 65535 |
+| **AWS Lambda / NAT Gateway** | 1024 – 65535 |
+| **Safe blanket rule** | **1024 – 65535** (covers all clients) |
+
+Most outbound NACL rules look like `ALLOW TCP 1024-65535` — that's the response channel for inbound services.
+
+**Mental model:** *Stateless NACLs need a rule for the response port — and the response port is the **client's** ephemeral port, not your service port. The outbound NACL rule isn't for your service speaking outbound; it's for sending responses back to clients on their ephemeral ports.*
+
+#### Rule numbering convention
+
+Rules are evaluated lowest-number first. **Leave gaps between rule numbers** so you can insert new rules later without renumbering:
+
+```
+100   ALLOW  TCP   443       0.0.0.0/0        (HTTPS)
+200   ALLOW  TCP   80        0.0.0.0/0        (HTTP)
+300   DENY   ALL   ALL       1.2.3.4/32       (block specific bad IP)
+*     DENY   ALL   ALL       0.0.0.0/0        (implicit, can't remove)
+```
+
+If a new rule needs to come between rules 100 and 200, you can number it 150 without renumbering anything. Gap-based numbering (100, 200, 300…) is the convention.
+
+**First match wins:** if rule 100 allows the traffic, rule 200 is never evaluated. **Order your DENY rules before broader ALLOW rules** if you want them to win.
+
+#### NACLs only filter subnet-boundary traffic
+
+Traffic *between* two instances **in the same subnet** is not inspected by the NACL — only traffic that **enters or leaves** the subnet hits the NACL. This catches people out:
+
+```
+Subnet 10.0.1.0/24, NACL denies inbound on port 22:
+
+  Instance A (10.0.1.10) → Instance B (10.0.1.20) on port 22 → ✅ ALLOWED
+    (traffic stays within the subnet, never crosses NACL boundary)
+
+  External (1.2.3.4) → Instance B (10.0.1.20) on port 22 → ❌ BLOCKED
+    (crosses into the subnet, NACL evaluates)
+```
+
+If you want to block intra-subnet traffic, that's a **Security Group** job — NACLs can't.
+
+#### ICMP handling (ping)
+
+ICMP doesn't use ports — it uses **types and codes**:
+
+| ICMP message | Type | Code |
+| ------------ | ---- | ---- |
+| Echo Request (ping out) | 8 | 0 |
+| Echo Reply (ping response) | 0 | 0 |
+| Destination Unreachable | 3 | 0–15 |
+
+For ping to work through a NACL, you need:
+- Inbound: `ALLOW ICMP, type 8, code 0` (the echo request arriving)
+- Outbound: `ALLOW ICMP, type 0, code 0` (the echo reply going back)
+
+Or — if your instance is initiating the ping outbound:
+- Outbound: `ALLOW ICMP, type 8, code 0`
+- Inbound: `ALLOW ICMP, type 0, code 0`
+
+Exam trigger: *"ping fails from outside the VPC even though SG allows ICMP"* → NACL is missing the echo reply rule.
+
+#### When NACLs are actually the right tool
+
+NACLs aren't just "block malicious IPs." Real use cases:
+
+| Use case | Why NACL not SG |
+| -------- | --------------- |
+| **Block a known-bad IP range** | SGs are allow-only — can't deny |
+| **PCI / regulatory subnet segregation** | Auditor wants a subnet-level firewall rule that's independent of per-instance config |
+| **Defence in depth** — second layer after SG | Two independent filtering layers reduce blast radius of a misconfigured SG |
+| **Compliance — audit trail of denies** | NACL deny rules show explicit policy. Combine with VPC Flow Logs `REJECT` entries for forensics |
+| **Subnet-wide allow lists** for sensitive subnets | "Only this CIDR range can reach the DB subnet" — applies regardless of which instance is there |
+
+#### Exam triggers
+
+- *"Block a specific IP range from reaching the whole subnet"* → **NACL deny rule** (SGs are allow-only)
+- *"I allowed port 443 inbound but HTTPS still fails"* → **NACL outbound missing ephemeral port range** (1024-65535)
+- *"Why does ping fail through my NACL?"* → **Missing ICMP echo reply rule** (type 0)
+- *"Two instances in the same subnet can talk despite the NACL deny"* → **NACLs don't filter intra-subnet traffic**; use Security Groups
+- *"Why is rule 200 not taking effect?"* → **Rule 100 already matched** (first-match-wins; reorder)
+- *"Default NACL behaviour vs new custom NACL"* → Default allows all; custom starts deny-all
+- *"Defence in depth at the subnet layer for PCI"* → **NACL** (auditor wants subnet-level rules)
 
 ### Security Groups vs NACLs
 
 | | Security Group | NACL |
 | - | -------------- | ---- |
 | Attached to | ENI (instance) | Subnet |
-| Stateful? | Yes — return traffic auto-allowed | No — must allow both directions |
-| Rule types | Allow only | Allow + Deny |
-| Rule evaluation | All rules evaluated (any allow → permitted) | Ordered, first match wins |
-| Reference other SGs | Yes (by SG ID) | No (CIDR only) |
+| Granularity | **Per-resource** (granular) | **Per-subnet** (blanket) |
+| Stateful? | ✅ Yes — return traffic auto-allowed | ❌ No — must allow both directions |
+| Ephemeral port handling | **Automatic** (stateful) | **You must allow the response port range yourself** (e.g. 1024-65535 outbound) |
+| Rule types | **Allow only** | **Allow + Deny** |
+| Rule evaluation | All rules evaluated; any allow → permitted | **Ordered**, first match wins |
+| Implicit final deny? | No — unmatched is just denied | ✅ Yes — visible `*` rule you can't remove |
+| Filters intra-subnet traffic? | ✅ Yes (each ENI evaluated) | ❌ No — only filters traffic *crossing* subnet boundary |
+| Reference other SGs by ID | ✅ Yes (`sg-xxx` as source/dest) | ❌ No — CIDR only |
+| Reference other accounts' SGs | ✅ Yes (cross-account peering) | ❌ No |
+| Max rules | 60 inbound + 60 outbound per SG, 5 SGs per ENI | 20 rules per direction (soft limit, raisable) |
 | Default for new | Deny all inbound, allow all outbound | Custom: deny all. Default: allow all |
-| Use case | Day-to-day "who can talk to this resource" | Subnet-wide block/allow, deny lists |
+| Use case | Day-to-day "who can talk to this resource" | Subnet-wide block/allow, deny lists, defence-in-depth |
 
 **The exam shortcut:** SG is the default tool. NACL is for when you specifically need a **deny** (e.g. block a malicious IP range) or a subnet-wide rule that's independent of per-instance config.
+
+**Quick mental model:** *Security Group is a stateful per-instance firewall (think `iptables` on the host). NACL is a stateless per-subnet ACL (think router ACL). They stack: traffic must pass both. SGs do the heavy lifting; NACLs handle blanket bans and defence in depth.*
 
 ### VPC Endpoints
 
@@ -919,6 +1123,131 @@ A 1:1 connection between two VPCs — they can route to each other as if they we
 - Both VPCs must update their **route tables** to point at the peering connection for the other's CIDR.
 
 The transitive routing limit is why peering doesn't scale past a handful of VPCs — N VPCs need N² peerings.
+
+#### Acceptance Workflow (the cross-account handshake)
+
+Peering uses a request/accept model:
+
+```
+1. VPC A's owner: CreateVpcPeeringConnection (RequesterVpc=A, AccepterVpc=B)
+       ↓
+2. Connection enters `pending-acceptance` state
+       ↓
+3. VPC B's owner: AcceptVpcPeeringConnection
+       ↓
+4. State transitions to `active`
+       ↓
+5. NOW both sides update route tables to point the peer's CIDR at the connection
+```
+
+**Cross-account gotcha:** request expires after **7 days** if not accepted. *"Why isn't my cross-account peering working?"* — common answer: accepter never accepted.
+
+**Cross-region cross-account** combines both: requester picks the accepter's region + account ID; accepter sees the request in their console / via the API in that region.
+
+#### Routing — Both Directions Required
+
+Peering creates the *capability* to route. **Both VPCs must update their route tables** for actual traffic flow. Single-side updates fix nothing.
+
+```
+VPC A (10.0.0.0/16) peered with VPC B (10.1.0.0/16) via pcx-abc123:
+
+VPC A route table:                  VPC B route table:
+  10.0.0.0/16 → local                 10.1.0.0/16 → local
+  10.1.0.0/16 → pcx-abc123  ← add!    10.0.0.0/16 → pcx-abc123  ← add!
+  0.0.0.0/0   → igw-xxx               0.0.0.0/0   → nat-yyy
+```
+
+If only VPC A has the peering route, A sends packets to B, but B's response goes to its default route (e.g. NAT or `local`) and never makes it back. Asymmetric routing kills the session.
+
+#### Security Group References Across Peering
+
+You **can** reference a Security Group ID in a peered VPC — but only for **intra-region peering**:
+
+| | Intra-region peering | Cross-region peering |
+| - | -------------------- | --------------------- |
+| Reference peer's SG by ID (`sg-xxx`) | ✅ Yes | ❌ No — CIDR only |
+| Reference peer's CIDR | ✅ Yes | ✅ Yes |
+
+So `sg-app-tier` in VPC A can have an inbound rule allowing `sg-db-tier` from VPC B (if same region). Cross-region peering forces you back to IP-based rules.
+
+#### DNS Resolution Across Peering
+
+By default, instances in VPC A can't resolve VPC B's private DNS hostnames. Two flags control this — set on **each side**:
+
+```
+VPC A: enableDnsResolutionFromRemoteVpc = true (allows A to resolve B's hostnames)
+VPC B: enableDnsResolutionFromRemoteVpc = true (allows B to resolve A's hostnames)
+```
+
+**Route 53 private hosted zones** don't auto-cross peering either. You must **explicitly associate** the private hosted zone with the peered VPC for it to resolve there.
+
+**Exam trigger:** *"VPC A can reach VPC B by IP but DNS lookups fail"* → **DNS resolution across peering not enabled**, or **private hosted zone not associated with the peer**.
+
+#### Edge-to-Edge Routing Limitation (the killer gotcha)
+
+A peered VPC **cannot use** the other VPC's **IGW, NAT Gateway, VPN, or Direct Connect**. Peering only routes between the two VPCs — never beyond.
+
+```
+        Internet
+            │
+            ▼
+   ┌────────────────────┐
+   │ VPC B              │
+   │   NAT Gateway      │
+   │   IGW              │
+   └────────┬───────────┘
+            │ peering
+            ▼
+   ┌────────────────────┐
+   │ VPC A (no NAT/IGW) │  ← Can A reach the internet via B's NAT?
+   │                    │  ❌ NO. Edge-to-edge routing not allowed
+   └────────────────────┘
+```
+
+You **cannot** use peering to create a "hub" VPC that handles internet egress for many spokes. That's exactly the problem **Transit Gateway** (with a centralised egress VPC) solves.
+
+Other things you can't do across peering:
+- Spoke VPC sends `0.0.0.0/0` traffic via hub VPC's IGW → blocked
+- Spoke VPC uses hub VPC's NAT Gateway → blocked
+- Spoke VPC reaches on-prem via hub VPC's VPN / Direct Connect → blocked
+- Spoke VPC reaches a service exposed via PrivateLink in hub VPC → blocked (the endpoint ENI is reachable, but it's a VPC-private service)
+
+The list of "can't cross peering" is essentially: **anything that exits the peered VPC to somewhere else**.
+
+#### Cross-Region Peering Specifics
+
+| Property | Detail |
+| -------- | ------ |
+| **Encryption** | Encrypted by default since 2018 — uses AES-256 over the AWS backbone |
+| **MTU** | 1500 only — **no jumbo frames** (intra-region peering supports 9001) |
+| **Data charges** | ~$0.02/GB each direction (cheaper than Transit Gateway cross-region for low volume) |
+| **SG references** | ❌ Not supported — CIDR only |
+| **Setup** | Same request/accept flow; requester specifies the accepter's region |
+
+#### VPC Peering vs Transit Gateway vs PrivateLink — when to use which
+
+| Need | Choose | Why |
+| ---- | ------ | --- |
+| **2–3 VPCs, all-to-all connectivity** | **VPC Peering** | Cheaper; no TGW attachment fees; direct routing |
+| **Many VPCs (5+) needing transitive connectivity** | **Transit Gateway** | Peering N² problem becomes painful past a handful |
+| **Cross-region with just 2 VPCs** | **VPC Peering** (cross-region) | TGW cross-region peering adds ~$0.05/hour per attachment + data charges |
+| **Spoke VPCs need hub VPC's NAT / VPN / Direct Connect** | **Transit Gateway** | Peering's edge-to-edge limitation blocks this |
+| **Expose a single service to many consumers, possibly with overlapping CIDRs** | **PrivateLink** | Peering needs non-overlapping CIDRs; PrivateLink doesn't care |
+| **Cross-account, single service exposure** | **PrivateLink** | Don't expose the whole VPC; expose only the NLB-fronted service |
+| **Many accounts share one team's VPC** | **VPC Sharing via RAM** | Participants deploy directly into shared subnets — no peering at all |
+
+#### Updated exam triggers
+
+- *"Connect 2 VPCs, simplest pattern"* → **VPC Peering**
+- *"Cross-account peering not working after creation"* → **Accepter hasn't accepted** the request (expires after 7 days)
+- *"DNS resolution failing across peering"* → **enable `enableDnsResolutionFromRemoteVpc`** on both sides, **associate private hosted zone** with peer VPC
+- *"Can a peered VPC use the other VPC's NAT Gateway?"* → **No** — edge-to-edge routing not supported. Use **Transit Gateway** with centralised egress
+- *"Can a peered VPC reach on-prem via the other VPC's Direct Connect?"* → **No** — same limitation
+- *"Cross-region peering — is it encrypted?"* → **Yes**, by default since 2018
+- *"Reference peer's SG by ID"* → **Intra-region peering only**; cross-region forces CIDR
+- *"Why is traffic not flowing despite active peering?"* → **Route tables not updated** on both sides
+- *"3 VPCs need full connectivity"* → **3 peering connections** (A↔B, B↔C, A↔C) or **TGW**
+- *"30 VPCs need full connectivity"* → **Transit Gateway** (don't do 435 peerings)
 
 ### Transit Gateway
 
