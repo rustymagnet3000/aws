@@ -1958,6 +1958,87 @@ Two ways to connect on-prem to AWS:
 
 **Hybrid pattern:** Direct Connect for production traffic, VPN as a backup if the DX link fails.
 
+#### Why Use Direct Connect (and Who Does)
+
+The exam treats DX as "private dedicated line — expensive but fast." The real-world drivers are more specific. Useful context for understanding which scenarios the exam *expects* DX as the right answer.
+
+**The drivers:**
+
+| Driver | Why it justifies the cost + setup time |
+| ------ | -------------------------------------- |
+| **Compliance — traffic must never traverse public internet** | Banks, healthcare, government. Auditors want documented proof PHI / PCI data flows over a private circuit |
+| **Predictable performance** (low jitter, consistent latency) | Real-time trading (latency arbitrage), telephony, VoIP, financial market data, video production |
+| **Cost at terabyte / petabyte scale** | Internet egress ≈ **$0.09/GB**. DX egress ≈ **$0.02/GB**. At 100 TB/month outbound: internet = $9k, DX = $2k — port pays for itself in months |
+| **Reduce internet circuit dependency** | If your office ISP dies, AWS-hosted apps stay reachable. Separating "internet" from "AWS connectivity" is operationally valuable |
+| **Large recurring data flows** | Daily multi-TB DB backups to S3, cross-DC replication, video archival, scientific data pipelines |
+| **Hybrid app latency** | App tier in AWS, database tier on-prem (or vice versa). Internet jitter ruins user experience when every request crosses the boundary |
+| **Real-time control systems** | Industrial / SCADA workloads where milliseconds matter |
+
+**Who actually pays for DX:**
+
+| Industry | Why |
+| -------- | --- |
+| **Banks & financial services** | Compliance (PCI-DSS, FFIEC), trading latency, data sovereignty, massive risk-modelling data |
+| **Insurance** | Actuarial / claims data volumes; compliance |
+| **Healthcare / pharma** | HIPAA (PHI mustn't traverse public internet without controls), medical imaging (terabytes of MRI/CT), drug discovery compute |
+| **Government / public sector** | FedRAMP / IRAP / G-Cloud often mandate private connectivity for sensitive workloads |
+| **Telecoms** | Interconnect with AWS to offer cloud-on-net services to enterprise customers |
+| **Media & broadcasting** | Multi-TB raw video footage between studios and cloud editing/rendering |
+| **Manufacturing / energy** | IoT / SCADA data from factories or wind farms; latency-sensitive control |
+| **Gaming** | Low-latency anti-cheat / matchmaking |
+| **Large retail** | POS / inventory spanning on-prem stores + cloud; PCI compliance |
+| **Enterprise SaaS providers** (Snowflake, Databricks, Salesforce) | DX-based customer connectivity so customers don't traverse internet to use the SaaS — often combined with PrivateLink |
+
+**The hidden driver — internet egress costs:**
+
+This rarely comes up explicitly but matters most at scale:
+
+- 1 TB/month: internet = $92, DX = $20
+- 100 TB/month: internet = $9,200/month, DX = $2,000/month — **DX saves $7k/month** after port fees
+- 1 PB/month (large enterprise): internet = $92,000/month, DX = $20,000/month
+
+The DX port itself is **~$216/month** for 1 Gbps dedicated. Break-even on egress savings alone happens fast at scale.
+
+**Who does NOT need DX:**
+
+| Situation | Why not |
+| --------- | ------- |
+| **Pure cloud-native startup** | No on-prem; VPC + internet is enough |
+| **Hybrid with < 1 Gbps usage** | Site-to-Site VPN at ~$0.05/hour does the job; DX overkill |
+| **No compliance pressure** | Internet + TLS is enough for most workloads |
+| **Don't push enough data** | At < 10 TB/month outbound, internet egress doesn't justify a DX port |
+| **Want speed-of-setup** | DX install = **weeks to months**. VPN = **minutes** |
+
+**Architectural tells that signal DX is in use:**
+
+- "Hybrid Active Directory across on-prem and AWS"
+- "Direct Connect Gateway" in the diagram
+- "Equinix" / "CoreSite" or another colocation facility mentioned
+- BGP ASN exchange with AWS
+- Multi-region DR with on-prem as part of the topology
+- "FedRAMP High" or other strict compliance label
+- VMware Cloud on AWS (almost always paired with DX)
+- AWS Outposts (uses DX for management plane)
+
+**The "is DX worth it?" decision:**
+
+```
+Do you have an on-prem data centre that needs to integrate with AWS?
+  ├── NO → skip DX, use VPN if you need any hybrid
+  └── YES → 
+        Are you transferring > ~10 TB/month sustained?
+          ├── YES → DX pays for itself on egress savings alone
+          └── NO →
+                Do you have compliance requirements demanding private circuits?
+                  ├── YES → DX (or your auditors fail you)
+                  └── NO →
+                        Do you need consistent low-latency for real-time apps?
+                          ├── YES → DX
+                          └── NO → VPN is probably fine
+```
+
+**Mental model:** *Direct Connect isn't really about "fast network" — it's about **predictable cost** (per-GB egress vs internet), **predictable performance** (no jitter), and **compliance documentation** (auditor wants a private circuit on paper). Big enough on-prem footprint + regulated enough to need private paths + moving enough data that egress savings matter → DX. Startups and pure-cloud orgs don't need it.*
+
 #### Direct Connect Deeper Bits
 
 **Virtual Interfaces (VIFs)** — the logical channel on top of the physical DX line. Three types, each tested:
