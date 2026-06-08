@@ -1278,6 +1278,20 @@ Gateway Endpoint costs:
 - *"Prevent data exfiltration to attacker's S3 bucket"* → **Endpoint policy** scoping `Resource` to approved bucket ARNs
 - *"Cross-region S3 access privately"* → **S3 Interface endpoint** (Gateway endpoint is region-local)
 
+#### The Mental Model
+
+> *VPC Endpoint = "VPC outbound to AWS APIs over the AWS backbone." It's a back door from your private network to AWS service control planes — never an inbound public-facing thing. Security groups on Interface endpoints control which VPC resources can use the endpoint, not anything external.*
+
+**Constantly confused with:**
+
+| Confused with | Actually is |
+| ------------- | ----------- |
+| ALB / API Gateway (public inbound to your app) | **VPC Endpoint is outbound from VPC to AWS APIs** |
+| CloudFront / WAF (edge security for incoming users) | **VPC Endpoint is for the app itself talking to AWS** |
+| PrivateLink endpoint service (you exposing your service to others) | **VPC Endpoint consumes someone's service (AWS's, in this case)** |
+
+The 10-second recall: **"AWS-API access from inside the VPC, never customer-facing."**
+
 ### ENI-backed vs Public Endpoint Services
 
 This is the concept that explains "why can't I attach a security group to SQS?" — and the source of many exam traps.
