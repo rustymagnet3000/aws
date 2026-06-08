@@ -2015,6 +2015,44 @@ By default, **DX traffic is NOT encrypted** (it's a private line, but plaintext)
 - *"Lower-latency VPN over the public internet"* → **Accelerated Site-to-Site VPN** (uses Global Accelerator)
 - *"Encrypt traffic over Direct Connect"* → **MACsec** or **VPN over DX**
 
+#### Site-to-Site VPN vs Virtual Private Gateway — the Layer Confusion
+
+A perennial source of exam confusion: people treat *Site-to-Site VPN* and *Virtual Private Gateway* as alternatives. They're **not** — they're different layers of the same setup.
+
+- **Site-to-Site VPN** is the **service** (the encrypted IPsec tunnel pair)
+- **Virtual Private Gateway (VGW)** is one option for the **AWS-side endpoint** the tunnel terminates at
+- **Transit Gateway (TGW)** is the other AWS-side endpoint option
+- **Customer Gateway (CGW)** is just AWS's metadata record of your **on-prem VPN device** (its public IP + BGP ASN — not a real device AWS runs)
+
+So the real choice isn't *"Site-to-Site VPN vs VGW"* — it's **VGW vs TGW for terminating the VPN on the AWS side**:
+
+| | **VGW** | **TGW** |
+| - | ------- | ------- |
+| Attaches to | **One VPC** | **Many VPCs + VPNs + DX + peerings** |
+| Transitive routing | ❌ | ✅ (the whole point) |
+| ECMP for multiple VPN tunnels | ❌ | ✅ — aggregate higher bandwidth |
+| Cross-region | ❌ | ✅ via TGW peering |
+| VPN connections supported | 10 | 5000 |
+| Use when | Single VPC, simple hybrid | Multi-VPC hybrid, hub-and-spoke |
+
+Even for "just one VPC today" scenarios, **TGW is often chosen** for future-proofing — adding a second VPC is one attachment vs another VPN.
+
+**Exam triggers for VPN termination choice:**
+
+| Question | Answer |
+| -------- | ------ |
+| *"Where does Site-to-Site VPN terminate on the AWS side?"* | **VGW** (one VPC) or **TGW** (many VPCs) |
+| *"On-prem needs access to 10 VPCs via VPN"* | **TGW + Site-to-Site VPN** (one VPN to TGW, transitive to all VPCs) |
+| *"Single VPC, cheapest VPN setup"* | **VGW + Site-to-Site VPN** |
+| *"Increase VPN aggregate bandwidth beyond 1.25 Gbps per tunnel"* | **TGW + multiple VPN connections + ECMP** |
+| *"Failover between DX and VPN"* | Both terminate at the same **TGW**; BGP handles failover |
+| *"Multi-region hybrid network"* | **TGW + TGW peering** (or **DX Gateway + multiple VGWs in different regions**) |
+| *"Customer Gateway is..."* | An AWS resource **representing your on-prem VPN device** (its public IP + BGP ASN) — metadata, not a device AWS runs |
+| *"Connect to a single VPC via Direct Connect"* | **DX → Private VIF → VGW** |
+| *"Connect to many VPCs via Direct Connect"* | **DX → Transit VIF → DX Gateway → TGW** |
+
+**The mental model:** *Site-to-Site VPN = the encrypted IPsec service. **VGW vs TGW** = the actual choice on the AWS side. VGW = "this one VPC only." TGW = "this VPC and any others I want, plus future hybrid connectivity." Customer Gateway = AWS's name for your on-prem router.*
+
 ### AWS Client VPN
 
 **Anchored as workforce VPN: laptops → AWS.** Site-to-Site VPN connects entire networks; **Client VPN connects individual users**. The exam constantly tests the distinction.
