@@ -1736,17 +1736,162 @@ For small orgs, IPAM is overkill — just track CIDRs in a spreadsheet or Terraf
 
 ### VPC Flow Logs
 
-Capture metadata about IP traffic in your VPC. Useful for security forensics, troubleshooting connectivity ("why is this blocked?"), and traffic analysis.
+Capture metadata about IP traffic in your VPC. Used for security forensics, connectivity troubleshooting, traffic analysis, compliance, and feeding SIEMs.
 
-- **Granularity:** VPC, subnet, or ENI
-- **Captures:** source/dest IP and port, protocol, bytes, ACCEPT/REJECT
-- **Does NOT capture:** packet contents (use a packet mirror for that)
-- **Destinations:** CloudWatch Logs, S3, or Kinesis Data Firehose
-- **Cost-conscious tip:** ship to S3 with Parquet format and query with Athena — much cheaper than CloudWatch Logs for large volumes.
+#### Core properties
 
-**Exam triggers:**
-- *"why is traffic being blocked between two instances"* → enable VPC Flow Logs, look for REJECT entries
-- *"audit which IPs accessed our database"* → VPC Flow Logs on the RDS ENI
+- **Granularity:** VPC, subnet, or ENI (finest)
+- **Captures:** source/dest IP+port, protocol, bytes, packets, ACCEPT/REJECT, plus optional newer fields
+- **Does NOT capture:** packet contents (use **VPC Traffic Mirroring** for that)
+- **Destinations:** CloudWatch Logs, S3, **Kinesis Data Firehose**, **Amazon Data Firehose to OpenSearch**
+- **Aggregation interval:** **1-minute (default)** or **10-minute** (cheaper, ~10× less log volume, but laggier — useful when you don't need fine-grained timing)
+
+#### Three Granularity Levels — Pick Carefully
+
+| Level | Captures | Use |
+| ----- | -------- | --- |
+| **VPC** | Every ENI in the VPC | Broad audit, compliance, centralised security analytics |
+| **Subnet** | Every ENI in that subnet | Subnet-level forensics — e.g. "what hit my DB subnet?" |
+| **ENI** | Just that one network interface | **Finest granularity** — single instance / endpoint forensics |
+
+A single ENI can have multiple Flow Logs (one per granularity level) — they all log the same traffic independently. **Cost stacks** if you enable multiple levels for the same traffic.
+
+#### What's NOT Captured (the classic trap question)
+
+Flow Logs **silently skip** several traffic categories. Memorise these — they're popular exam wrong-answer traps:
+
+- **Instance metadata service** — `169.254.169.254` (IMDS)
+- **Amazon-provided DNS** — VPC CIDR + 2 (e.g. `10.0.0.2`)
+- **Amazon Time Sync** — `169.254.169.123` (NTP)
+- **Windows license activation** — traffic to Microsoft KMS servers
+- **VPC router IP** — `.1` of the subnet
+- **DHCP traffic**
+- **Traffic to/from a load balancer's link-local addresses**
+- **Mirrored traffic**
+
+**Exam trap:** *"Why don't I see IMDS calls in Flow Logs?"* → because IMDS isn't logged. Use **CloudTrail** + **Instance Metadata Service v2** session tokens for IMDS audit.
+
+#### ACCEPT vs REJECT — The Subtlety
+
+Common misreading: "ACCEPT = the connection worked." **Not necessarily.**
+
+| Status | Means | Doesn't mean |
+| ------ | ----- | ------------ |
+| **ACCEPT** | Security Group + NACL both **allowed** the packet | The destination app actually received / responded |
+| **REJECT** | **NACL denied** the packet (NACLs are stateless so they generate REJECT entries). Security Group denies show up too in some cases | The connection failed (might have been intentional!) |
+
+**Why this matters:**
+- A packet can be ACCEPTed but still fail downstream (app crashed, port not listening, application-layer reject)
+- REJECT specifically tells you a network-layer firewall blocked it
+- For app-layer failures, Flow Logs are *useless* — you need application logs / X-Ray traces
+
+#### NODATA and SKIPDATA Log Statuses
+
+Sometimes a flow log record's `log-status` field isn't `OK`:
+
+| log-status | Meaning |
+| ---------- | ------- |
+| **OK** | Normal record with traffic data |
+| **NODATA** | The ENI had no traffic during the aggregation interval |
+| **SKIPDATA** | Records were dropped during the interval (throttling, internal capacity) — **data was lost** |
+
+**Exam trap:** *"Some traffic isn't showing up in Flow Logs"* — could be:
+- The traffic is on the excluded list above
+- A SKIPDATA event dropped records
+- The aggregation interval hasn't elapsed yet
+- Wrong destination / filter
+
+#### Custom Log Formats (cost saver)
+
+Default Flow Log format = ~14 fields per record. You can define **custom formats** with only the fields you actually need — reduces log volume and storage cost.
+
+Newer fields worth knowing (not in default):
+- `vpc-id`, `subnet-id`, `instance-id` — useful for centralised querying without joins
+- `tcp-flags` — SYN, ACK, FIN etc. for connection analysis
+- `pkt-srcaddr`, `pkt-dstaddr` — the **original** addresses before NAT translation (vs `srcaddr`/`dstaddr` after NAT). Critical for understanding NAT Gateway behaviour
+- `traffic-path` — which AWS network component the traffic took (IGW / NAT / TGW / VPC peering / Gateway Load Balancer / etc.)
+- `flow-direction` — `ingress` / `egress`
+
+**`pkt-srcaddr` vs `srcaddr` gotcha:** when traffic goes through NAT Gateway, the original source IP gets rewritten. Default Flow Log shows the NAT'd IP. To see the **original instance's IP** behind a NAT, you need `pkt-srcaddr` in a custom format. Useful for *"which instance actually made this call?"* through a centralised NAT.
+
+#### Flow Logs Are NOT Real-Time
+
+Don't build alerting that assumes immediate Flow Log visibility:
+
+| Destination | Typical delivery delay |
+| ----------- | ---------------------- |
+| **CloudWatch Logs** | ~5 minutes |
+| **S3** | ~10 minutes |
+| **Kinesis Data Firehose** | Near real-time (seconds, depending on Firehose buffer config) |
+
+For real-time, ship to Firehose → OpenSearch / Splunk.
+
+#### GuardDuty Doesn't Need You to Enable Flow Logs
+
+A widespread misconception: *"to use GuardDuty I need to turn on VPC Flow Logs first."* **Wrong.** GuardDuty has its own internal stream that consumes Flow Log data directly from AWS infrastructure — independent of whether you've enabled VPC Flow Logs for your own logging.
+
+You can disable VPC Flow Logs entirely and GuardDuty still works.
+
+**Why this matters:** an exam question about "GuardDuty prerequisites" should not include "enable Flow Logs." If an answer says that, it's wrong.
+
+#### Transit Gateway Flow Logs (separate from VPC Flow Logs)
+
+A completely separate Flow Log type for **Transit Gateway attachments** — captures traffic flowing between VPCs / VPN / DX through a TGW. Same destinations (S3 / CloudWatch / Firehose), similar fields, but a different resource type.
+
+**Exam trigger:** *"Audit traffic flowing through our Transit Gateway"* → **Transit Gateway Flow Logs**, not VPC Flow Logs.
+
+#### The Standard Multi-Account Architecture
+
+Every regulated org uses some version of this:
+
+```
+VPC in Account A ─┐
+VPC in Account B ─┼─→ Flow Logs (per-VPC) → S3 bucket in central
+VPC in Account C ─┘                          security/audit account
+                                              ↓ Parquet format, partitioned by
+                                                date / account / region
+                                              ↓
+                                      Athena queries
+                                              ↓
+                                      QuickSight dashboards / GuardDuty
+                                      / Security Hub / SIEM
+```
+
+**Why this pattern:**
+- Single audit-trail location across the org
+- S3 + Parquet + Athena is **orders of magnitude cheaper** than CloudWatch Logs at scale
+- Cross-account delivery uses S3 bucket policy granting log delivery from source accounts
+- Lake Formation can govern access to the centralised logs
+
+#### Cost Reality
+
+Flow Logs aren't free — they bill on **delivery + storage**:
+
+- **CloudWatch Logs**: ~$0.50/GB ingested + retention
+- **S3**: standard storage + per-GB Athena query costs
+- **Firehose**: per-GB ingested + downstream destination
+
+**Rule of thumb at scale:** S3 + Parquet wins by ~10× vs CloudWatch Logs. The cost-conscious default is *"ship to S3, query with Athena, ship critical events to CloudWatch Logs subscription filters or Firehose."*
+
+#### Expanded Exam Triggers
+
+- *"Why is traffic blocked between two instances?"* → enable Flow Logs, look for **REJECT**
+- *"Audit which IPs accessed our database"* → Flow Logs on the **RDS ENI**
+- *"Cheap long-term Flow Log storage with ad-hoc querying"* → **S3 + Parquet + Athena**
+- *"Real-time security analytics on Flow Logs"* → **Firehose → OpenSearch / Splunk**
+- *"Why don't I see calls to the metadata service in Flow Logs?"* → **IMDS isn't captured** (also DNS, NTP, Windows activation, VPC router)
+- *"ACCEPT in Flow Logs means the connection succeeded"* → **No** — means firewall allowed; app-layer success requires app logs
+- *"Some Flow Log records have no data"* → **NODATA** (no traffic) or **SKIPDATA** (records dropped during interval)
+- *"See original source IP before NAT rewrote it"* → **Custom format with `pkt-srcaddr`**
+- *"Which network path did this traffic take (IGW / NAT / TGW)?"* → **Custom format with `traffic-path`**
+- *"Do I need to enable Flow Logs for GuardDuty to work?"* → **No** — GuardDuty has its own internal Flow Logs stream
+- *"Audit traffic through our Transit Gateway"* → **Transit Gateway Flow Logs** (separate feature)
+- *"Reduce Flow Logs cost in a busy account"* → **10-minute aggregation + custom format + S3 + Parquet**
+- *"Centralise Flow Logs across 50 accounts"* → **Each VPC ships to S3 in security account** via cross-account bucket policy
+
+#### The Mental Model
+
+> *VPC Flow Logs = "after-the-fact metadata about every IP packet that the network layer saw." It's a **logbook**, not a wire tap (no payload) and not a real-time alarm (5-10 min lag for S3/CW). ACCEPT means firewall allowed, **not** that the app succeeded. Several traffic categories are silently excluded (IMDS, DNS, NTP, etc.). For payload analysis use **Traffic Mirroring**; for real-time use **Firehose**; for AWS-API audit use **CloudTrail**.*
 
 ### Reachability Analyzer and Network Access Analyzer
 
