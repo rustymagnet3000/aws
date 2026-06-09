@@ -2096,6 +2096,54 @@ By default, **DX traffic is NOT encrypted** (it's a private line, but plaintext)
 - *"Lower-latency VPN over the public internet"* → **Accelerated Site-to-Site VPN** (uses Global Accelerator)
 - *"Encrypt traffic over Direct Connect"* → **MACsec** or **VPN over DX**
 
+#### Is Site-to-Site VPN "Old School"?
+
+Honest answer: **mostly yes** — but that's not a criticism. Site-to-Site VPN is the cloud-managed version of IPsec tunnels enterprises have been running since the late 1990s. The protocol (IPsec, IKEv2), the configuration concepts (BGP over the tunnel, pre-shared keys, dual-tunnel HA), and the customer-side hardware (Cisco, Fortinet, Juniper, Palo Alto, even pfSense) all predate "the cloud" by decades.
+
+It's **not deprecated** — it's still the default answer for "connect my office network to my VPC" because (a) every enterprise already owns VPN-capable hardware and (b) IPsec is universally understood by network teams.
+
+**What's actually modern about it (the AWS-side bits):**
+
+| Modern bit | How it differs from old-school |
+| ---------- | ------------------------------- |
+| **AWS-side endpoint is managed** | No VPN appliance to run in AWS; VGW / TGW is a service |
+| **ECMP across multiple tunnels** (with TGW) | Aggregate bandwidth beyond the 1.25 Gbps per-tunnel cap |
+| **Accelerated VPN** | Routes via AWS Global Accelerator edge network |
+| **Hub-and-spoke with TGW** | One VPN to TGW reaches many VPCs |
+| **Cross-region via TGW peering** | Multi-region hybrid bridged through AWS backbone |
+| **CloudWatch metrics + Flow Logs** | Cloud-native observability |
+| **Pay-as-you-go** | $0.05/hour per tunnel vs depreciating VPN appliances |
+
+#### When Modern Alternatives Beat Site-to-Site VPN
+
+For the *"connect my office network to my VPC"* use case, Site-to-Site VPN is still the right answer. For **adjacent** use cases people sometimes try to solve with VPN, there are better options:
+
+| Modern alternative | When it beats Site-to-Site VPN |
+| ------------------ | ------------------------------ |
+| **AWS Direct Connect** | Higher bandwidth needs, compliance demanding private circuit, large egress data volumes — covered in the DX section above |
+| **AWS Client VPN** | Individual user laptops (not whole networks) — TLS-based, modern auth (SAML, IAM Identity Center, AD) |
+| **AWS Verified Access** | Workforce access to **HTTP/HTTPS apps** — zero-trust model, **no VPN client needed**. Replaces VPN for *"engineer wants to access internal web app from a laptop"* |
+| **Amazon VPC Lattice** | Service-to-service mesh — replaces VPN-or-peering patterns for *internal* service connectivity (HTTP) |
+| **AWS Cloud WAN** | Managing multi-region networks declaratively — replaces hand-built multi-VPN/TGW setups |
+| **AWS PrivateLink** | Exposing a single service privately — replaces VPN-for-one-service patterns |
+
+#### Exam framing
+
+When a scenario describes a **traditional enterprise hybrid pattern** (on-prem DC, VPN device, BGP, etc.) → **Site-to-Site VPN** is in play.
+
+When it describes **modern cloud-native patterns** (individual users accessing HTTPS apps from anywhere, microservices, mesh) → think **Verified Access / Client VPN / Lattice**.
+
+| Question phrasing | Likely answer |
+| ----------------- | ------------- |
+| *"Connect our office network of 200 users to AWS"* | **Site-to-Site VPN** (or DX if bandwidth/compliance demands) |
+| *"Individual remote employees need access to a private RDS"* | **AWS Client VPN** |
+| *"Workforce needs zero-trust access to internal HTTPS apps without a VPN client"* | **AWS Verified Access** |
+| *"Microservices across many VPCs need to talk to each other"* | **VPC Lattice** |
+| *"Expose one service privately to many consumer VPCs"* | **PrivateLink** |
+| *"Multi-region network policy as code"* | **AWS Cloud WAN** |
+
+The mental model: *Site-to-Site VPN = "old school but still right" for office-to-VPC. The newer services are for specific cases the older protocol doesn't fit elegantly.*
+
 #### Site-to-Site VPN vs Virtual Private Gateway — the Layer Confusion
 
 A perennial source of exam confusion: people treat *Site-to-Site VPN* and *Virtual Private Gateway* as alternatives. They're **not** — they're different layers of the same setup.
