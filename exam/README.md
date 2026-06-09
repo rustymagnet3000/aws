@@ -1495,12 +1495,62 @@ This is how large orgs implement **network segmentation** for compliance (PCI wo
 
 **Inter-region TGW peering** — Connect TGWs in different regions; traffic stays on the AWS backbone. The standard "global private network" pattern uses one TGW per region, peered together.
 
+#### Appliance Mode — the "sticky sessions for firewall fleets" feature
+
+Without this, centralised stateful inspection (Network Firewall, Palo Alto, Check Point, Fortinet, Snort, etc. running behind a TGW) silently breaks for half of all flows. It's an opt-in setting on a TGW attachment and the exam loves it.
+
+**The bouncer analogy:** Imagine a club with bouncers at multiple doors. You enter through Door A and bouncer A checks your ID and **remembers you**. If you try to leave through Door C, bouncer C has no memory of you arriving — they don't know if you should be there. **Appliance Mode = "always exit through the same door you entered."**
+
+**The AWS version:** A stateful firewall is a bouncer with a memory. It builds a **connection table** on the outbound SYN ("alice → api.example.com:443 allowed") and uses that to recognise the SYN-ACK reply. If the reply hits a *different* firewall instance, that firewall has no record of the connection, looks at it as an unsolicited inbound packet, and **drops it**.
+
+**Default TGW behaviour (without Appliance Mode):**
+
+```
+Outbound  (alice → api.example.com):
+   Spoke VPC A ──→ TGW ──→ Inspection VPC, AZ-a, firewall #1
+                                              ↑
+                                              creates state for the flow
+
+Inbound reply (api.example.com → alice):
+   Spoke VPC A ←── TGW ←── Inspection VPC, AZ-b, firewall #2
+                                              ↑
+                                              has NO state for this flow
+                                              → drops the packet
+                                              → alice's connection times out
+```
+
+TGW load-balances across AZs by default. The forward and reverse paths can land on different appliances. Stateless appliances don't care; stateful ones break.
+
+**With Appliance Mode enabled on the inspection VPC attachment:**
+
+```
+Spoke VPC A ──→ TGW(AZ-a) ──→ firewall #1 (state created)
+Spoke VPC A ←── TGW(AZ-a) ←── firewall #1 (same instance recognises the flow)
+
+Same TGW endpoint = same firewall = stateful inspection works.
+```
+
+**Why it's opt-in, not always-on:** stateless appliances (pure routers, simple L4 forwarders) don't need flow affinity, and forcing it would unnecessarily constrain TGW's load-balancing. So Appliance Mode is **per-attachment** — turn it on for the inspection VPC attachment, leave it off everywhere else.
+
+**Adjacent analogies that may also click:**
+
+| Analogy | What it captures |
+| ------- | ---------------- |
+| **Sticky sessions on a load balancer** | User stuck to same backend server because session data lives there. Same principle for firewall connection tables |
+| **Same operator on a phone call** | The operator listening to both halves knows the context. Switching mid-call to a different operator means the new one has no idea what was said earlier |
+| **Customs at one airport vs two** | If you went through customs to enter, your declaration is at that office. Leaving through a different customs office that didn't see you arrive → they flag you |
+
+**Mental model:** *Appliance Mode = "sticky sessions for stateful firewall fleets behind Transit Gateway." Turn it on whenever you have stateful inspection appliances (Network Firewall, Palo Alto, Check Point, Fortinet, Snort/Suricata) running behind a TGW in a centralised inspection VPC. Leave it off for everything else.*
+
 **Exam triggers:**
 - *"Segment prod and dev networks in a hub-and-spoke topology"* → **TGW with multiple route tables**
 - *"Share a TGW across 50 accounts"* → **TGW + AWS RAM**
 - *"Connect TGWs in different regions"* → **TGW peering attachments**
 - *"Integrate SD-WAN appliances with TGW"* → **TGW Connect attachment** (GRE + BGP)
 - *"Visualise multi-region TGW topology"* → **TGW Network Manager**
+- *"Centralised firewall fleet behind TGW silently dropping return traffic"* → **enable Appliance Mode** on the inspection VPC's TGW attachment
+- *"Why do my stateful firewall sessions break intermittently when load-balanced across AZs?"* → **Appliance Mode** keeps both directions on the same TGW endpoint
+- *"Asymmetric routing through inspection VPC"* → **Appliance Mode** is the fix
 
 ### PrivateLink
 
