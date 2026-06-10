@@ -810,7 +810,107 @@ Public subnet route table:
 
 An instance also needs a **public IP** or **Elastic IP** to be reachable from the internet — the IGW alone isn't enough.
 
-**For IPv6 outbound only — Egress-Only Internet Gateway:** IPv6 addresses are *all* globally routable (no NAT in IPv6), so a regular NAT Gateway doesn't apply. The **Egress-Only Internet Gateway** is the IPv6 equivalent — lets IPv6 instances initiate **outbound** connections but blocks all **unsolicited inbound** traffic. Attaches to the VPC; route table entry: `::/0 → eigw-xxx`. Exam trigger: *"private IPv6 instances need to make outbound API calls but not be reachable from the internet"* → **Egress-Only IGW**.
+#### Egress-Only Internet Gateway (vs NAT Gateway)
+
+The IGW handles **bidirectional** internet traffic (the source of most VPC internet connectivity). For "outbound only" patterns there are two parallel tools — one for each IP version. Knowing which goes with which is the most-tested IPv6 question.
+
+**The fundamental difference:**
+
+| | **NAT Gateway** | **Egress-Only IGW** |
+| - | --------------- | ------------------- |
+| IP version | **IPv4 only** | **IPv6 only** |
+| Job | Translate private IPv4 → public IPv4 **AND** block inbound | Block unsolicited inbound IPv6 (no translation needed) |
+| Cost | ~$33/month per AZ + $0.045/GB | **Free** — no hourly, no per-GB |
+| Multi-AZ | One per AZ for HA | One per VPC (covers all AZs) |
+| 55k connection limit per destination | Yes | **No** |
+| Source IP preserved at destination | ❌ No — destination sees NAT's public IP | ✅ Yes — original IPv6 preserved |
+| Route table entry | `0.0.0.0/0 → nat-xxx` | `::/0 → eigw-xxx` |
+
+They're **not alternatives** — they're parallel constructs for the two IP families. Dual-stack VPCs use **both**, with separate route-table entries.
+
+**Why both exist — the conceptual reason:**
+
+NAT Gateway does **two jobs at once** in IPv4:
+
+```
+NAT Gateway in IPv4:
+  1. Translate private IP → public IP   ← REQUIRED because RFC 1918 IPs
+                                          can't route on the internet
+  2. Block unsolicited inbound          ← side effect of NAT (no translation
+                                          entry = nowhere to send inbound)
+```
+
+IPv6 addresses are **globally routable by design**. There are no "private" IPv6 addresses in the same sense — every IPv6 address you get from AWS *is* a public, internet-routable address. So **job #1 isn't needed**. You don't translate anything.
+
+But you still want *"private subnet, no inbound from internet."* That's where Egress-Only IGW comes in — it's specifically the **"block inbound, allow outbound"** gateway, without any translation overhead:
+
+```
+Egress-Only IGW in IPv6:
+  1. (no translation needed)
+  2. Block unsolicited inbound          ← the only job
+
+Just job #2. That's why it's free — no translation infrastructure to run.
+```
+
+**How a request flows through Egress-Only IGW:**
+
+```
+IPv6 instance in private subnet (2001:db8:1:1::10)
+  │
+  │ HTTPS request to api.example.com (2606:4700::1)
+  ▼
+Subnet route table:  ::/0 → eigw-xxx
+  │
+  ▼
+Egress-Only IGW: stateful — records the outbound flow
+  │
+  ▼
+AWS backbone → internet → api.example.com
+                            (sees the request from 2001:db8:1:1::10 — the
+                             ACTUAL instance address, not a translated one)
+
+Reply (api.example.com → 2001:db8:1:1::10):
+  Egress-Only IGW: "I have state for this flow → allow"  → reaches instance
+
+Unsolicited inbound from internet to 2001:db8:1:1::10:
+  Egress-Only IGW: "no state — this wasn't initiated from inside"  → blocked
+```
+
+The stateful behaviour is identical to NAT Gateway's "outbound creates state, inbound matched against state." Just no IP translation step.
+
+**Benefits beyond cost:**
+
+1. **No 55k connection limit per destination** — the NAT Gateway gotcha doesn't apply (no port translation table)
+2. **Source IP preserved at destination** — 1,000 instances calling the same external API show up as 1,000 distinct IPv6 addresses (vs all appearing as the single NAT IP). Better debugging, better third-party allowlisting, better forensics
+3. **Simpler HA** — one Egress-Only IGW per VPC covers all AZs (vs NAT needing one per AZ + asymmetric routing risk)
+4. **No data-processing charge** — at 10 TB/month outbound, NAT's $0.045/GB = ~$450/month of pure overhead. Egress-Only IGW = $0
+
+**When you'd use each:**
+
+| Scenario | Use |
+| -------- | --- |
+| **IPv4-only VPC** (most VPCs today) | **NAT Gateway** for IPv4 outbound; no Egress-Only IGW |
+| **IPv6-only VPC** (e.g. EKS at scale) | **Egress-Only IGW** for IPv6 outbound; no NAT Gateway |
+| **Dual-stack VPC** (IPv4 + IPv6) | **Both** — NAT for IPv4 traffic, Egress-Only IGW for IPv6 traffic |
+
+**The catch (why everyone isn't using it):**
+
+- **Destination must be IPv6-reachable.** Most modern public services are dual-stack (AWS, Google, Cloudflare, GitHub, npm, PyPI, Docker Hub). Legacy/niche IPv4-only destinations still need NAT
+- **App stack must speak IPv6.** Older runtimes/libraries sometimes default to IPv4 and need configuration
+- **On-prem might not be IPv6-ready** — peered / VPN / DX traffic to on-prem is typically IPv4 and needs NAT
+
+**Mental model:**
+
+> *NAT Gateway does **two jobs**: translate private→public AND block inbound (the second is a side effect of the first). Egress-Only IGW does **only the second job** because IPv6 addresses are already globally routable. That's why Egress-Only IGW is free: there's no translation infrastructure to run. They're not alternatives — they're parallel constructs for the two IP families. Dual-stack = use both.*
+
+**Exam triggers:**
+
+- *"IPv6 instances need outbound internet but not inbound"* → **Egress-Only IGW**
+- *"Save NAT Gateway costs for high-volume outbound at scale"* → **dual-stack + Egress-Only IGW** for the IPv6 traffic
+- *"Preserve source IP at the destination for thousands of instances"* → **Egress-Only IGW** (NAT hides them all behind one public IP)
+- *"NAT Gateway connection-limit exhaustion (55k per destination)"* → IPv6 + **Egress-Only IGW** sidesteps it
+- *"My IPv4 instance needs internet but not inbound"* → **NAT Gateway**, not Egress-Only IGW (this is the trap)
+- *"Why does my IPv6 instance still not reach the internet despite Egress-Only IGW?"* → either the destination is IPv4-only, or the route table is missing `::/0 → eigw-xxx`
 
 ### NAT Gateway vs NAT Instance
 
