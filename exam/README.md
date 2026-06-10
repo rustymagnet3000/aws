@@ -6843,6 +6843,117 @@ This matches every traditional firewall (Cisco, iptables, NACL). What most engin
 - **IDS/IPS via Suricata rules** — signature-based detection of known exploits
 - **DNS filtering** — block resolution of malicious / unapproved domains
 - **Compliance** — required by many regulated frameworks for "deep packet inspection"
+- **Deep inspection of encrypted traffic** — requires TLS Inspection (below)
+
+#### TLS Inspection — Network Firewall as a Burp Suite for VPC traffic
+
+**Anchored against Burp Suite / Charles Proxy / mitmproxy / ZAP.** Same architecture, same MITM pattern: intercept the TLS handshake, generate a fake cert signed by *your* CA, decrypt traffic in transit, inspect the plaintext, re-encrypt to the real destination. The browser/client must trust your CA — same trust-store dance you do when setting up Burp to test an iOS app.
+
+This is a 2023+ feature that fundamentally changes what Network Firewall can inspect.
+
+**The problem TLS solves and what it costs the firewall:**
+
+Modern traffic is overwhelmingly HTTPS. Without TLS inspection, Network Firewall sees:
+
+- Source / destination IP and port
+- TLS handshake metadata: **SNI** (Server Name Indication — the domain in the Client Hello)
+- TCP flow size and timing
+- That's it
+
+It cannot see HTTP request paths, methods, headers, bodies, file downloads, or exfiltrated data. You can block by domain (via SNI) but can't apply Suricata's HTTP-aware rules to the encrypted payload.
+
+**The architecture (identical to Burp / Charles / mitmproxy):**
+
+```
+1. EC2 in VPC initiates HTTPS to api.external.com
+       ↓
+2. Network Firewall intercepts the TLS handshake
+       ↓
+3. NFW generates a cert for "api.external.com" on the fly,
+   signed by YOUR Certificate Authority
+   (must already be in the EC2's trust store —
+    same prerequisite as installing Burp's CA in your browser)
+       ↓
+4. NFW completes TLS handshake with the EC2 (using the fake cert)
+   → has session keys for the EC2-side TLS session
+       ↓
+5. NFW separately initiates ITS OWN TLS to api.external.com
+   → has session keys for the destination-side TLS session
+       ↓
+6. NFW decrypts traffic from EC2 — sees plaintext HTTP
+       ↓
+7. Suricata rules evaluate the plaintext
+       ↓
+8. If allowed: re-encrypt with destination-side session keys,
+   forward to api.external.com
+   If blocked: drop / reset / alert
+       ↓
+9. Response path: decrypt destination → Suricata → re-encrypt → forward to EC2
+```
+
+The EC2 thinks it's talking directly to `api.external.com`. The destination thinks it's talking directly to the EC2. Network Firewall is in the middle decrypting both directions. **This is exactly what Burp Suite does in a security testing setup — same trust model, same cert dance, same MITM mechanics — just sitting in a VPC data path instead of on the security tester's laptop.**
+
+**Setup ingredients:**
+
+| Ingredient | What |
+| ---------- | ---- |
+| **TLS Inspection Configuration** | References certificate(s) Network Firewall uses to sign on-the-fly MITM certs |
+| **Certificate source** | **ACM Private CA** (most common) or imported cert |
+| **CA distributed to client trust stores** | Every instance whose traffic will be inspected must trust the CA. Same as installing Burp's CA in your browser. Without it, clients see *"untrusted certificate"* errors and refuse to connect. Distribute via Systems Manager / golden AMI / config management |
+| **Policy reference** | TLS Inspection Configuration attached to the firewall policy |
+| **Inspection scope** | Choose which flows to inspect via rules with SNI / 5-tuple matching — don't have to inspect everything |
+
+**What TLS inspection unlocks:**
+
+| Use case | Why it needs TLS inspection |
+| -------- | ---------------------------- |
+| **Malware detection in encrypted downloads** | Suricata IDS rules scan file contents for known signatures only when decrypted |
+| **Data exfiltration prevention** | Detect sensitive patterns (credit cards, internal hostnames, secret tokens) being uploaded via HTTPS |
+| **Block specific URLs/paths inside HTTPS** | Allow `github.com` but block `github.com/some-restricted-org/*` — can't do this without seeing inside the TLS payload |
+| **Apply HTTP-specific Suricata rules** | Most Suricata signatures target HTTP methods, headers, payloads. Useless on encrypted traffic |
+| **Compliance** | PCI-DSS / HIPAA sometimes require inspection of encrypted traffic |
+| **SOC visibility** | Decrypted traffic produces meaningful alerts; encrypted traffic produces "TLS to unknown destination" |
+
+**Limitations and gotchas (exam favourites):**
+
+| Limitation | What breaks |
+| ---------- | ----------- |
+| **Certificate pinning** | Mobile apps, IoT devices, banking apps pin the original cert. Your MITM cert is rejected — connection fails. **Whitelist these domains** from inspection. Same problem Burp users hit when testing pinned mobile apps |
+| **Mutual TLS (mTLS)** | Client cert presented to server — breaks inspection handshake. Often needs bypass |
+| **QUIC / HTTP3** | UDP + embedded TLS — different model. NFW can drop QUIC to force fallback to TCP TLS where it can inspect, but can't fully inspect QUIC itself |
+| **Encrypted SNI / ECH** | Newer TLS extension encrypts the SNI itself — prevents SNI-based decisions |
+| **Privacy / legal** | Decrypting employee traffic to personal banking / healthcare / email raises HR + legal concerns. Always whitelist |
+| **Performance** | TLS termination + re-termination = CPU + latency overhead |
+| **Cost** | Inspection adds processing charges on top of standard Network Firewall fees |
+| **Cert distribution** | Every client needs your CA in its trust store — easy for managed AMIs, hard for third-party AMIs and IoT |
+
+**Network Firewall TLS inspection vs WAF:**
+
+| | **Network Firewall TLS Inspection** | **AWS WAF** |
+| - | ----------------------------------- | ----------- |
+| Where | Within the VPC data path | At CloudFront / ALB / API Gateway |
+| TLS handling | **Decrypts** in transit (MITM) | TLS already terminated by ALB / CF; WAF sees plaintext for free |
+| What it inspects | All TLS flows you choose to inspect — any destination | HTTP traffic terminating at your AWS resources |
+| Setup | Need ACM PCA + CA in trust stores | Just attach Web ACL — no cert dance |
+| Use for | **Egress filtering** of encrypted traffic to third parties | **Ingress filtering** of public-facing apps |
+| Direction | East-west and north-south egress | Inbound to AWS-hosted services |
+
+**Decision rule:** *"Filter inbound to my app at CloudFront / ALB"* → **WAF** (no TLS inspection setup; AWS terminates TLS). *"Filter outbound from VPC to external HTTPS"* → **Network Firewall TLS Inspection** (you must terminate + re-encrypt).
+
+**Mental model:**
+
+> *Network Firewall TLS Inspection = **Burp Suite for VPC traffic**. Same MITM architecture, same fake-cert-from-your-CA mechanic, same trust-store distribution problem. Without it, NFW is half-blind on modern traffic — sees SNI + metadata but not content. With it, NFW decrypts → Suricata-inspects → re-encrypts → forwards. Use it for **egress malware/exfiltration detection** and applying HTTP-aware Suricata rules to encrypted egress traffic. WAF doesn't need this dance because it inspects at points where AWS already terminated TLS.*
+
+**Exam triggers:**
+
+- *"Inspect content of TLS-encrypted traffic egressing from VPC"* → **Network Firewall TLS Inspection**
+- *"Block specific URLs / paths inside HTTPS traffic from a VPC"* → **Network Firewall TLS Inspection** (without it, you can only block by domain via SNI)
+- *"Detect malware in encrypted downloads"* → **Network Firewall TLS Inspection** + Suricata signatures
+- *"Why does our mobile app break after enabling TLS inspection?"* → **Certificate pinning** — whitelist that domain from inspection
+- *"Bypass TLS inspection for banking / healthcare domains"* → **Scope inspection rules** to exclude those SNIs (privacy / legal compliance)
+- *"WAF vs Network Firewall for inspecting encrypted HTTPS"* → **WAF** for inbound to your AWS-hosted apps (TLS already terminated by ALB/CF); **Network Firewall TLS Inspection** for outbound to third parties
+- *"Decrypted traffic visibility for our SOC tooling"* → **Network Firewall TLS Inspection + alert logging to Firehose**
+- *"How does Network Firewall act on encrypted traffic without inspection?"* → SNI-based domain list rules + 5-tuple matching (no payload visibility)
 
 #### Pricing (the gotcha)
 
