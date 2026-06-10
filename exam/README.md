@@ -1907,7 +1907,7 @@ Same TGW endpoint = same firewall = stateful inspection works.
 
 ### PrivateLink
 
-Expose a service running in **your** VPC to **other** VPCs (or accounts) without peering, without overlapping CIDR concerns, without internet.
+**Anchored as: "expose one service, not a whole network."** PrivateLink lets a service in one VPC be consumed by other VPCs (or accounts) over private IPs, without peering, without internet, and without CIDR overlap concerns. It's the architecture behind every AWS Interface VPC Endpoint and the way SaaS vendors (Snowflake, Datadog, Confluent, MongoDB Atlas) expose their products privately to customers' VPCs.
 
 ```
 Provider VPC:    [Your service behind an NLB] → "VPC Endpoint Service"
@@ -1920,7 +1920,151 @@ Consumer VPC:    [Interface Endpoint] → reaches your service via private IPs
 - Traffic stays on the AWS backbone — never traverses the public internet.
 - The two VPCs **can have overlapping CIDRs** — PrivateLink doesn't route between them, it just exposes the service.
 
-Use case: SaaS providers exposing their product to customers' VPCs (Snowflake, Datadog, etc. all use PrivateLink).
+#### The four-component architecture
+
+Most PrivateLink confusion comes from mixing up provider-side vs consumer-side terminology. There are exactly four things:
+
+| Component | Side | What it is |
+| --------- | ---- | ---------- |
+| **Network Load Balancer (NLB)** or **Gateway Load Balancer (GWLB)** | Provider | Sits in front of your actual service (EC2 / ECS / EKS / Lambda via ALB target). PrivateLink only works with NLB or GWLB — not ALB directly |
+| **VPC Endpoint Service** | Provider | Resource you create that *exposes* the NLB via PrivateLink. Has a unique service name like `com.amazonaws.vpce.eu-west-1.vpce-svc-abc123` |
+| **Interface VPC Endpoint** | Consumer | An ENI in the consumer's subnet (with a private IP) that connects to the provider's endpoint service |
+| **Acceptance / allow-list** | Provider | Provider controls *which AWS accounts / IAM principals* are allowed to connect. Either manual acceptance per request, or pre-allowlist of account ARNs |
+
+The mental model: provider "publishes" an NLB-backed service into the PrivateLink fabric → AWS gives it a globally-unique service name → consumers in any VPC create an Interface Endpoint that connects.
+
+#### Why people use it instead of VPC Peering
+
+This is the most-tested PrivateLink decision:
+
+| | **VPC Peering** | **PrivateLink** |
+| - | ---------------- | --------------- |
+| What's exposed | The **whole VPC** | **One specific service** behind an NLB |
+| CIDR overlap | Not allowed | **Allowed** (PrivateLink doesn't route between VPCs; just exposes the service) |
+| Granularity | Network-level | Service-level |
+| Direction | Bidirectional | **Consumer initiates only** (one-way) |
+| Cross-account | Yes | Yes |
+| Cross-region | Yes | **No** (need per-region endpoints — see below) |
+| Use for | Trusted internal VPC connectivity | Vendor-style "expose this one service to many consumers" |
+
+If you only need to share *one service* (not the whole network) and want CIDR-overlap immunity, PrivateLink wins. The trade-off: it's per-service plumbing, so dozens of services means dozens of endpoints.
+
+#### Acceptance vs allow-listing
+
+Provider controls who can connect via two mechanisms:
+
+| Mechanism | Detail |
+| --------- | ------ |
+| **Acceptance required** | Every new consumer connection sits in `Pending` until provider manually accepts. Good for low-volume / sensitive services |
+| **Allowed Principals list** | Pre-allowlist specific AWS account ARNs or IAM principals; their connections auto-accept. Good for many consumers |
+| **Both off** | Anyone with the endpoint service name can connect. Rarely used; mostly for internal trusted multi-account |
+
+SaaS providers typically pre-allowlist customer account ARNs after the customer signs a contract — that's how Snowflake / Datadog onboard you.
+
+#### Private DNS for endpoint services (custom domain names)
+
+By default, consumers reach the provider via a generated DNS name like:
+```
+vpce-abc-xyz.com.amazonaws.vpce.eu-west-1.vpce-svc-abc.amazonaws.com
+```
+
+That's ugly and brittle. Providers can configure a **custom Private DNS name** (e.g. `api.acme-saas.com`):
+
+- Provider proves they own `acme-saas.com` via a DNS TXT record
+- Consumer's VPC resolves `api.acme-saas.com` directly to the endpoint's private IP
+- Consumer's app code uses the same public-looking hostname as if calling the internet — no changes
+
+This is how Snowflake / Datadog give you a "regular" hostname for their service that resolves privately inside your VPC.
+
+#### Cross-region PrivateLink — there isn't really one
+
+PrivateLink is **regional**. An Interface Endpoint in `eu-west-1` can only connect to a service published in `eu-west-1`. There's no native cross-region PrivateLink. Workarounds:
+
+| Need | Workaround |
+| ---- | ---------- |
+| Same provider service in multiple regions | Provider deploys the service + NLB + endpoint service **in each region** consumers want |
+| One provider region serving global consumers | Consumers route via **internet**, or via DX/VPN back to provider region — defeats PrivateLink's point |
+| Cross-region private connectivity in general | **VPC Peering** or **Transit Gateway peering**, not PrivateLink |
+
+#### PrivateLink for the SaaS provider — how to be the seller, not the buyer
+
+Most exam framing is "consumer using PrivateLink to reach a vendor." Worth flipping that around to understand the **provider side** because it shows up too:
+
+```
+You run a SaaS service. To expose it via PrivateLink:
+
+1. Put your service behind an NLB in YOUR VPC
+2. Create an "Endpoint Service" pointing at the NLB
+3. Note the service name (vpce-svc-xxx)
+4. Either: allow-list your customers' AWS account ARNs
+       OR: require manual acceptance and approve each
+5. Optionally: configure a custom Private DNS name
+6. Share the service name + your custom DNS with customers
+7. Customer creates an Interface Endpoint in their VPC,
+   referencing your service name
+8. Their connection appears in your endpoint service console
+   → accept it (if manual)
+9. Customer traffic now reaches your NLB → your service
+```
+
+The provider model is what makes SaaS-on-AWS scale: each customer's VPC reaches your service privately without any of your or their CIDRs touching each other.
+
+#### Cost
+
+PrivateLink isn't free on either side:
+
+| Side | Cost |
+| ---- | ---- |
+| Consumer Interface Endpoint | **$0.01/hour per AZ** + **$0.01/GB processed** |
+| Provider Endpoint Service | Free (you pay normal NLB costs) |
+| Provider NLB | Standard NLB hourly + LCU-based pricing |
+| Cross-AZ traffic | Standard cross-AZ data transfer applies |
+
+For a SaaS vendor with many customers, the **consumer pays for their own endpoint**. Provider just pays for NLB.
+
+#### Limitations and gotchas
+
+| Limitation | Detail |
+| ---------- | ------ |
+| **NLB or GWLB only** | Can't expose an ALB directly via PrivateLink. If your service needs HTTP-level features, you may need NLB → ALB → service, or use **VPC Lattice** instead |
+| **Regional** | No cross-region; need per-region deployment |
+| **IPv6** | Supported in many configurations now, but check service-by-service |
+| **Connection scaling** | NLB scales horizontally; PrivateLink follows. But there are per-region soft limits on endpoints + connections |
+| **No transitive routing** | Consumer can reach the published service only — can't use the Interface Endpoint as a "back door" into the provider's broader VPC |
+| **DNS resolution scope** | Private DNS only works inside the consumer's VPC (or via Resolver from on-prem with extra config) |
+
+#### PrivateLink vs VPC Peering vs Transit Gateway vs VPC Lattice (the constant exam question)
+
+| Need | Use |
+| ---- | --- |
+| **Expose one service to many consumers (possibly overlapping CIDRs)** | **PrivateLink** |
+| **Two or three VPCs need full network-level connectivity** | **VPC Peering** |
+| **Many VPCs + hybrid + transitive routing in a hub-and-spoke** | **Transit Gateway** |
+| **Service-mesh-style HTTP-only east-west between many services** | **VPC Lattice** (newer; replaces some PrivateLink patterns for HTTP) |
+| **AWS service access from VPC (S3, KMS, etc.)** | **VPC Interface Endpoint** (which is PrivateLink under the hood) or Gateway Endpoint for S3/DynamoDB |
+
+#### Common anti-patterns
+
+- *"Use PrivateLink to share a whole VPC"* → wrong tool; use **VPC Peering** or **TGW**. PrivateLink is service-level only
+- *"PrivateLink with an ALB"* → not supported directly; need **NLB → ALB → service** chain, or use **VPC Lattice**
+- *"Cross-region PrivateLink"* → doesn't exist; deploy per-region endpoint services
+- *"Bi-directional service exposure via PrivateLink"* → it's one-way (consumer initiates). For bidirectional, each side publishes its own endpoint service
+- *"Forget about acceptance / allow-list"* → if both are off, anyone with the service name can connect. Always lock down
+
+#### Mental model
+
+> *PrivateLink = **"expose one service, not a whole network."** Provider puts an **NLB + Endpoint Service** in their VPC; consumer creates an **Interface Endpoint** in theirs. Traffic stays on the AWS backbone; CIDRs can overlap because no routing happens between VPCs. It's how AWS exposes its own services to your VPC (Interface VPC Endpoints ARE PrivateLink), and it's how SaaS vendors (Snowflake, Datadog) expose theirs to customers. **NLB only, regional only, one-way only** — those are the three constraints.*
+
+#### Exam triggers
+
+- *"Expose my service to many customer VPCs without peering"* → **PrivateLink** (Endpoint Service + customers create Interface Endpoints)
+- *"Connect to a SaaS like Snowflake / Datadog privately"* → **PrivateLink** (consumer creates Interface Endpoint to the provider's service)
+- *"Two VPCs with overlapping CIDRs need to share one service"* → **PrivateLink** (peering won't work due to overlap)
+- *"Expose service to multiple AWS accounts with per-account control"* → **PrivateLink + Allowed Principals allow-list**
+- *"Custom DNS name for my exposed service"* → **PrivateLink Private DNS name** (verify domain via TXT record)
+- *"PrivateLink with an ALB"* → not directly; use **NLB → ALB → service** or **VPC Lattice**
+- *"Cross-region PrivateLink"* → **doesn't exist**; deploy per-region
+- *"Why is AWS Interface VPC Endpoint similar to vendor PrivateLink?"* → because it IS PrivateLink under the hood
 
 ### DNS in a VPC
 
