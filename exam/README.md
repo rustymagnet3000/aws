@@ -2514,6 +2514,86 @@ Do you have an on-prem data centre that needs to integrate with AWS?
 
 **Mental model:** *Direct Connect isn't really about "fast network" — it's about **predictable cost** (per-GB egress vs internet), **predictable performance** (no jitter), and **compliance documentation** (auditor wants a private circuit on paper). Big enough on-prem footprint + regulated enough to need private paths + moving enough data that egress savings matter → DX. Startups and pure-cloud orgs don't need it.*
 
+#### Is Direct Connect a Physical Appliance? (No)
+
+A common misconception: people hear "private line" or "dedicated circuit" and assume AWS ships hardware. **They don't.** There's no AWS Direct Connect appliance, no rack, no box on your site.
+
+**What DX physically is:** a **dedicated network cross-connect** in a specific colocation facility called a **Direct Connect location** (e.g. Equinix, CoreSite, Digital Realty). AWS has equipment present in ~100+ of these facilities globally. The "physical" part = a **fibre cable** running inside the colo between AWS's router and your (or your partner's) router.
+
+**The architecture:**
+
+```
+Your office/data centre                  DX Location (e.g. Equinix LD8)
+─────────────────────                    ──────────────────────────────
+
+Your router/firewall                     ┌──────────┐    ┌─────────────┐
+that knows about AWS  ────MPLS/leased──▶ │  Your    │───▶│  AWS router │
+(at YOUR site)             line / partner│  router  │    │  (AWS's     │
+                                          │  or      │    │   cage)     │
+                                          │  partner │    │             │
+                                          │  router  │    └─────────────┘
+                                          └──────────┘    cross-connect
+                                                         (a fibre cable in
+                                                          the same building)
+```
+
+- **At your site:** your own router that you already owned (Cisco, Juniper, Palo Alto, etc.). AWS doesn't supply or specify it
+- **In the DX location:** either *your* router (if your company has presence there) or a *partner's* router (much more common — AT&T, Verizon, Megaport, BT, Lumen)
+- **The cross-connect:** a literal fibre cable that the colo facility runs between your/partner's cage and AWS's cage. Ordered as a "cross-connect" ticket with the colo provider
+
+**Three connection types — who installs what:**
+
+| Type | What it is | Customer install burden |
+| ---- | ---------- | ----------------------- |
+| **Dedicated Connection** | A whole AWS port (1G / 10G / 100G) reserved for you | Need router presence in a DX location (or via partner); order cross-connect to AWS's cage |
+| **Hosted Connection** | A slice (50 Mbps – 10 Gbps) of a partner's existing port | Partner handles AWS-facing side; you just need connectivity to the partner |
+| **Hosted VIF** | Just a Virtual Interface on someone else's connection | You configure VIF settings; partner handles physical layer |
+
+Most companies use **Hosted Connections** — they don't have presence in a DX colo themselves, so the partner does the physical bit.
+
+**Contrast with AWS Outposts (this IS shipped hardware):**
+
+| | **Direct Connect** | **AWS Outposts** |
+| - | ------------------ | ----------------- |
+| Physical AWS hardware at your site? | ❌ No | ✅ Yes — AWS ships a rack |
+| Where AWS hardware lives | In a colo facility | **In your data centre** |
+| What you're buying | A private network path to AWS | A piece of AWS *running on your premises* |
+| Setup | Order DX, cross-connect, BGP | AWS installs the rack physically |
+
+**Outposts** = AWS hardware on-prem. **Direct Connect** = a private network path to AWS via a colo.
+
+**Why setup takes weeks-to-months:**
+
+1. **Order from AWS** — pick DX location + port speed (minutes)
+2. **Get Letter of Authorization (LOA-CFA)** from AWS — tells colo which cage to cross-connect to
+3. **Order the cross-connect** — colo schedules engineer to physically run fibre (days to weeks)
+4. **Set up your end** — your router or partner provisions their side (weeks if using a partner who needs to lay leased lines / MPLS / fibre to your site)
+5. **Configure BGP + VIFs** — the AWS-side configuration (hours)
+
+The AWS side is fast; the **physical fibre work + last-mile networking** is what takes time.
+
+**What the customer actually needs:**
+
+| Requirement | Detail |
+| ----------- | ------ |
+| **Router speaking BGP** | Cisco / Juniper / Arista / whatever you already own |
+| **Single-mode fibre** of the right type | 1000BASE-LX, 10GBASE-LR, 100GBASE-LR4 etc. — for the cross-connect |
+| **Path to a DX location** | Either presence there, or via a partner |
+| **BGP ASN** | Your own AS number (public or private) |
+| **Patience** | 4–12 weeks (dedicated); 1–3 weeks (hosted) |
+
+**Mental model:**
+
+> *Direct Connect isn't a box AWS ships — it's a **fibre cable in a colocation facility**. AWS has equipment in ~100+ colos globally; you (or your partner) need to be in one too. Your side uses your **own existing routing hardware** — AWS doesn't supply or specify it. **Compare with AWS Outposts: that's the service where AWS does ship a physical rack to your DC.***
+
+**Exam triggers:**
+
+- *"Does Direct Connect require AWS hardware on-prem?"* → **No** — DX is a cross-connect in a colo. **Outposts** is the AWS hardware-on-prem service
+- *"Customer doesn't have presence in any DX location"* → use a **hosted connection** via an AWS Partner (Megaport, AT&T, Verizon, etc.)
+- *"Reduce DX setup time"* → **Hosted Connection** via existing partner (days/weeks) vs **Dedicated Connection** (weeks/months)
+- *"Customer's own router for DX"* → yes, customer-owned and -managed — anything supporting BGP at the required speed
+- *"What is a Direct Connect location?"* → AWS-equipped **colocation facility** (Equinix, CoreSite, etc.) — not an AWS data centre, not at your site
+
 #### Direct Connect Deeper Bits
 
 **Virtual Interfaces (VIFs)** — the logical channel on top of the physical DX line. Three types, each tested:
