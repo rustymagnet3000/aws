@@ -34,6 +34,7 @@
   - [Amazon VPC Lattice](#amazon-vpc-lattice)
   - [AWS Cloud WAN](#aws-cloud-wan)
   - [AWS VPC IP Address Manager (IPAM)](#aws-vpc-ip-address-manager-ipam)
+  - [IPv6 in a VPC](#ipv6-in-a-vpc)
   - [VPC Flow Logs](#vpc-flow-logs)
   - [Reachability Analyzer and Network Access Analyzer](#reachability-analyzer-and-network-access-analyzer)
   - [Direct Connect and Site-to-Site VPN](#direct-connect-and-site-to-site-vpn)
@@ -1783,6 +1784,78 @@ For small orgs, IPAM is overkill — just track CIDRs in a spreadsheet or Terraf
 - *"Centrally plan and prevent overlapping CIDRs across many accounts"* → **AWS IPAM**
 - *"Auto-allocate CIDRs to new VPCs from a reserved pool"* → **IPAM with auto-allocation**
 - *"Manage BYOIP across the org"* → **IPAM public pool**
+
+### IPv6 in a VPC
+
+For most workloads IPv6 is overkill. There's **one big reason** orgs adopt it inside a VPC and a few smaller ones — knowing which scenarios trigger an IPv6 answer is what the exam tests.
+
+#### The headline reason — RFC 1918 exhaustion at scale
+
+People assume the private IPv4 space (`10.0.0.0/8` = ~16.7M addresses, plus `172.16/12` and `192.168/16`) is infinite. **It isn't, at enterprise scale.** Three pressures eat it:
+
+| Pressure | What chews through IP space |
+| -------- | --------------------------- |
+| **EKS / Kubernetes** | AWS VPC CNI gives **every pod a real VPC IP**. 1,000 nodes × 50 pods/node = **50,000 IPs in one cluster**. A `/16` (65k IPs) exhausted by a single cluster. **This is the #1 reason** orgs flip EKS to IPv6 mode |
+| **`awsvpc` mode for ECS / Fargate** | Each task = ENI = VPC IP. Less severe than EKS (1 IP per task vs many pods per node) but the same shape of problem at scale. Bridge mode on ECS-on-EC2 sidesteps it |
+| **Non-overlapping CIDR requirement** | VPC Peering / TGW / DX require non-overlapping CIDRs. Hundreds of VPCs + M&A = perpetual IP planning headaches |
+
+IPv6 has **3.4 × 10³⁸ addresses**. AWS gives every VPC a `/56` IPv6 CIDR automatically (~4.7 × 10²² per VPC). You **cannot run out**.
+
+#### The "no NAT Gateway needed" angle
+
+IPv6 is globally routable — **no NAT in IPv6**. With an **Egress-Only Internet Gateway** (the IPv6 equivalent of NAT), IPv6 instances get outbound internet access without NAT translation:
+
+| | IPv4 outbound | IPv6 outbound |
+| - | ------------- | ------------- |
+| Inbound-blocking outbound gateway | **NAT Gateway** (~$33/month per AZ + $0.045/GB) | **Egress-Only IGW** (free, no per-GB charge) |
+| 55k connection limit per destination | Yes (the NAT Gateway gotcha) | **No** — IPv6 sidesteps it |
+| Source IP rewriting | Yes (NAT translation) | **No** — original IP preserved |
+| Cost at scale | Significant | Negligible |
+
+The cost angle alone justifies IPv6 dual-stack for high-traffic workloads. Plus the **55k connection limit gotcha** that bites large NAT-fronted fleets is just **not a problem** for IPv6 traffic.
+
+#### Other reasons people use IPv6 internally
+
+| Reason | Why |
+| ------ | --- |
+| **M&A / VPC merging** | Acquiring a company with overlapping `10.x` CIDRs → IPv6 gives clean parallel address space without renumbering |
+| **Compliance mandates** | US Federal IPv6 mandate, India, EU pushes. Government-facing workloads increasingly require IPv6 readiness |
+| **Reach IPv6-only public services** | Growing number of public services + mobile carriers prefer IPv6 |
+| **Flow Log simplicity** | No NAT means no `pkt-srcaddr` vs `srcaddr` confusion |
+| **Future-proofing** | Like SSL was "optional" in 2010, expected by 2020 |
+
+#### When IPv6 is genuinely **not** worth it
+
+| Case | Stay with IPv4 |
+| ---- | -------------- |
+| **Small / medium VPC** (< few thousand resources) | IPv4 plenty; IPv6 adds operational complexity for no gain |
+| **Traditional 3-tier app on EC2 + RDS** | Will never exhaust IPs |
+| **No EKS / no extreme scale** | The biggest reason doesn't apply |
+| **Workloads talking to on-prem IPv4 systems** | Adds dual-stack translation complexity |
+| **Most enterprises starting fresh** | IPv4 + good IPAM hygiene handles you for years |
+
+For a "normal" VPC with EC2 + ALB + RDS + S3 endpoints — IPv6 is solving a problem you don't have.
+
+#### Exam framing
+
+If a question mentions any of these → IPv6 might be the answer:
+
+| Trigger | Answer |
+| ------- | ------ |
+| *"Pod / container exhaustion of IP addresses in EKS"* | **EKS with IPv6 mode** |
+| *"Run a Kubernetes cluster with 50,000+ pods"* | **IPv6 mode** |
+| *"Merge two companies' VPCs with overlapping CIDRs without renumbering"* | Consider **IPv6** |
+| *"Federal compliance requires IPv6 readiness"* | **IPv6 dual-stack** |
+| *"Outbound from IPv6 instances without exposing inbound"* | **Egress-Only Internet Gateway** |
+| *"NAT Gateway connection-limit exhaustion at scale (55k per destination)"* | Move to **IPv6** sidesteps it entirely |
+| *"Avoid NAT Gateway cost for high-volume outbound traffic"* | **IPv6 + Egress-Only IGW** is free vs NAT Gateway's per-GB charge |
+| *"ECS / Fargate hitting subnet IP exhaustion"* | **`awsvpc` + dual-stack subnet + IPv6**, or secondary CIDRs |
+
+If a question is just *"my app needs to talk to the internet"* with no scale or compliance trigger → it's **NOT** an IPv6 question. Stay IPv4.
+
+#### Mental model
+
+> *IPv6 in a VPC is mostly about **dodging the RFC 1918 exhaustion problem** at extreme scale — and the place it shows up is almost always **EKS pod IPs**. The secondary win is **no NAT Gateway** (use Egress-Only IGW instead) — cheaper, no 55k connection limit. For traditional workloads on a normal-sized VPC, IPv6 is solving a problem you don't have. The exam tests it because EKS at scale + the cost angle have made it real for a slice of customers, not because every VPC needs it.*
 
 ### VPC Flow Logs
 
