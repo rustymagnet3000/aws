@@ -34,6 +34,7 @@
   - [Amazon VPC Lattice](#amazon-vpc-lattice)
   - [AWS Cloud WAN](#aws-cloud-wan)
   - [AWS VPC IP Address Manager (IPAM)](#aws-vpc-ip-address-manager-ipam)
+  - [IPv6 in a VPC](#ipv6-in-a-vpc)
   - [VPC Flow Logs](#vpc-flow-logs)
   - [Reachability Analyzer and Network Access Analyzer](#reachability-analyzer-and-network-access-analyzer)
   - [Direct Connect and Site-to-Site VPN](#direct-connect-and-site-to-site-vpn)
@@ -1083,18 +1084,214 @@ NACLs aren't just "block malicious IPs." Real use cases:
 
 ### VPC Endpoints
 
-A VPC Endpoint lets resources in your VPC reach AWS services **without going over the public internet** (no NAT Gateway, no IGW). Two types:
+A VPC Endpoint lets resources in your VPC reach AWS services **without going over the public internet** (no NAT Gateway, no IGW). Two completely different mechanisms under the same name — knowing which is which is the most-tested VPC topic on the SAA exam.
 
-| | Gateway Endpoint | Interface Endpoint |
-| - | ---------------- | ------------------ |
-| Services | **S3 and DynamoDB only** | Almost every other AWS service (SQS, SNS, Kinesis, Secrets Manager, KMS, etc.) |
-| How | Adds a route to your route table | Creates an ENI in your subnet with a private IP |
-| Cost | **Free** | ~$0.01/hour per endpoint per AZ + per-GB data |
-| DNS | Service uses public DNS, traffic stays private | Endpoint gets a regional DNS name (or enables private DNS to override the public one) |
-| Security control | Endpoint policy | Endpoint policy + **security group** (on the ENI) |
-| Powered by | Custom routing | PrivateLink |
+#### The Two Flavours — Full Comparison
 
-**Exam shortcut:** "S3 or DynamoDB without going through NAT" → **Gateway endpoint** (free). Anything else → **Interface endpoint**.
+| | **Gateway Endpoint** | **Interface Endpoint** |
+| - | -------------------- | ----------------------- |
+| Services supported | **S3 and DynamoDB only** (just these two) | Almost every other AWS service: SQS, SNS, Kinesis, KMS, Secrets Manager, EC2 API, ECR, CloudWatch Logs, Step Functions, API Gateway, Systems Manager, Athena, Glue, etc. |
+| Underlying mechanism | **Custom routing entry** in your VPC route table pointing at the endpoint | **ENI created in each chosen subnet** with a private IP |
+| Cost | **Free** (no hourly charge, no data charge) | **~$0.01/hour per endpoint per AZ** + **~$0.01/GB processed** |
+| DNS | Public DNS unchanged; **routing decides** what's private | Endpoint gets a **regional DNS name**; **Private DNS option** rewrites the public DNS to resolve to the endpoint's private IPs |
+| Security control | **Endpoint policy** (resource policy on the endpoint) | **Endpoint policy + Security Group** (on the ENI) |
+| Reachable from on-prem (via DX / VPN) | ❌ **No** — Gateway endpoints work only from inside the VPC's route table | ✅ **Yes** — on-prem can reach the ENI's private IP via DX/VPN |
+| Reachable from peered VPC | ❌ **No** (edge-to-edge routing limitation) | ❌ Not directly (PrivateLink limitation) — needs its own endpoint in each VPC |
+| Powered by | Custom routing | **PrivateLink** (Interface endpoints ARE PrivateLink under the hood) |
+| HA / multi-AZ | Inherently HA — route entry applies to all subnets in the VPC | **You** decide which AZs to deploy ENIs in — pay per AZ |
+| Max per VPC | 255 per service | No hard cap; cost-bound |
+
+**The 90% shortcut:** *"S3 or DynamoDB privately"* → **Gateway endpoint** (free). *"Any other AWS service privately"* → **Interface endpoint** (paid).
+
+#### How Each Endpoint Actually Routes a Request
+
+```
+GATEWAY ENDPOINT (S3 / DynamoDB):
+
+  EC2 in private subnet
+       │
+       │ aws s3 ls s3://bucket
+       ▼
+  Public DNS: s3.eu-west-1.amazonaws.com → 52.x.y.z (PUBLIC IP)
+       │
+       │ but route table for this subnet contains:
+       │   pl-6da54004 (S3 prefix list) → vpce-xxx (Gateway Endpoint)
+       │
+       ▼
+  Traffic routes via Gateway Endpoint → S3 (over AWS backbone)
+  Never touches the internet, never hits NAT.
+```
+
+The clever bit: Gateway endpoints use **prefix lists** (`pl-xxx`) that contain all current S3 / DynamoDB IPs in the region. The route table sends those prefixes to the endpoint, not to NAT/IGW.
+
+```
+INTERFACE ENDPOINT (e.g. KMS, Secrets Manager, ECR):
+
+  EC2 in private subnet
+       │
+       │ aws kms decrypt ...
+       ▼
+  Without Private DNS:
+    Public DNS: kms.eu-west-1.amazonaws.com → public IP → blocked (no NAT)
+    Must use:   vpce-xxx-yyy.kms.eu-west-1.vpce.amazonaws.com → ENI's private IP
+    → app code change needed
+
+  With Private DNS enabled (the default for AWS services):
+    Public DNS: kms.eu-west-1.amazonaws.com → **rewritten to private IP**
+    → app code stays the same; transparently routes via ENI
+       ↓
+  Traffic enters the ENI in the AZ → AWS backbone → service
+```
+
+**Private DNS magic:** when enabled, the VPC's resolver returns the endpoint's private IP for the *public* service hostname. Apps using the standard SDK / hostname keep working with no code changes.
+
+#### Endpoint Policies — IAM for the Endpoint
+
+Every endpoint has its own resource-based policy that controls **what API calls can pass through this endpoint** (independent of the caller's IAM). Default is "allow all" — tighten when you need to.
+
+**Example: Gateway endpoint restricted to a specific bucket:**
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": "*",
+    "Action": "s3:*",
+    "Resource": [
+      "arn:aws:s3:::my-app-data",
+      "arn:aws:s3:::my-app-data/*"
+    ]
+  }]
+}
+```
+
+Any request through this endpoint can only touch `my-app-data`. Calls to other S3 buckets via this endpoint fail — even if IAM allows.
+
+**Use cases for endpoint policies:**
+- **Data exfiltration control** — endpoint can only reach approved S3 buckets in your org. Stops attackers from `aws s3 cp` to their own bucket via your endpoint
+- **Allow-list of approved AWS services** — restrict an Interface endpoint to specific API actions
+- **Cross-account governance** — limit which accounts' resources a VPC can reach
+
+#### S3 Has THREE Access Patterns Now
+
+S3 is special — it's the only service with both endpoint types **plus** a third "direct via internet" option:
+
+| Pattern | When |
+| ------- | ---- |
+| **Gateway Endpoint** | Default choice from VPC. Free. Works only from inside the VPC's route table |
+| **Interface Endpoint (PrivateLink for S3)** | When you need access **from on-prem** (via DX/VPN), or **cross-region**, or applying Security Groups. Paid |
+| **Direct via NAT + IGW** | Treating S3 as a public service. Standard internet egress costs apply. Almost never the right answer for VPC workloads |
+
+The S3 Interface endpoint is newer (2021). Why it matters:
+- **From on-prem:** an Interface endpoint's ENI has a private IP reachable over DX/VPN. The Gateway endpoint can't do this — its routing only works from inside the VPC
+- **Security Groups on S3 traffic:** Interface endpoint = ENI = SG. Gateway endpoint has no SG, only endpoint policy
+- **Cost:** Interface endpoint is paid; Gateway is free. Use Interface only when you need its specific capabilities
+
+#### Multi-AZ Deployment for Interface Endpoints
+
+Interface endpoints create one ENI per subnet you deploy them into. For HA:
+
+```
+VPC: eu-west-1
+  ├── Private subnet in 1a → Interface endpoint ENI (10.0.1.50)
+  ├── Private subnet in 1b → Interface endpoint ENI (10.0.2.50)
+  └── Private subnet in 1c → Interface endpoint ENI (10.0.3.50)
+
+Cost: 3 AZs × ~$0.01/hour × 730h = ~$22/month per endpoint
+```
+
+If you only deploy to one AZ and that AZ fails, the endpoint is unreachable for everyone — even instances in other AZs (their DNS resolves to the dead ENI). **Always deploy multi-AZ for production endpoints**, accepting the cost.
+
+#### Endpoints from On-Prem (the DX / VPN gotcha)
+
+A common multi-cloud / hybrid question:
+
+| Endpoint type | Reachable from on-prem (via DX or VPN)? |
+| ------------- | ---------------------------------------- |
+| **Gateway endpoint** | ❌ **No** — Gateway endpoints work only via VPC route tables. On-prem traffic enters the VPC but can't use the Gateway endpoint route |
+| **Interface endpoint** | ✅ **Yes** — the ENI has a private IP reachable over DX/VPN |
+
+**Exam trigger:** *"On-prem needs to reach S3 privately via Direct Connect"* → **S3 Interface endpoint** (Gateway won't work from on-prem).
+
+#### Cost Economics — When Endpoints Pay Off
+
+The accounting question: when does an endpoint save money vs just using NAT?
+
+```
+NAT Gateway costs:
+  $0.045/hour idle (per AZ) + $0.045/GB processed
+
+Interface Endpoint costs:
+  $0.01/hour (per AZ) + $0.01/GB processed
+
+Gateway Endpoint costs:
+  Free
+```
+
+**Break-even for a single Interface endpoint vs NAT:**
+- Hourly: $0.01/hour < $0.045/hour → endpoint is cheaper at idle
+- Per GB: $0.01/GB < $0.045/GB → endpoint is cheaper per byte
+
+**But the gotcha:** you typically have **NAT anyway** for other internet egress. Adding an Interface endpoint *adds* hourly cost on top of NAT — only worth it if you process enough GB to offset.
+
+**Rule of thumb:** Interface endpoint pays off vs NAT at roughly **20+ GB/month** of traffic to that specific service. Below that, NAT alone is cheaper. Above, endpoint wins (especially at scale).
+
+**Gateway endpoints** (S3 / DynamoDB): always enable them. They're free, and any S3/DynamoDB traffic that would otherwise traverse NAT now bypasses it — pure savings.
+
+#### Common Services and Which Endpoint They Use
+
+| Service | Endpoint type |
+| ------- | ------------- |
+| **S3** | Gateway (default) or Interface (for on-prem / SG / cross-region) |
+| **DynamoDB** | **Gateway only** — no Interface endpoint available |
+| **KMS, Secrets Manager, SSM, Lambda, ECR, CloudWatch Logs, SQS, SNS, Kinesis, Step Functions** | Interface |
+| **EC2 API, EBS API, Auto Scaling** | Interface |
+| **Athena, Glue, EMR, Redshift, RDS API** | Interface |
+| **API Gateway** (PrivateLink for execute-api) | Interface |
+| **Bedrock, SageMaker, Comprehend** | Interface |
+| **STS, IAM** | Interface (STS regional endpoints) |
+| **Anything else with a public API** | Almost always Interface |
+
+#### Common Anti-patterns and Gotchas
+
+- *"Use Interface endpoint for S3 by default"* → wasteful unless you specifically need it; **Gateway endpoint is free**
+- *"DynamoDB Interface endpoint"* → doesn't exist; **Gateway only**
+- *"Single-AZ Interface endpoint in production"* → single point of failure; deploy across all AZs your workloads live in
+- *"Endpoint policies are optional"* → for exfiltration-sensitive workloads, **always** scope endpoints to approved resources only
+- *"Disable Private DNS"* → then your app code must use the verbose `vpce-xxx.s3.region.vpce.amazonaws.com` hostname instead of the standard one. Almost always leave Private DNS enabled
+- *"Gateway endpoint reachable from on-prem"* → no; **Interface endpoint** is required for hybrid access
+- *"Interface endpoint without Security Group"* → SG defaults to "allow all in the same SG" — usually you want to tighten this
+- *"Endpoint replaces NAT Gateway for AWS services"* → partially. If your workload ONLY talks to AWS services + you have endpoints for all of them, you can remove NAT. Common in regulated environments
+
+#### Expanded Exam Triggers
+
+- *"S3 access from VPC, free, no internet"* → **Gateway endpoint**
+- *"DynamoDB access from VPC, no internet"* → **Gateway endpoint** (only option for DynamoDB)
+- *"KMS / Secrets Manager / SSM access from VPC privately"* → **Interface endpoint**
+- *"S3 access from on-prem via Direct Connect privately"* → **S3 Interface endpoint** (Gateway won't work from on-prem)
+- *"Restrict VPC endpoint to specific S3 buckets only"* → **Endpoint policy** with `Resource` restriction
+- *"Apply security group to S3 traffic"* → **S3 Interface endpoint** (Gateway has no SG)
+- *"Eliminate NAT Gateway costs for VPC workloads"* → **Gateway endpoints for S3/DynamoDB + Interface endpoints for all needed AWS services**
+- *"App code expects public AWS hostname"* → **Enable Private DNS** on Interface endpoint
+- *"Endpoint HA in production"* → **Deploy Interface endpoint ENIs in every AZ** the workload uses
+- *"Why does my Lambda in VPC fail to call Secrets Manager?"* → no Interface endpoint + no NAT route (Lambda-in-VPC loses default internet)
+- *"Prevent data exfiltration to attacker's S3 bucket"* → **Endpoint policy** scoping `Resource` to approved bucket ARNs
+- *"Cross-region S3 access privately"* → **S3 Interface endpoint** (Gateway endpoint is region-local)
+
+#### The Mental Model
+
+> *VPC Endpoint = "VPC outbound to AWS APIs over the AWS backbone." It's a back door from your private network to AWS service control planes — never an inbound public-facing thing. Security groups on Interface endpoints control which VPC resources can use the endpoint, not anything external.*
+
+**Constantly confused with:**
+
+| Confused with | Actually is |
+| ------------- | ----------- |
+| ALB / API Gateway (public inbound to your app) | **VPC Endpoint is outbound from VPC to AWS APIs** |
+| CloudFront / WAF (edge security for incoming users) | **VPC Endpoint is for the app itself talking to AWS** |
+| PrivateLink endpoint service (you exposing your service to others) | **VPC Endpoint consumes someone's service (AWS's, in this case)** |
+
+The 10-second recall: **"AWS-API access from inside the VPC, never customer-facing."**
 
 ### ENI-backed vs Public Endpoint Services
 
@@ -1299,12 +1496,62 @@ This is how large orgs implement **network segmentation** for compliance (PCI wo
 
 **Inter-region TGW peering** — Connect TGWs in different regions; traffic stays on the AWS backbone. The standard "global private network" pattern uses one TGW per region, peered together.
 
+#### Appliance Mode — the "sticky sessions for firewall fleets" feature
+
+Without this, centralised stateful inspection (Network Firewall, Palo Alto, Check Point, Fortinet, Snort, etc. running behind a TGW) silently breaks for half of all flows. It's an opt-in setting on a TGW attachment and the exam loves it.
+
+**The bouncer analogy:** Imagine a club with bouncers at multiple doors. You enter through Door A and bouncer A checks your ID and **remembers you**. If you try to leave through Door C, bouncer C has no memory of you arriving — they don't know if you should be there. **Appliance Mode = "always exit through the same door you entered."**
+
+**The AWS version:** A stateful firewall is a bouncer with a memory. It builds a **connection table** on the outbound SYN ("alice → api.example.com:443 allowed") and uses that to recognise the SYN-ACK reply. If the reply hits a *different* firewall instance, that firewall has no record of the connection, looks at it as an unsolicited inbound packet, and **drops it**.
+
+**Default TGW behaviour (without Appliance Mode):**
+
+```
+Outbound  (alice → api.example.com):
+   Spoke VPC A ──→ TGW ──→ Inspection VPC, AZ-a, firewall #1
+                                              ↑
+                                              creates state for the flow
+
+Inbound reply (api.example.com → alice):
+   Spoke VPC A ←── TGW ←── Inspection VPC, AZ-b, firewall #2
+                                              ↑
+                                              has NO state for this flow
+                                              → drops the packet
+                                              → alice's connection times out
+```
+
+TGW load-balances across AZs by default. The forward and reverse paths can land on different appliances. Stateless appliances don't care; stateful ones break.
+
+**With Appliance Mode enabled on the inspection VPC attachment:**
+
+```
+Spoke VPC A ──→ TGW(AZ-a) ──→ firewall #1 (state created)
+Spoke VPC A ←── TGW(AZ-a) ←── firewall #1 (same instance recognises the flow)
+
+Same TGW endpoint = same firewall = stateful inspection works.
+```
+
+**Why it's opt-in, not always-on:** stateless appliances (pure routers, simple L4 forwarders) don't need flow affinity, and forcing it would unnecessarily constrain TGW's load-balancing. So Appliance Mode is **per-attachment** — turn it on for the inspection VPC attachment, leave it off everywhere else.
+
+**Adjacent analogies that may also click:**
+
+| Analogy | What it captures |
+| ------- | ---------------- |
+| **Sticky sessions on a load balancer** | User stuck to same backend server because session data lives there. Same principle for firewall connection tables |
+| **Same operator on a phone call** | The operator listening to both halves knows the context. Switching mid-call to a different operator means the new one has no idea what was said earlier |
+| **Customs at one airport vs two** | If you went through customs to enter, your declaration is at that office. Leaving through a different customs office that didn't see you arrive → they flag you |
+
+**Mental model:** *Appliance Mode = "sticky sessions for stateful firewall fleets behind Transit Gateway." Turn it on whenever you have stateful inspection appliances (Network Firewall, Palo Alto, Check Point, Fortinet, Snort/Suricata) running behind a TGW in a centralised inspection VPC. Leave it off for everything else.*
+
 **Exam triggers:**
 - *"Segment prod and dev networks in a hub-and-spoke topology"* → **TGW with multiple route tables**
 - *"Share a TGW across 50 accounts"* → **TGW + AWS RAM**
 - *"Connect TGWs in different regions"* → **TGW peering attachments**
 - *"Integrate SD-WAN appliances with TGW"* → **TGW Connect attachment** (GRE + BGP)
 - *"Visualise multi-region TGW topology"* → **TGW Network Manager**
+- *"Centralised firewall fleet behind TGW silently dropping return traffic"* → **enable Appliance Mode** on the inspection VPC's TGW attachment
+- *"Why do my stateful firewall sessions break intermittently when load-balanced across AZs?"* → **Appliance Mode** keeps both directions on the same TGW endpoint
+- *"Asymmetric routing through inspection VPC"* → **Appliance Mode** is the fix
 
 ### PrivateLink
 
@@ -1538,19 +1785,236 @@ For small orgs, IPAM is overkill — just track CIDRs in a spreadsheet or Terraf
 - *"Auto-allocate CIDRs to new VPCs from a reserved pool"* → **IPAM with auto-allocation**
 - *"Manage BYOIP across the org"* → **IPAM public pool**
 
+### IPv6 in a VPC
+
+For most workloads IPv6 is overkill. There's **one big reason** orgs adopt it inside a VPC and a few smaller ones — knowing which scenarios trigger an IPv6 answer is what the exam tests.
+
+#### The headline reason — RFC 1918 exhaustion at scale
+
+People assume the private IPv4 space (`10.0.0.0/8` = ~16.7M addresses, plus `172.16/12` and `192.168/16`) is infinite. **It isn't, at enterprise scale.** Three pressures eat it:
+
+| Pressure | What chews through IP space |
+| -------- | --------------------------- |
+| **EKS / Kubernetes** | AWS VPC CNI gives **every pod a real VPC IP**. 1,000 nodes × 50 pods/node = **50,000 IPs in one cluster**. A `/16` (65k IPs) exhausted by a single cluster. **This is the #1 reason** orgs flip EKS to IPv6 mode |
+| **`awsvpc` mode for ECS / Fargate** | Each task = ENI = VPC IP. Less severe than EKS (1 IP per task vs many pods per node) but the same shape of problem at scale. Bridge mode on ECS-on-EC2 sidesteps it |
+| **Non-overlapping CIDR requirement** | VPC Peering / TGW / DX require non-overlapping CIDRs. Hundreds of VPCs + M&A = perpetual IP planning headaches |
+
+IPv6 has **3.4 × 10³⁸ addresses**. AWS gives every VPC a `/56` IPv6 CIDR automatically (~4.7 × 10²² per VPC). You **cannot run out**.
+
+#### The "no NAT Gateway needed" angle
+
+IPv6 is globally routable — **no NAT in IPv6**. With an **Egress-Only Internet Gateway** (the IPv6 equivalent of NAT), IPv6 instances get outbound internet access without NAT translation:
+
+| | IPv4 outbound | IPv6 outbound |
+| - | ------------- | ------------- |
+| Inbound-blocking outbound gateway | **NAT Gateway** (~$33/month per AZ + $0.045/GB) | **Egress-Only IGW** (free, no per-GB charge) |
+| 55k connection limit per destination | Yes (the NAT Gateway gotcha) | **No** — IPv6 sidesteps it |
+| Source IP rewriting | Yes (NAT translation) | **No** — original IP preserved |
+| Cost at scale | Significant | Negligible |
+
+The cost angle alone justifies IPv6 dual-stack for high-traffic workloads. Plus the **55k connection limit gotcha** that bites large NAT-fronted fleets is just **not a problem** for IPv6 traffic.
+
+#### Other reasons people use IPv6 internally
+
+| Reason | Why |
+| ------ | --- |
+| **M&A / VPC merging** | Acquiring a company with overlapping `10.x` CIDRs → IPv6 gives clean parallel address space without renumbering |
+| **Compliance mandates** | US Federal IPv6 mandate, India, EU pushes. Government-facing workloads increasingly require IPv6 readiness |
+| **Reach IPv6-only public services** | Growing number of public services + mobile carriers prefer IPv6 |
+| **Flow Log simplicity** | No NAT means no `pkt-srcaddr` vs `srcaddr` confusion |
+| **Future-proofing** | Like SSL was "optional" in 2010, expected by 2020 |
+
+#### When IPv6 is genuinely **not** worth it
+
+| Case | Stay with IPv4 |
+| ---- | -------------- |
+| **Small / medium VPC** (< few thousand resources) | IPv4 plenty; IPv6 adds operational complexity for no gain |
+| **Traditional 3-tier app on EC2 + RDS** | Will never exhaust IPs |
+| **No EKS / no extreme scale** | The biggest reason doesn't apply |
+| **Workloads talking to on-prem IPv4 systems** | Adds dual-stack translation complexity |
+| **Most enterprises starting fresh** | IPv4 + good IPAM hygiene handles you for years |
+
+For a "normal" VPC with EC2 + ALB + RDS + S3 endpoints — IPv6 is solving a problem you don't have.
+
+#### Exam framing
+
+If a question mentions any of these → IPv6 might be the answer:
+
+| Trigger | Answer |
+| ------- | ------ |
+| *"Pod / container exhaustion of IP addresses in EKS"* | **EKS with IPv6 mode** |
+| *"Run a Kubernetes cluster with 50,000+ pods"* | **IPv6 mode** |
+| *"Merge two companies' VPCs with overlapping CIDRs without renumbering"* | Consider **IPv6** |
+| *"Federal compliance requires IPv6 readiness"* | **IPv6 dual-stack** |
+| *"Outbound from IPv6 instances without exposing inbound"* | **Egress-Only Internet Gateway** |
+| *"NAT Gateway connection-limit exhaustion at scale (55k per destination)"* | Move to **IPv6** sidesteps it entirely |
+| *"Avoid NAT Gateway cost for high-volume outbound traffic"* | **IPv6 + Egress-Only IGW** is free vs NAT Gateway's per-GB charge |
+| *"ECS / Fargate hitting subnet IP exhaustion"* | **`awsvpc` + dual-stack subnet + IPv6**, or secondary CIDRs |
+
+If a question is just *"my app needs to talk to the internet"* with no scale or compliance trigger → it's **NOT** an IPv6 question. Stay IPv4.
+
+#### Mental model
+
+> *IPv6 in a VPC is mostly about **dodging the RFC 1918 exhaustion problem** at extreme scale — and the place it shows up is almost always **EKS pod IPs**. The secondary win is **no NAT Gateway** (use Egress-Only IGW instead) — cheaper, no 55k connection limit. For traditional workloads on a normal-sized VPC, IPv6 is solving a problem you don't have. The exam tests it because EKS at scale + the cost angle have made it real for a slice of customers, not because every VPC needs it.*
+
 ### VPC Flow Logs
 
-Capture metadata about IP traffic in your VPC. Useful for security forensics, troubleshooting connectivity ("why is this blocked?"), and traffic analysis.
+Capture metadata about IP traffic in your VPC. Used for security forensics, connectivity troubleshooting, traffic analysis, compliance, and feeding SIEMs.
 
-- **Granularity:** VPC, subnet, or ENI
-- **Captures:** source/dest IP and port, protocol, bytes, ACCEPT/REJECT
-- **Does NOT capture:** packet contents (use a packet mirror for that)
-- **Destinations:** CloudWatch Logs, S3, or Kinesis Data Firehose
-- **Cost-conscious tip:** ship to S3 with Parquet format and query with Athena — much cheaper than CloudWatch Logs for large volumes.
+#### Core properties
 
-**Exam triggers:**
-- *"why is traffic being blocked between two instances"* → enable VPC Flow Logs, look for REJECT entries
-- *"audit which IPs accessed our database"* → VPC Flow Logs on the RDS ENI
+- **Granularity:** VPC, subnet, or ENI (finest)
+- **Captures:** source/dest IP+port, protocol, bytes, packets, ACCEPT/REJECT, plus optional newer fields
+- **Does NOT capture:** packet contents (use **VPC Traffic Mirroring** for that)
+- **Destinations:** CloudWatch Logs, S3, **Kinesis Data Firehose**, **Amazon Data Firehose to OpenSearch**
+- **Aggregation interval:** **1-minute (default)** or **10-minute** (cheaper, ~10× less log volume, but laggier — useful when you don't need fine-grained timing)
+
+#### Three Granularity Levels — Pick Carefully
+
+| Level | Captures | Use |
+| ----- | -------- | --- |
+| **VPC** | Every ENI in the VPC | Broad audit, compliance, centralised security analytics |
+| **Subnet** | Every ENI in that subnet | Subnet-level forensics — e.g. "what hit my DB subnet?" |
+| **ENI** | Just that one network interface | **Finest granularity** — single instance / endpoint forensics |
+
+A single ENI can have multiple Flow Logs (one per granularity level) — they all log the same traffic independently. **Cost stacks** if you enable multiple levels for the same traffic.
+
+#### What's NOT Captured (the classic trap question)
+
+Flow Logs **silently skip** several traffic categories. Memorise these — they're popular exam wrong-answer traps:
+
+- **Instance metadata service** — `169.254.169.254` (IMDS)
+- **Amazon-provided DNS** — VPC CIDR + 2 (e.g. `10.0.0.2`)
+- **Amazon Time Sync** — `169.254.169.123` (NTP)
+- **Windows license activation** — traffic to Microsoft KMS servers
+- **VPC router IP** — `.1` of the subnet
+- **DHCP traffic**
+- **Traffic to/from a load balancer's link-local addresses**
+- **Mirrored traffic**
+
+**Exam trap:** *"Why don't I see IMDS calls in Flow Logs?"* → because IMDS isn't logged. Use **CloudTrail** + **Instance Metadata Service v2** session tokens for IMDS audit.
+
+#### ACCEPT vs REJECT — The Subtlety
+
+Common misreading: "ACCEPT = the connection worked." **Not necessarily.**
+
+| Status | Means | Doesn't mean |
+| ------ | ----- | ------------ |
+| **ACCEPT** | Security Group + NACL both **allowed** the packet | The destination app actually received / responded |
+| **REJECT** | **NACL denied** the packet (NACLs are stateless so they generate REJECT entries). Security Group denies show up too in some cases | The connection failed (might have been intentional!) |
+
+**Why this matters:**
+- A packet can be ACCEPTed but still fail downstream (app crashed, port not listening, application-layer reject)
+- REJECT specifically tells you a network-layer firewall blocked it
+- For app-layer failures, Flow Logs are *useless* — you need application logs / X-Ray traces
+
+#### NODATA and SKIPDATA Log Statuses
+
+Sometimes a flow log record's `log-status` field isn't `OK`:
+
+| log-status | Meaning |
+| ---------- | ------- |
+| **OK** | Normal record with traffic data |
+| **NODATA** | The ENI had no traffic during the aggregation interval |
+| **SKIPDATA** | Records were dropped during the interval (throttling, internal capacity) — **data was lost** |
+
+**Exam trap:** *"Some traffic isn't showing up in Flow Logs"* — could be:
+- The traffic is on the excluded list above
+- A SKIPDATA event dropped records
+- The aggregation interval hasn't elapsed yet
+- Wrong destination / filter
+
+#### Custom Log Formats (cost saver)
+
+Default Flow Log format = ~14 fields per record. You can define **custom formats** with only the fields you actually need — reduces log volume and storage cost.
+
+Newer fields worth knowing (not in default):
+- `vpc-id`, `subnet-id`, `instance-id` — useful for centralised querying without joins
+- `tcp-flags` — SYN, ACK, FIN etc. for connection analysis
+- `pkt-srcaddr`, `pkt-dstaddr` — the **original** addresses before NAT translation (vs `srcaddr`/`dstaddr` after NAT). Critical for understanding NAT Gateway behaviour
+- `traffic-path` — which AWS network component the traffic took (IGW / NAT / TGW / VPC peering / Gateway Load Balancer / etc.)
+- `flow-direction` — `ingress` / `egress`
+
+**`pkt-srcaddr` vs `srcaddr` gotcha:** when traffic goes through NAT Gateway, the original source IP gets rewritten. Default Flow Log shows the NAT'd IP. To see the **original instance's IP** behind a NAT, you need `pkt-srcaddr` in a custom format. Useful for *"which instance actually made this call?"* through a centralised NAT.
+
+#### Flow Logs Are NOT Real-Time
+
+Don't build alerting that assumes immediate Flow Log visibility:
+
+| Destination | Typical delivery delay |
+| ----------- | ---------------------- |
+| **CloudWatch Logs** | ~5 minutes |
+| **S3** | ~10 minutes |
+| **Kinesis Data Firehose** | Near real-time (seconds, depending on Firehose buffer config) |
+
+For real-time, ship to Firehose → OpenSearch / Splunk.
+
+#### GuardDuty Doesn't Need You to Enable Flow Logs
+
+A widespread misconception: *"to use GuardDuty I need to turn on VPC Flow Logs first."* **Wrong.** GuardDuty has its own internal stream that consumes Flow Log data directly from AWS infrastructure — independent of whether you've enabled VPC Flow Logs for your own logging.
+
+You can disable VPC Flow Logs entirely and GuardDuty still works.
+
+**Why this matters:** an exam question about "GuardDuty prerequisites" should not include "enable Flow Logs." If an answer says that, it's wrong.
+
+#### Transit Gateway Flow Logs (separate from VPC Flow Logs)
+
+A completely separate Flow Log type for **Transit Gateway attachments** — captures traffic flowing between VPCs / VPN / DX through a TGW. Same destinations (S3 / CloudWatch / Firehose), similar fields, but a different resource type.
+
+**Exam trigger:** *"Audit traffic flowing through our Transit Gateway"* → **Transit Gateway Flow Logs**, not VPC Flow Logs.
+
+#### The Standard Multi-Account Architecture
+
+Every regulated org uses some version of this:
+
+```
+VPC in Account A ─┐
+VPC in Account B ─┼─→ Flow Logs (per-VPC) → S3 bucket in central
+VPC in Account C ─┘                          security/audit account
+                                              ↓ Parquet format, partitioned by
+                                                date / account / region
+                                              ↓
+                                      Athena queries
+                                              ↓
+                                      QuickSight dashboards / GuardDuty
+                                      / Security Hub / SIEM
+```
+
+**Why this pattern:**
+- Single audit-trail location across the org
+- S3 + Parquet + Athena is **orders of magnitude cheaper** than CloudWatch Logs at scale
+- Cross-account delivery uses S3 bucket policy granting log delivery from source accounts
+- Lake Formation can govern access to the centralised logs
+
+#### Cost Reality
+
+Flow Logs aren't free — they bill on **delivery + storage**:
+
+- **CloudWatch Logs**: ~$0.50/GB ingested + retention
+- **S3**: standard storage + per-GB Athena query costs
+- **Firehose**: per-GB ingested + downstream destination
+
+**Rule of thumb at scale:** S3 + Parquet wins by ~10× vs CloudWatch Logs. The cost-conscious default is *"ship to S3, query with Athena, ship critical events to CloudWatch Logs subscription filters or Firehose."*
+
+#### Expanded Exam Triggers
+
+- *"Why is traffic blocked between two instances?"* → enable Flow Logs, look for **REJECT**
+- *"Audit which IPs accessed our database"* → Flow Logs on the **RDS ENI**
+- *"Cheap long-term Flow Log storage with ad-hoc querying"* → **S3 + Parquet + Athena**
+- *"Real-time security analytics on Flow Logs"* → **Firehose → OpenSearch / Splunk**
+- *"Why don't I see calls to the metadata service in Flow Logs?"* → **IMDS isn't captured** (also DNS, NTP, Windows activation, VPC router)
+- *"ACCEPT in Flow Logs means the connection succeeded"* → **No** — means firewall allowed; app-layer success requires app logs
+- *"Some Flow Log records have no data"* → **NODATA** (no traffic) or **SKIPDATA** (records dropped during interval)
+- *"See original source IP before NAT rewrote it"* → **Custom format with `pkt-srcaddr`**
+- *"Which network path did this traffic take (IGW / NAT / TGW)?"* → **Custom format with `traffic-path`**
+- *"Do I need to enable Flow Logs for GuardDuty to work?"* → **No** — GuardDuty has its own internal Flow Logs stream
+- *"Audit traffic through our Transit Gateway"* → **Transit Gateway Flow Logs** (separate feature)
+- *"Reduce Flow Logs cost in a busy account"* → **10-minute aggregation + custom format + S3 + Parquet**
+- *"Centralise Flow Logs across 50 accounts"* → **Each VPC ships to S3 in security account** via cross-account bucket policy
+
+#### The Mental Model
+
+> *VPC Flow Logs = "after-the-fact metadata about every IP packet that the network layer saw." It's a **logbook**, not a wire tap (no payload) and not a real-time alarm (5-10 min lag for S3/CW). ACCEPT means firewall allowed, **not** that the app succeeded. Several traffic categories are silently excluded (IMDS, DNS, NTP, etc.). For payload analysis use **Traffic Mirroring**; for real-time use **Firehose**; for AWS-API audit use **CloudTrail**.*
 
 ### Reachability Analyzer and Network Access Analyzer
 
@@ -1617,6 +2081,87 @@ Two ways to connect on-prem to AWS:
 
 **Hybrid pattern:** Direct Connect for production traffic, VPN as a backup if the DX link fails.
 
+#### Why Use Direct Connect (and Who Does)
+
+The exam treats DX as "private dedicated line — expensive but fast." The real-world drivers are more specific. Useful context for understanding which scenarios the exam *expects* DX as the right answer.
+
+**The drivers:**
+
+| Driver | Why it justifies the cost + setup time |
+| ------ | -------------------------------------- |
+| **Compliance — traffic must never traverse public internet** | Banks, healthcare, government. Auditors want documented proof PHI / PCI data flows over a private circuit |
+| **Predictable performance** (low jitter, consistent latency) | Real-time trading (latency arbitrage), telephony, VoIP, financial market data, video production |
+| **Cost at terabyte / petabyte scale** | Internet egress ≈ **$0.09/GB**. DX egress ≈ **$0.02/GB**. At 100 TB/month outbound: internet = $9k, DX = $2k — port pays for itself in months |
+| **Reduce internet circuit dependency** | If your office ISP dies, AWS-hosted apps stay reachable. Separating "internet" from "AWS connectivity" is operationally valuable |
+| **Large recurring data flows** | Daily multi-TB DB backups to S3, cross-DC replication, video archival, scientific data pipelines |
+| **Hybrid app latency** | App tier in AWS, database tier on-prem (or vice versa). Internet jitter ruins user experience when every request crosses the boundary |
+| **Real-time control systems** | Industrial / SCADA workloads where milliseconds matter |
+
+**Who actually pays for DX:**
+
+| Industry | Why |
+| -------- | --- |
+| **Banks & financial services** | Compliance (PCI-DSS, FFIEC), trading latency, data sovereignty, massive risk-modelling data |
+| **Insurance** | Actuarial / claims data volumes; compliance |
+| **Healthcare / pharma** | HIPAA (PHI mustn't traverse public internet without controls), medical imaging (terabytes of MRI/CT), drug discovery compute |
+| **Government / public sector** | FedRAMP / IRAP / G-Cloud often mandate private connectivity for sensitive workloads |
+| **Telecoms** | Interconnect with AWS to offer cloud-on-net services to enterprise customers |
+| **Media & broadcasting** | Multi-TB raw video footage between studios and cloud editing/rendering |
+| **Manufacturing / energy** | IoT / SCADA data from factories or wind farms; latency-sensitive control |
+| **Gaming** | Low-latency anti-cheat / matchmaking |
+| **Large retail** | POS / inventory spanning on-prem stores + cloud; PCI compliance |
+| **Enterprise SaaS providers** (Snowflake, Databricks, Salesforce) | DX-based customer connectivity so customers don't traverse internet to use the SaaS — often combined with PrivateLink |
+
+**The hidden driver — internet egress costs:**
+
+This rarely comes up explicitly but matters most at scale:
+
+- 1 TB/month: internet = $92, DX = $20
+- 100 TB/month: internet = $9,200/month, DX = $2,000/month — **DX saves $7k/month** after port fees
+- 1 PB/month (large enterprise): internet = $92,000/month, DX = $20,000/month
+
+The DX port itself is **~$216/month** for 1 Gbps dedicated. Break-even on egress savings alone happens fast at scale.
+
+**Who does NOT need DX:**
+
+| Situation | Why not |
+| --------- | ------- |
+| **Pure cloud-native startup** | No on-prem; VPC + internet is enough |
+| **Hybrid with < 1 Gbps usage** | Site-to-Site VPN at ~$0.05/hour does the job; DX overkill |
+| **No compliance pressure** | Internet + TLS is enough for most workloads |
+| **Don't push enough data** | At < 10 TB/month outbound, internet egress doesn't justify a DX port |
+| **Want speed-of-setup** | DX install = **weeks to months**. VPN = **minutes** |
+
+**Architectural tells that signal DX is in use:**
+
+- "Hybrid Active Directory across on-prem and AWS"
+- "Direct Connect Gateway" in the diagram
+- "Equinix" / "CoreSite" or another colocation facility mentioned
+- BGP ASN exchange with AWS
+- Multi-region DR with on-prem as part of the topology
+- "FedRAMP High" or other strict compliance label
+- VMware Cloud on AWS (almost always paired with DX)
+- AWS Outposts (uses DX for management plane)
+
+**The "is DX worth it?" decision:**
+
+```
+Do you have an on-prem data centre that needs to integrate with AWS?
+  ├── NO → skip DX, use VPN if you need any hybrid
+  └── YES → 
+        Are you transferring > ~10 TB/month sustained?
+          ├── YES → DX pays for itself on egress savings alone
+          └── NO →
+                Do you have compliance requirements demanding private circuits?
+                  ├── YES → DX (or your auditors fail you)
+                  └── NO →
+                        Do you need consistent low-latency for real-time apps?
+                          ├── YES → DX
+                          └── NO → VPN is probably fine
+```
+
+**Mental model:** *Direct Connect isn't really about "fast network" — it's about **predictable cost** (per-GB egress vs internet), **predictable performance** (no jitter), and **compliance documentation** (auditor wants a private circuit on paper). Big enough on-prem footprint + regulated enough to need private paths + moving enough data that egress savings matter → DX. Startups and pure-cloud orgs don't need it.*
+
 #### Direct Connect Deeper Bits
 
 **Virtual Interfaces (VIFs)** — the logical channel on top of the physical DX line. Three types, each tested:
@@ -1673,6 +2218,92 @@ By default, **DX traffic is NOT encrypted** (it's a private line, but plaintext)
 - *"Direct Connect failover to VPN"* → **VPN as backup with BGP for automatic failover**
 - *"Lower-latency VPN over the public internet"* → **Accelerated Site-to-Site VPN** (uses Global Accelerator)
 - *"Encrypt traffic over Direct Connect"* → **MACsec** or **VPN over DX**
+
+#### Is Site-to-Site VPN "Old School"?
+
+Honest answer: **mostly yes** — but that's not a criticism. Site-to-Site VPN is the cloud-managed version of IPsec tunnels enterprises have been running since the late 1990s. The protocol (IPsec, IKEv2), the configuration concepts (BGP over the tunnel, pre-shared keys, dual-tunnel HA), and the customer-side hardware (Cisco, Fortinet, Juniper, Palo Alto, even pfSense) all predate "the cloud" by decades.
+
+It's **not deprecated** — it's still the default answer for "connect my office network to my VPC" because (a) every enterprise already owns VPN-capable hardware and (b) IPsec is universally understood by network teams.
+
+**What's actually modern about it (the AWS-side bits):**
+
+| Modern bit | How it differs from old-school |
+| ---------- | ------------------------------- |
+| **AWS-side endpoint is managed** | No VPN appliance to run in AWS; VGW / TGW is a service |
+| **ECMP across multiple tunnels** (with TGW) | Aggregate bandwidth beyond the 1.25 Gbps per-tunnel cap |
+| **Accelerated VPN** | Routes via AWS Global Accelerator edge network |
+| **Hub-and-spoke with TGW** | One VPN to TGW reaches many VPCs |
+| **Cross-region via TGW peering** | Multi-region hybrid bridged through AWS backbone |
+| **CloudWatch metrics + Flow Logs** | Cloud-native observability |
+| **Pay-as-you-go** | $0.05/hour per tunnel vs depreciating VPN appliances |
+
+#### When Modern Alternatives Beat Site-to-Site VPN
+
+For the *"connect my office network to my VPC"* use case, Site-to-Site VPN is still the right answer. For **adjacent** use cases people sometimes try to solve with VPN, there are better options:
+
+| Modern alternative | When it beats Site-to-Site VPN |
+| ------------------ | ------------------------------ |
+| **AWS Direct Connect** | Higher bandwidth needs, compliance demanding private circuit, large egress data volumes — covered in the DX section above |
+| **AWS Client VPN** | Individual user laptops (not whole networks) — TLS-based, modern auth (SAML, IAM Identity Center, AD) |
+| **AWS Verified Access** | Workforce access to **HTTP/HTTPS apps** — zero-trust model, **no VPN client needed**. Replaces VPN for *"engineer wants to access internal web app from a laptop"* |
+| **Amazon VPC Lattice** | Service-to-service mesh — replaces VPN-or-peering patterns for *internal* service connectivity (HTTP) |
+| **AWS Cloud WAN** | Managing multi-region networks declaratively — replaces hand-built multi-VPN/TGW setups |
+| **AWS PrivateLink** | Exposing a single service privately — replaces VPN-for-one-service patterns |
+
+#### Exam framing
+
+When a scenario describes a **traditional enterprise hybrid pattern** (on-prem DC, VPN device, BGP, etc.) → **Site-to-Site VPN** is in play.
+
+When it describes **modern cloud-native patterns** (individual users accessing HTTPS apps from anywhere, microservices, mesh) → think **Verified Access / Client VPN / Lattice**.
+
+| Question phrasing | Likely answer |
+| ----------------- | ------------- |
+| *"Connect our office network of 200 users to AWS"* | **Site-to-Site VPN** (or DX if bandwidth/compliance demands) |
+| *"Individual remote employees need access to a private RDS"* | **AWS Client VPN** |
+| *"Workforce needs zero-trust access to internal HTTPS apps without a VPN client"* | **AWS Verified Access** |
+| *"Microservices across many VPCs need to talk to each other"* | **VPC Lattice** |
+| *"Expose one service privately to many consumer VPCs"* | **PrivateLink** |
+| *"Multi-region network policy as code"* | **AWS Cloud WAN** |
+
+The mental model: *Site-to-Site VPN = "old school but still right" for office-to-VPC. The newer services are for specific cases the older protocol doesn't fit elegantly.*
+
+#### Site-to-Site VPN vs Virtual Private Gateway — the Layer Confusion
+
+A perennial source of exam confusion: people treat *Site-to-Site VPN* and *Virtual Private Gateway* as alternatives. They're **not** — they're different layers of the same setup.
+
+- **Site-to-Site VPN** is the **service** (the encrypted IPsec tunnel pair)
+- **Virtual Private Gateway (VGW)** is one option for the **AWS-side endpoint** the tunnel terminates at
+- **Transit Gateway (TGW)** is the other AWS-side endpoint option
+- **Customer Gateway (CGW)** is just AWS's metadata record of your **on-prem VPN device** (its public IP + BGP ASN — not a real device AWS runs)
+
+So the real choice isn't *"Site-to-Site VPN vs VGW"* — it's **VGW vs TGW for terminating the VPN on the AWS side**:
+
+| | **VGW** | **TGW** |
+| - | ------- | ------- |
+| Attaches to | **One VPC** | **Many VPCs + VPNs + DX + peerings** |
+| Transitive routing | ❌ | ✅ (the whole point) |
+| ECMP for multiple VPN tunnels | ❌ | ✅ — aggregate higher bandwidth |
+| Cross-region | ❌ | ✅ via TGW peering |
+| VPN connections supported | 10 | 5000 |
+| Use when | Single VPC, simple hybrid | Multi-VPC hybrid, hub-and-spoke |
+
+Even for "just one VPC today" scenarios, **TGW is often chosen** for future-proofing — adding a second VPC is one attachment vs another VPN.
+
+**Exam triggers for VPN termination choice:**
+
+| Question | Answer |
+| -------- | ------ |
+| *"Where does Site-to-Site VPN terminate on the AWS side?"* | **VGW** (one VPC) or **TGW** (many VPCs) |
+| *"On-prem needs access to 10 VPCs via VPN"* | **TGW + Site-to-Site VPN** (one VPN to TGW, transitive to all VPCs) |
+| *"Single VPC, cheapest VPN setup"* | **VGW + Site-to-Site VPN** |
+| *"Increase VPN aggregate bandwidth beyond 1.25 Gbps per tunnel"* | **TGW + multiple VPN connections + ECMP** |
+| *"Failover between DX and VPN"* | Both terminate at the same **TGW**; BGP handles failover |
+| *"Multi-region hybrid network"* | **TGW + TGW peering** (or **DX Gateway + multiple VGWs in different regions**) |
+| *"Customer Gateway is..."* | An AWS resource **representing your on-prem VPN device** (its public IP + BGP ASN) — metadata, not a device AWS runs |
+| *"Connect to a single VPC via Direct Connect"* | **DX → Private VIF → VGW** |
+| *"Connect to many VPCs via Direct Connect"* | **DX → Transit VIF → DX Gateway → TGW** |
+
+**The mental model:** *Site-to-Site VPN = the encrypted IPsec service. **VGW vs TGW** = the actual choice on the AWS side. VGW = "this one VPC only." TGW = "this VPC and any others I want, plus future hybrid connectivity." Customer Gateway = AWS's name for your on-prem router.*
 
 ### AWS Client VPN
 
