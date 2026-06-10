@@ -810,6 +810,82 @@ Public subnet route table:
 
 An instance also needs a **public IP** or **Elastic IP** to be reachable from the internet — the IGW alone isn't enough.
 
+#### Does "Private IP" Exist in IPv6? (the conceptual shift)
+
+Before the Egress-Only IGW makes sense, you need to grok how IPv6 addressing differs from IPv4. **The concept of "private IP" exists in IPv6 but AWS deliberately doesn't use it.** This is the foundation everything else builds on.
+
+**IPv6 address scopes (the rough equivalents):**
+
+| IPv6 scope | Range | IPv4 equivalent | Where used |
+| ---------- | ----- | --------------- | ---------- |
+| **Global Unicast Address (GUA)** | `2000::/3` | Public IPv4 | Globally routable. **AWS gives you a `/56` GUA per VPC** from its `2600::/8` allocation |
+| **Unique Local Address (ULA)** | `fc00::/7` | **RFC 1918 (10.0.0.0/8 etc.)** | The closest IPv6 equivalent of "private" — explicitly not routable on the public internet. RFC 4193. **AWS doesn't use it** |
+| **Link-Local Address** | `fe80::/10` | 169.254.0.0/16 | Auto-configured on every interface, only valid on the local link (subnet) |
+| **Loopback** | `::1` | `127.0.0.1` | Same purpose |
+| **Multicast** | `ff00::/8` | 224.0.0.0/4 | Same purpose |
+
+So **ULA is the direct equivalent of RFC 1918**. It exists. AWS just doesn't allocate from it.
+
+**What AWS actually does:**
+
+Every IPv6 address inside your VPC is a **globally unique, publicly routable** GUA — even instances in your "private" subnet:
+
+```
+IPv4 instance in "private" subnet: 10.0.1.10
+  → NOT routable on the internet (RFC 1918 by definition)
+  → "private" because the ADDRESS RANGE is private
+
+IPv6 instance in "private" subnet: 2600:1f18:1234::10
+  → IS globally routable (it's a GUA in AWS's range)
+  → "private" only because the ROUTING and FIREWALLS make it so
+```
+
+**In IPv6 + AWS, "private" is a policy choice, not an address property.**
+
+**Why AWS chose GUA over ULA:**
+
+| Reason | Detail |
+| ------ | ------ |
+| **Flexibility** | Same address works whether you decide to expose to internet or not. No re-addressing later |
+| **No NAT philosophy** | The whole point of IPv6 is "no NAT." Using ULA would reintroduce NAT66 translation pain |
+| **Simpler ops** | One address per interface; reachability controlled purely by SG / NACL / routes |
+| **M&A friendly** | Globally unique addresses don't collide. Acquired companies' VPCs never conflict |
+
+**What "private subnet" means in IPv6:**
+
+| | "Public" IPv6 subnet | "Private" IPv6 subnet |
+| - | --------------------- | ---------------------- |
+| Route table | `::/0 → igw-xxx` | `::/0 → eigw-xxx` (Egress-Only IGW) or **no route at all** |
+| Inbound from internet | Possible (if SG/NACL allows) | **Not possible** (Egress-Only IGW blocks unsolicited inbound) |
+| Outbound to internet | Possible | Possible via Egress-Only IGW, or none |
+| Address visible on internet | Yes (same address; just unreachable due to route/firewall) | Yes (same address; just unreachable due to route/firewall) |
+
+The address itself is identical and globally unique in both cases. The "privacy" is purely the route + firewall config.
+
+**The risk this creates — no IP-as-safety-net:**
+
+In IPv4 you have a safety net: if you accidentally add `0.0.0.0/0 → IGW` to a private subnet's route table, `10.0.1.10` still can't be reached from the internet — the internet has no idea how to route to a 10/8 destination.
+
+In IPv6 with AWS GUA, **no such safety net**:
+
+- Every instance's IPv6 address is globally routable
+- If you accidentally add `::/0 → igw-xxx`, anyone on the internet can send packets to those addresses
+- Your **only** protection is the Security Group + NACL
+
+This makes Security Groups and NACLs *more* important in IPv6 thinking. A misconfigured route can expose every instance in the subnet, with no IP-range-as-defence-in-depth.
+
+**Mental model:**
+
+> *In IPv4, "private" was baked into the **address range** (RFC 1918 = literally unroutable). In IPv6 with AWS, every address is a **globally unique, publicly routable** GUA. "Private" becomes a **policy decision**, enforced by routes + Security Groups + NACLs, not by the address itself. The IPv6 ULA range (`fc00::/7`) is the direct RFC 1918 equivalent, but AWS chose GUA for flexibility — trading the IP-range-as-safety-net for "no NAT needed, ever."*
+
+**Exam triggers:**
+
+- *"Why is my IPv6 instance reachable from the internet despite being in a 'private' subnet?"* → likely an **incorrect route table** (`::/0 → igw-xxx` instead of `::/0 → eigw-xxx`); IPv6 addresses are globally routable so route + firewall config is the only protection
+- *"What's the IPv6 equivalent of RFC 1918 (private addresses)?"* → **Unique Local Addresses (ULA), `fc00::/7`** — but **AWS uses GUA**, not ULA
+- *"Source IP preserved at destination for IPv6 traffic"* → yes, no NAT means original GUA preserved end-to-end
+- *"Can two VPCs have overlapping IPv6 ranges?"* → No — AWS GUA allocations are globally unique by design (M&A relief)
+- *"Need private IPv6 addresses for compliance"* → AWS only allocates GUA; if you need ULA-style truly-unroutable addresses you'd have to BYOIP your own ULA prefix (uncommon)
+
 #### Egress-Only Internet Gateway (vs NAT Gateway)
 
 The IGW handles **bidirectional** internet traffic (the source of most VPC internet connectivity). For "outbound only" patterns there are two parallel tools — one for each IP version. Knowing which goes with which is the most-tested IPv6 question.
