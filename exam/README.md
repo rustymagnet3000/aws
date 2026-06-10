@@ -40,6 +40,7 @@
   - [Direct Connect and Site-to-Site VPN](#direct-connect-and-site-to-site-vpn)
   - [AWS Client VPN](#aws-client-vpn)
   - [Gateway Load Balancer (GWLB)](#gateway-load-balancer-gwlb)
+  - [Networking Cost Anti-patterns and Optimisation](#networking-cost-anti-patterns-and-optimisation)
   - [VPC Anti-patterns (exam wrong answers)](#vpc-anti-patterns-exam-wrong-answers)
   - [VPC Exam Triggers](#vpc-exam-triggers)
 - [EFS](#efs)
@@ -2610,6 +2611,100 @@ Traffic flows: **app VPC → GWLBE → GENEVE-tunnelled to Security VPC → thro
 - *"Transparent inline traffic inspection without changing source/dest IPs"* → **GWLB** (uses GENEVE)
 - *"Centralised security appliance inspection across many VPCs"* → **GWLB in security VPC + GWLBEs in app VPCs**
 - *"My existing Palo Alto / Check Point / Fortinet team wants to run their cloud appliance in AWS"* → **GWLB + vendor's AMI**
+
+### Networking Cost Anti-patterns and Optimisation
+
+Cost-optimisation questions are increasingly common on the SAA exam — and AWS networking is one of the biggest "where did this bill come from?" sources for real teams. Individual cost gotchas are scattered through earlier sections (NAT 55k limit, Flow Logs cost, Interface Endpoint break-even); this subsection consolidates them with the underlying patterns.
+
+#### The seven cost categories that bite hardest
+
+| # | Cost | Rate | Where it kills you |
+| - | ---- | ---- | ------------------ |
+| 1 | **Cross-AZ data transfer** | $0.01/GB out + $0.01/GB in = **$0.02/GB total** | App in AZ-a hammering RDS / ElastiCache / dependencies in AZ-b. Symmetric — both ends bill |
+| 2 | **NAT Gateway data processing** | **$0.045/GB processed** (separate from data transfer) | Container image pulls from Docker Hub, S3 traffic that should be using a Gateway Endpoint, package manager updates across a fleet |
+| 3 | **Internet egress** | **$0.09/GB** then tiered: $0.085 (10-50 TB), $0.07 (50-150 TB), $0.05 (150 TB+) | Video / downloads / large API responses straight to internet without CloudFront |
+| 4 | **Transit Gateway data processing** | **$0.02/GB processed** | Every byte through a TGW pays; centralised egress pays TGW + then NAT processing |
+| 5 | **VPC Interface Endpoint** | **$0.01/hour per AZ + $0.01/GB processed** | "Just-in-case" endpoints across many AZs in many regions stacks up |
+| 6 | **Inter-region data transfer** | **~$0.02/GB** (varies by region pair) | Cross-region replication of "everything just in case"; cross-region service calls |
+| 7 | **Load Balancer LCU billing** | LCU-hours based on highest of: new connections, active connections, processed bytes, rule evaluations | High-traffic ALBs with complex rule sets |
+
+#### The optimisation principle: co-locate services
+
+The single biggest cost lever in AWS networking: **keep related services in the same AZ / same region**. The cost of NOT co-locating compounds across every request.
+
+| Co-location level | What it saves | When to use |
+| ----------------- | ------------- | ----------- |
+| **Same AZ** | Zero AZ-transfer cost ($0.02/GB), lowest latency (~0.1ms) | Tightly-coupled services: app + RDS reads, app + ElastiCache, app + DynamoDB |
+| **Same region** | Zero inter-region transfer ($0.02/GB), low latency (single-digit ms) | Most service-to-service calls |
+| **Cross-region** | Adds inter-region transfer + 50-200ms latency | Only for genuine DR, compliance geo-distribution, or global apps |
+
+**Specific co-location patterns that save real money:**
+
+| Pattern | Why it wins |
+| ------- | ----------- |
+| **S3 bucket in same region as compute, accessed via Gateway Endpoint** | S3 to EC2 in same region = **free**. Gateway Endpoint avoids NAT charges |
+| **RDS / ElastiCache in same region as app tier** | No inter-region transfer; same-AZ replicas avoid AZ-transfer |
+| **EKS topology-aware routing** (`traffic policy: Local`, `topologyKeys`) | Keeps pod-to-pod traffic within the same AZ |
+| **CloudFront in front of internet-facing services** | First 1 TB/month free + lower per-GB rates than direct internet egress |
+| **Lambda + DynamoDB in same region** | Cross-region DynamoDB calls pay inter-region transfer; same-region is free |
+| **Direct Connect for high-volume on-prem traffic** | ~$0.02/GB vs $0.09/GB internet egress |
+| **Gateway Endpoints for S3 + DynamoDB** | Free — bypass NAT entirely. Always enable if you use these services |
+| **VPC Sharing via RAM for shared NAT/endpoints** | Many accounts share owner's NAT Gateway instead of paying for one each |
+
+#### The full anti-pattern catalogue
+
+| Anti-pattern | Cost impact | Fix |
+| ------------ | ----------- | --- |
+| **Hairpinning** — traffic exits VPC, returns via internet | Pays egress AND ingress, both with NAT processing | Use PrivateLink / VPC Endpoints to keep traffic on the AWS backbone |
+| **Docker image pulls from Docker Hub via NAT** | Massive NAT processing charges (gigabytes per pull × many nodes) | Use **ECR** (regional, no NAT charge with VPC endpoint) |
+| **Multi-AZ everything without AZ affinity** | 2× the data transfer of single-AZ topology | EKS topology-aware routing; co-locate app + dependencies in same AZ where possible |
+| **Direct internet egress for high-volume APIs** | $0.09/GB at low volumes; CloudFront would be cheaper | **CloudFront in front** — free first 1 TB + lower per-GB |
+| **Forgetting Gateway Endpoints for S3/DynamoDB** | NAT processing fees on every call | Always enable — Gateway Endpoints are **free** |
+| **TGW for two VPCs that could just peer** | TGW $0.02/GB processing + attachment hourly | **VPC Peering** — free for intra-region |
+| **Cross-region replication of "everything just in case"** | Inter-region transfer at scale | Replicate only what genuinely needs DR; lifecycle to cheaper storage classes |
+| **Interface Endpoints in every VPC** | $7/month/AZ stacks fast across many VPCs | **VPC Sharing** with shared endpoints, or only enable when traffic justifies it |
+| **NAT Gateway per VPC across 30 accounts** | 30 × $33/AZ × 3 AZs = ~$3,000/month idle | **Centralised egress VPC** (covered in NAT section) — 1 set of NATs shared via TGW |
+| **EKS pods using public Docker Hub for base images** | NAT charges + Docker Hub rate limits | **ECR pull-through cache** + ECR endpoint |
+| **App tier in AZ-a calling RDS primary in AZ-b** | $0.02/GB per query (adds up at high QPS) | Use **read replicas in same AZ** for read traffic; primary can stay in another AZ for Multi-AZ HA |
+| **ALB with cross-zone load balancing forcing AZ-spread** | Even traffic distribution wins, but AZ-transfer cost can be brutal at high QPS | Consider **disabling cross-zone LB** for very high traffic apps — accept uneven distribution |
+| **VPN over the public internet for high-volume hybrid** | Pays both egress + sometimes ingress | **Direct Connect** — ~$0.02/GB vs $0.09/GB |
+| **CloudWatch Logs for everything at high volume** | $0.50/GB ingested + retention | Ship Flow Logs / app logs to **S3 Parquet + Athena** — ~10× cheaper at scale |
+
+#### Real-world example: the "bill spike" pattern
+
+```
+Engineer: "Why did our AWS bill jump $5k this month?"
+       ↓
+Forensics:
+  1. Check Cost Explorer → "data transfer" doubled
+  2. Drill into DT-Regional-Bytes → cross-AZ traffic up 4×
+  3. Trace it: a new EKS deployment spread pods across all AZs
+     (default behaviour) talking to a cross-AZ Postgres replica
+       ↓
+Fix:
+  - Add topology-aware routing in EKS service
+  - Move read traffic to local-AZ Postgres replica
+  - Cost drops back
+```
+
+This pattern (innocent-looking change → AZ spread → bill spike) is one of the most common surprise-bill stories.
+
+#### Exam triggers (cost optimisation)
+
+- *"Reduce NAT Gateway costs across 30 VPCs"* → **Centralised egress VPC with TGW** (covered in NAT section)
+- *"Reduce data transfer costs from EKS pods to dependencies"* → **AZ affinity / topology-aware routing**
+- *"S3 traffic from VPC is racking up NAT processing fees"* → **S3 Gateway Endpoint** (free)
+- *"Internet egress costs are high for our public API"* → **CloudFront in front** (cheaper per-GB tiers)
+- *"Inter-region traffic costs are high"* → **co-locate services** in the same region where possible; use **CloudFront** for cross-region delivery
+- *"Container image pulls from Docker Hub are expensive"* → **ECR + VPC endpoint for ECR**
+- *"Cross-AZ database traffic is expensive"* → **read replicas in same AZ as compute**; primary in another AZ for HA
+- *"Hairpinning — traffic exits AWS and comes back"* → **PrivateLink / VPC Endpoints** to keep on AWS backbone
+- *"High-volume hybrid traffic costs"* → **Direct Connect** instead of VPN / internet
+- *"VPN tunnel between two VPCs costs more than expected"* → **VPC Peering** (free intra-region) instead of VPN
+
+#### Mental model
+
+> *AWS networking costs follow one principle: **the further the data travels, the more you pay**. Same AZ = essentially free. Cross-AZ = $0.02/GB. Cross-region = $0.02/GB + latency. Internet egress = $0.09/GB. The optimisation playbook is always **co-locate, cache, use VPC Endpoints / CloudFront**. Hairpinning is just the most-obvious instance of "traffic taking a longer path than it should." Watch your Cost Explorer "Data Transfer" line — any sudden jump is almost always a topology change that broke AZ/region affinity.*
 
 ### VPC Anti-patterns (exam wrong answers)
 
