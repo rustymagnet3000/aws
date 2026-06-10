@@ -6724,6 +6724,93 @@ Two services covered together because they're complementary and often confused. 
 | **Domain list rules** | Block / allow based on **HTTP Host header** or **TLS SNI** (e.g. *"block all egress except `*.amazonaws.com`"*) |
 | **Suricata rules** | Open-source IDS/IPS rule format — gives you access to rich community + commercial rule sets (Proofpoint ET, etc.) |
 
+#### Stateful Rule Evaluation: Strict vs Default Order (misleading naming)
+
+This is the most-tested Network Firewall mechanic — and AWS's naming is **actively misleading**. There are two stateful rule evaluation modes:
+
+| Setting | What it actually does |
+| ------- | --------------------- |
+| **Default order** (historical default) | Evaluates rules **grouped by action type**, not by your specified order. **Pass rules first**, then Drop, then Reject, then Alert. NOT first-match-wins |
+| **Strict order** (added 2021, recommended for new policies) | Evaluates rules **in the order you wrote them**, top-down. **First match wins.** The behaviour you'd expect a "default" to have |
+
+The intuition *"start at the top, go through each rule until a match"* is **strict order**. The thing called "default" is the opposite.
+
+**Why "default" works the way it does — the Suricata background:**
+
+Network Firewall is built on **Suricata**, the open-source IDS/IPS engine. Suricata's traditional behaviour evaluates by **action priority** — Pass > Drop > Alert. The logic:
+
+> *"Pass rules represent explicit allow-listing. If an admin wrote a Pass rule, they really meant to allow that thing — so we honour it before considering any Drop rule."*
+
+That's the Suricata convention. AWS preserved it as the default for compatibility with imported rule sets (Proofpoint ET, vendor IDS feeds, etc.) — but the name *"default"* surprises everyone coming from traditional firewall thinking.
+
+**Worked example showing the opposite outcomes:**
+
+Same two rules, same packet → completely different outcomes:
+
+```
+Rules (in this order):
+  Rule 1: Drop all traffic from 1.2.3.4
+  Rule 2: Pass HTTPS (port 443) from anywhere
+
+A packet arrives:  source=1.2.3.4, dst port=443
+```
+
+| Mode | Evaluation | Outcome |
+| ---- | ---------- | ------- |
+| **Default order** | "Pass rules first": Rule 2 matches → **PASS** (1.2.3.4 gets through despite Drop rule) | ❌ The attacker's traffic is allowed |
+| **Strict order** | Top-down: Rule 1 matches first → **DROP**; Rule 2 never evaluated | ✅ Attacker dropped |
+
+The same ruleset — opposite security outcome.
+
+**The action-priority order in default mode:**
+
+```
+1. Pass rules    (highest priority — wins if any match)
+2. Drop rules    (next)
+3. Reject rules  (next)
+4. Alert rules   (lowest — just logs, doesn't affect packet)
+
+All rules evaluated; the action with highest priority wins.
+Order between rules of the same action type doesn't matter.
+```
+
+In default mode you're essentially writing **action-based policy**: *"these things are always allowed (Pass), these things are always denied (Drop), these things just generate alerts."*
+
+**Strict order — traditional firewall behaviour:**
+
+```
+Top-down evaluation, first match wins.
+Stop processing once a match is found.
+
+Order rules carefully:
+  - More-specific rules at the top
+  - Catch-all defaults at the bottom
+```
+
+This matches every traditional firewall (Cisco, iptables, NACL). What most engineers expect.
+
+**Configuration scope and immutability:**
+
+- The order setting is **per stateful rule group**, not per firewall
+- **You can't change it after creation** — you'd recreate the rule group
+- Be deliberate at creation time
+
+**Recommendation:**
+
+- **New policies → Strict order.** Top-down, first-match-wins, predictable
+- **Default order** only when: importing existing Suricata rulesets that assume action-priority, or explicitly want "Pass beats Drop" allow-list-precedence policies
+
+**Mental model:**
+
+> *"Default" order in Network Firewall isn't top-down — it's **action-priority** (Pass > Drop > Reject > Alert). "Strict" order is what you'd normally expect a default to do: top-down, first-match-wins. The naming is genuinely misleading; it exists for Suricata-import compatibility. AWS recommends Strict for new policies.*
+
+**Exam triggers:**
+
+- *"Why did my Drop rule not block this traffic despite being listed first?"* → **Default order** evaluates Pass rules first regardless of position; use **Strict order** for top-down
+- *"How should I order rules in a new Network Firewall policy?"* → **Strict order**, more-specific first, catch-all at the bottom
+- *"Importing Suricata rules from an external IDS vendor"* → **Default order** matches Suricata's traditional action-priority model
+- *"Firewall behaviour changed unexpectedly after a Suricata Pass rule was added"* → Pass rule now winning over an existing Drop rule under default order — switch to **Strict order**
+
 #### Where Network Firewall Sits (the architecture pattern)
 
 ```
