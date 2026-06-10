@@ -775,6 +775,90 @@ Understanding which is which is the single biggest source of "why doesn't this w
 - **Default VPC** — every region has one pre-created, with public subnets in each AZ. Fine for experiments, not for production.
 - **AWS reserves 5 IPs per subnet** — `.0` (network), `.1` (VPC router), `.2` (DNS), `.3` (future use), `.255` (broadcast). A `/28` subnet has 16 IPs but only 11 are usable.
 
+#### The Three RFC 1918 Private Ranges (memorise these)
+
+VPC CIDRs must come from the private (RFC 1918) IPv4 space. There are exactly three blocks — knowing them by heart is required for the exam.
+
+| Block | Range | Size | Notes |
+| ----- | ----- | ---- | ----- |
+| **`10.0.0.0/8`** | 10.0.0.0 – 10.255.255.255 | ~16.7M addresses | The largest. Most enterprises use this for their main on-prem network |
+| **`172.16.0.0/12`** | **172.16.0.0 – 172.31.255.255** | ~1M addresses | The awkward-bounded one. **NOT** all of 172.x — only the .16 to .31 second-octet range |
+| **`192.168.0.0/16`** | 192.168.0.0 – 192.168.255.255 | ~65k addresses | The smallest. Default for most home routers, common for satellite offices |
+
+**The `172` gotcha** — RFC 1918's 172 block is `172.16.0.0/12`, which is **only** `172.16.x.x` through `172.31.x.x`. The blocks `172.0.x` to `172.15.x` and `172.32.x` onwards are **public** IPv4. AWS will reject these for a VPC:
+
+- ✅ `172.20.0.0/16` — valid (within `172.16/12`)
+- ✅ `172.31.0.0/16` — valid (upper edge of `172.16/12`)
+- ❌ `172.32.0.0/16` — invalid (just outside RFC 1918)
+- ❌ `172.10.0.0/16` — invalid (just below RFC 1918)
+
+#### Worked Example: "Pick a VPC CIDR" — overlap, not size, is the test
+
+This is the exam pattern that catches engineers whose instinct is to start calculating host counts. The question:
+
+> *You have a corporate network of size `10.0.0.0/8` and a satellite office of size `192.168.0.0/16`. Which CIDR is acceptable for your AWS VPC if you plan on connecting your networks later on?*
+
+**The wrong instinct:** start calculating how many hosts you need, sizing /16 vs /17 vs /20, etc. **Wrong because the question isn't about capacity.**
+
+**The right thought process:** the exam is testing whether you understand that **VPC Peering / Transit Gateway / VPN / Direct Connect all require non-overlapping CIDRs**. If your VPC overlaps with either existing network, the connection won't route — and **you can't change a VPC's primary CIDR after creation**.
+
+So the answer is pure RFC 1918 elimination:
+
+```
+Step 1: Which RFC 1918 ranges are taken by existing networks?
+  10.0.0.0/8     → taken by corporate network
+  192.168.0.0/16 → taken by satellite office
+  172.16.0.0/12  → FREE
+
+Step 2: Pick from the free range. Done.
+```
+
+Answer: any subset of **`172.16.0.0/12`** — e.g. `172.20.0.0/16`. Anything starting `10.x` or `192.168.x` would conflict.
+
+#### Why Overlap Avoidance Matters
+
+Routers can't disambiguate overlapping CIDRs. If your VPC is `10.0.0.0/16` and your on-prem is also `10.0.0.0/8`, then `10.0.1.5` could mean *either* network — there's no way for a TGW / VPN / DX gateway to know which side to send traffic to. The connection technically can be created, but traffic routing breaks:
+
+```
+Bad:
+  VPC:     10.0.0.0/16   ← overlaps
+  On-prem: 10.0.0.0/8    ← overlaps
+  → Peering created, but packets to 10.0.x.x have ambiguous destination
+  → traffic gets dropped or sent the wrong way
+
+Good:
+  VPC:     172.20.0.0/16  ← no overlap
+  On-prem: 10.0.0.0/8     ← no overlap
+  → Routing tables can cleanly direct each prefix
+```
+
+The same logic applies to **multi-VPC** designs — every VPC you might ever peer or attach to a TGW needs a unique CIDR. This is why large orgs use **IPAM** (covered later) for centralised CIDR planning.
+
+#### When Sizing **Does** Matter (so the instinct isn't always wrong)
+
+| Question type | Approach |
+| ------------- | -------- |
+| *"Which CIDR is acceptable to peer with existing networks?"* | **Overlap check** — pick the free RFC 1918 range |
+| *"How many EC2 instances fit in a /24 subnet?"* | **Sizing maths** — 256 − 5 (AWS-reserved) = 251 |
+| *"Smallest VPC CIDR AWS allows?"* | `/28` (16 IPs, 11 usable) |
+| *"Largest VPC CIDR AWS allows?"* | `/16` (~65k IPs) |
+| *"Need IPs for 50,000 EC2 instances"* | Sizing — `/16` × multiple via secondary CIDRs, or IPv6 |
+| *"EKS cluster for 10,000 pods + 500 nodes"* | Sizing matters; consider IPv6 |
+
+#### Mental Model
+
+> *VPC CIDR questions come in two flavours. **"Which CIDR can I use?"** is testing **overlap avoidance** — pick the RFC 1918 range no one else has. **"How big a CIDR do I need?"** is testing **sizing** — calculate hosts vs subnet bits. Read the question carefully: the first is pattern matching against the three private ranges; the second is maths. Don't bring the maths to the overlap question.*
+
+#### Exam Triggers
+
+- *"Existing networks A and B, picking a VPC CIDR"* → **non-overlapping RFC 1918 range** (overlap check, not sizing)
+- *"Why isn't traffic flowing across our VPC peering / VPN / TGW?"* → likely **overlapping CIDRs**
+- *"Acquired a company whose VPCs use 10.10.0.0/16; planning to peer"* → your VPC must avoid `10.10.0.0/16`
+- *"Three VPCs need to communicate via TGW"* → **all three need non-overlapping CIDRs**
+- *"Need IPs for 50,000 EC2 instances"* → **sizing** — `/16` + secondary CIDRs, or IPv6
+- *"172.x is a private address?"* → only **172.16.x – 172.31.x** is; the rest of 172.x is public
+- *"Can I change a VPC's primary CIDR after creation?"* → **No** (you can only add secondary CIDRs). Choose carefully
+
 ### Subnets
 
 A subnet is a slice of the VPC's CIDR, **scoped to one Availability Zone**.
