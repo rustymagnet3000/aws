@@ -7,7 +7,6 @@
 - [s3](#s3)
 - [dynamodb](#dynamodb)
 - [Cloudtrail](#cloudtrail)
-- [Simple Notification Service  SNS](#simple-notification-service--sns)
 - [Elasticache  Redis](#elasticache--redis)
 - [Cloudwatch](#cloudwatch)
 - [Databases](#databases)
@@ -49,36 +48,63 @@ aws iam get-user
 
 ## SNS
 
-```shell
+```bash
 # list Topics
 aws sns list-topics
 
 # list details of a Topic
-aws sns get-topic-attributes \
-    --topic-arn ${TOPIC_ARN}
-    
-# publish
-aws sns publish \                   
+aws sns get-topic-attributes --topic-arn ${TOPIC_ARN}
+
+# list subscriptions for a topic
+aws sns list-subscriptions-by-topic --topic-arn ${TOPIC_ARN}
+
+# create a topic
+aws sns create-topic --name my-topic
+
+# subscribe an endpoint (email / SQS / Lambda / HTTPS)
+aws sns subscribe --topic-arn ${TOPIC_ARN} --protocol email --notification-endpoint me@example.com
+aws sns subscribe --topic-arn ${TOPIC_ARN} --protocol sqs   --notification-endpoint ${QUEUE_ARN}
+aws sns subscribe --topic-arn ${TOPIC_ARN} --protocol lambda --notification-endpoint ${LAMBDA_ARN}
+
+# unsubscribe
+aws sns unsubscribe --subscription-arn ${SUBSCRIPTION_ARN}
+
+# publish a message
+aws sns publish \
     --topic-arn ${TOPIC_ARN} \
     --message file://message.txt
+
+# publish with subject + attributes (filter policies)
+aws sns publish \
+    --topic-arn ${TOPIC_ARN} \
+    --subject "Alert" \
+    --message "Disk usage high" \
+    --message-attributes '{"severity":{"DataType":"String","StringValue":"high"}}'
+
+# delete a topic
+aws sns delete-topic --topic-arn ${TOPIC_ARN}
 ```
 
 ## s3
 
-```shell
+```bash
 # check if bucket exists
 aws s3api head-bucket --bucket your-bucket-name
+```
+
+`head-bucket` result codes:
+
 | Result  | Meaning                                         |
 | ------- | ----------------------------------------------- |
 | **200** | Bucket exists **and you have access**           |
 | **301** | Bucket exists but **in a different region**     |
-| **403** | Bucket exists but **you don’t have permission** |
+| **403** | Bucket exists but **you don't have permission** |
 | **404** | Bucket **does not exist**                       |
 
-
-
-export BUCKET_NAME=mybucket  
-export BUCKET_URI=export BUCKET=s3://mybucket
+```bash
+export BUCKET_NAME=mybucket
+export BUCKET_URI=s3://mybucket
+export BUCKET=s3://mybucket
 export BUCKET_HTTP=https://mybucket.eu-west-2.amazonaws.com
 
 # list
@@ -88,7 +114,7 @@ aws s3 ls ${BUCKET_NAME}
 aws s3 --endpoint-url ${BUCKET_HTTP} ls
 
 # list with subfolders
-aws s3 ls ${BUCKET_URI}--recursive
+aws s3 ls ${BUCKET_URI} --recursive
 aws s3 ls ${BUCKET_URI} --recursive --human-readable --summarize
 
 # list storage state of file in bucket
@@ -125,7 +151,7 @@ aws s3 cp test.txt ${BUCKET}
 # Copy to local
 aws s3 cp ${BUCKET_URI} poc
 
-# Copy to local with server side encryption (SSE) it is handled by the aws 
+# Copy to local with server side encryption (SSE) it is handled by the aws
 # ensure any Role has enough permissions to obtain the Server Side encryption key
 
 aws s3 cp ${BUCKET_URI}/404.html/index.html .
@@ -155,6 +181,37 @@ aws s3api get-bucket-policy --bucket ${BUCKET} --expected-bucket-owner 111122223
 # Get Bucket Ownership controls
 aws s3api get-bucket-ownership-controls --bucket ${BUCKET_NAME}
 
+# Sync (more flexible than cp — only transfers files that changed)
+aws s3 sync ./local-dir ${BUCKET_URI}/remote-dir
+aws s3 sync ${BUCKET_URI}/remote-dir ./local-dir --delete   # mirror, remove local files not in bucket
+
+# Get / set / remove default bucket encryption (SSE-KMS)
+aws s3api get-bucket-encryption --bucket ${BUCKET_NAME}
+aws s3api put-bucket-encryption \
+    --bucket ${BUCKET_NAME} \
+    --server-side-encryption-configuration '{
+      "Rules": [{
+        "ApplyServerSideEncryptionByDefault": {
+          "SSEAlgorithm": "aws:kms",
+          "KMSMasterKeyID": "alias/my-key"
+        }
+      }]
+    }'
+aws s3api delete-bucket-encryption --bucket ${BUCKET_NAME}
+
+# Block Public Access (account or bucket level)
+aws s3api put-public-access-block --bucket ${BUCKET_NAME} \
+    --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+
+# Versioning
+aws s3api get-bucket-versioning --bucket ${BUCKET_NAME}
+aws s3api put-bucket-versioning --bucket ${BUCKET_NAME} --versioning-configuration Status=Enabled
+
+# Lifecycle (e.g. transition to Glacier after 30 days)
+aws s3api get-bucket-lifecycle-configuration --bucket ${BUCKET_NAME}
+aws s3api put-bucket-lifecycle-configuration \
+    --bucket ${BUCKET_NAME} \
+    --lifecycle-configuration file://lifecycle.json
 ```
 
 ### Read compressed json file from s3
@@ -163,7 +220,7 @@ aws s3api get-bucket-ownership-controls --bucket ${BUCKET_NAME}
 
 ## dynamodb
 
-#### Set up locally
+### Set up locally
 
 ```bash
 # get Docker image
@@ -187,14 +244,14 @@ The `-sharedDb` flag is essential to avoid `“Cannot do operations on a non-exi
 
 `aws dynamodb describe-table --table-name DELETEme --endpoint-url http://localhost:8000`
 
-#### Add local data
+### Add local data
 
-```bashq
+```bash
 aws dynamodb put-item \
 	--table-name DELETEme \
-    	--item '{                
-        		"Name": {"S": "Alice"},             
-        		"Age": {"N": "99"}                 
+    	--item '{
+        		"Name": {"S": "Alice"},
+        		"Age": {"N": "99"}
       		}' \
 	--endpoint-url http://localhost:8000 \
     	--return-consumed-capacity TOTAL
@@ -203,7 +260,7 @@ docker pull amazon/dynamodb-local
 docker run -p 8000:8000 amazon/dynamodb-local
 ```
 
-#### Delete local table
+### Delete local table
 
 ```bash
 aws dynamodb delete-table \
@@ -211,7 +268,7 @@ aws dynamodb delete-table \
     --endpoint-url http://localhost:8000
 ```
 
-#### Query and list locally
+### Query and list locally
 
 ```bash
 # create empty Profile
@@ -221,7 +278,7 @@ aws configure --profile rm_local_db
 aws dynamodb list-tables --endpoint-url http://localhost:8000
 ```
 
-#### List table and fields
+### List table and fields
 
 ```bash
 # list Tables
@@ -253,22 +310,23 @@ aws dynamodb create-table \
 aws dynamodb delete-table --table-name DELETEme
 ```
 
-#### Replicate a DynamoDB table locally
+### Replicate a DynamoDB table locally
 
 Original [article](https://medium.com/@balint_sera/replicate-a-dynamodb-table-409641215e8).
 
 ```bash
 # describe table
 aws dynamodb describe-table --table-name foo_table > foo_table.txt
+```
 
-#copy json into files. Example: key-schema.json
+Copy the JSON into files. Example: `key-schema.json`:
 
 ```json
 [
-            {
-                "AttributeName": "partition",
-                "KeyType": "HASH"
-            }
+    {
+        "AttributeName": "partition",
+        "KeyType": "HASH"
+    }
 ]
 ```
 
@@ -281,25 +339,25 @@ Don't copy Attribution Definitions that are not part of the KeySchema, if you hi
 ```bash
 aws dynamodb create-table \
     --table-name DELETEme \
-    --attribute-definitions file://attribute-definitions.json \ 
+    --attribute-definitions file://attribute-definitions.json \
     --key-schema file://key-schema.json  \
     --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 \
     --endpoint-url http://localhost:8000
 ```
 
-#### Put item
+### Put item
 
 ```bash
 aws dynamodb put-item \
     --table-name DELETEme \
     --item '{
         "Name": {"S": "Alice"},
-        "Age": {"N": "99"} 
+        "Age": {"N": "99"}
       }' \
     --return-consumed-capacity TOTAL
 ```
 
-#### Query item
+### Query item
 
 <https://www.bmc.com/blogs/dynamodb-queries/>
 
@@ -328,7 +386,7 @@ aws dynamodb query \
 }
 ```
 
-#### Query individual items with Projection Expression
+### Query individual items with Projection Expression
 
 Only attributes of the desired item:
 
@@ -352,7 +410,7 @@ If the Primary Key as `Hash` = Name and `Sort Key` = Age you need to search with
 
 >For the primary key, you must provide all of the attributes. For example, with a simple primary key, you only need to provide a value for the partition key. For a composite primary key, you must provide values for both the partition key and the sort key.
 
-#### Query item with file
+### Query item with file
 
 ```bash
 aws dynamodb query --table-name footable \
@@ -368,7 +426,7 @@ Inside of the `expression_attributes.json` file:
 }
 ```
 
-#### Query with Python Boto3
+### Query with Python Boto3
 
 ##### Boto3 get a single Item
 
@@ -396,7 +454,7 @@ response = table.scan(
 )
 ```
 
-#### DynamoDB reserved words
+### DynamoDB reserved words
 
 [reserved words](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ReservedWords.html).
 
@@ -408,7 +466,7 @@ aws cloudtrail lookup-events help
 # Set a max-items
 aws cloudtrail lookup-events --max-items 10
 
-# Events in 1 hour time period  
+# Events in 1 hour time period
 ## Keep the space between date and time!
 aws cloudtrail lookup-events --start-time "08-23-2021, 01:16PM" --end-time "08-23-2021, 02:16PM" --max-items 10
 
@@ -448,14 +506,6 @@ aws cloudtrail put-event-selectors --trail-name TrailName --region ${AWS_REGION}
 
 ```
 
-## Simple Notification Service ( SNS )
-
-```bash
-# list topics
-aws sns list-topics
-
-```
-
 ## Elasticache ( Redis )
 
 ```bash
@@ -467,7 +517,7 @@ aws elasticache describe-cache-engine-versions \
 aws elasticache describe-cache-clusters --max-items 5
 
 # list topics
-aws elasticache describe-cache-clusters --cache-cluster-id ${CLUSTER_ID} 
+aws elasticache describe-cache-clusters --cache-cluster-id ${CLUSTER_ID}
 ```
 
 ## Cloudwatch
@@ -503,9 +553,59 @@ aws logs \
 /aws/lambda/foobar
 ```
 
+### Filter log events (one-shot query, not tail)
+
+```bash
+# search across all streams in a log group
+aws logs filter-log-events \
+    --log-group-name ${GROUP_NAME} \
+    --filter-pattern "ERROR" \
+    --start-time $(date -u -v-1H +%s)000 \
+    --limit 50
+
+# JSON query (when log lines are JSON)
+aws logs filter-log-events \
+    --log-group-name ${GROUP_NAME} \
+    --filter-pattern '{ $.level = "error" }'
+```
+
+### Alarms
+
+```bash
+# list alarms
+aws cloudwatch describe-alarms
+aws cloudwatch describe-alarms --state-value ALARM   # currently firing
+
+# create a metric alarm (CPU > 80% for 5 mins)
+aws cloudwatch put-metric-alarm \
+    --alarm-name HighCPU-i-xxx \
+    --metric-name CPUUtilization \
+    --namespace AWS/EC2 \
+    --statistic Average \
+    --period 60 \
+    --threshold 80 \
+    --comparison-operator GreaterThanThreshold \
+    --evaluation-periods 5 \
+    --dimensions Name=InstanceId,Value=i-xxx \
+    --alarm-actions ${SNS_TOPIC_ARN}
+
+# delete alarms
+aws cloudwatch delete-alarms --alarm-names HighCPU-i-xxx
+
+# get raw metric data
+aws cloudwatch get-metric-statistics \
+    --namespace AWS/EC2 \
+    --metric-name CPUUtilization \
+    --dimensions Name=InstanceId,Value=i-xxx \
+    --start-time $(date -u -v-1H +%FT%TZ) \
+    --end-time $(date -u +%FT%TZ) \
+    --period 300 \
+    --statistics Average Maximum
+```
+
 ## Databases
 
-#### Describe
+### Describe
 
 ```bash
 aws rds describe-db-clusters | jq '.DBClusters[] | select(.EngineVersion | contains("9.6")) | { name: .DBClusterIdentifier, version: .EngineVersion }'
@@ -520,11 +620,11 @@ aws rds download-db-log-file-portion \
 
 ## Inspector
 
-#### Tips
+### Tips
 
 `https://awsclibuilder.com/home/services/inspector`
 
-#### List ( with a max )
+### List ( with a max )
 
 ```bash
 aws inspector list-findings --max-items 10
@@ -532,13 +632,13 @@ aws inspector list-findings --max-items 10 --region eu-west-1 --output table
 aws inspector list-findings --max-items 10 --region eu-west-1 --output json | jq .
 ```
 
-#### List Assessment Runs
+### List Assessment Runs
 
-``` bash
+```bash
 aws inspector list-assessment-runs --max-items=10
 ```
 
-#### Describe finding
+### Describe finding
 
 `aws inspector describe-findings --finding-arns arn:aws:inspector:eu-west-2:......./finding/0-6xxxxxxx`
 
@@ -549,24 +649,60 @@ aws inspector list-assessment-runs --max-items=10
 aws ec2 allocate-address
 
 # List Static, Public IP addresses
-aws ec2 describe-addresses 
+aws ec2 describe-addresses
 
 # Release Public IP address
 aws ec2 release-address --allocation-id eipallocXXXXXXXXX
 
-# Describe VPC
+# Describe VPC endpoint services
 aws ec2 describe-vpc-endpoint-services
 
-# Describe instances
-aws --profile saml ec2 describe-instances --region ${AWS_REGION}
+# Describe all instances (compact)
+aws ec2 describe-instances \
+    --query 'Reservations[].Instances[].{ID:InstanceId,Type:InstanceType,State:State.Name,IP:PrivateIpAddress,Name:Tags[?Key==`Name`].Value|[0]}' \
+    --output table
 
-# regex or wildcard
-aws ec2 describe-images --filters 'Name=name,Values="*"'
+# Describe instances filtered by tag
+aws ec2 describe-instances --filters "Name=tag:Name,Values=my-app"
+aws ec2 describe-instances --filters "Name=tag:Environment,Values=prod" "Name=instance-state-name,Values=running"
+
+# Describe instances filtered by state
+aws ec2 describe-instances --filters "Name=instance-state-name,Values=running"
+
+# AMI search (regex / wildcard)
+aws ec2 describe-images --filters 'Name=name,Values=amzn2-ami-hvm-*' --owners amazon
+
+# Get latest Amazon Linux 2023 AMI ID (via SSM public parameter)
+aws ssm get-parameter \
+    --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64 \
+    --query 'Parameter.Value' --output text
+
+# Security Groups
+aws ec2 describe-security-groups
+aws ec2 describe-security-groups --group-ids sg-xxxxx
+aws ec2 describe-security-groups --filters "Name=group-name,Values=my-sg"
+
+# Show SG rules in a flat readable form
+aws ec2 describe-security-group-rules --filters "Name=group-id,Values=sg-xxxxx"
+
+# Authorize / revoke SG rules
+aws ec2 authorize-security-group-ingress \
+    --group-id sg-xxxxx \
+    --protocol tcp --port 443 --cidr 10.0.0.0/16
+aws ec2 revoke-security-group-ingress \
+    --group-id sg-xxxxx \
+    --protocol tcp --port 443 --cidr 10.0.0.0/16
+
+# Start / stop / reboot / terminate
+aws ec2 start-instances --instance-ids i-xxxxx
+aws ec2 stop-instances --instance-ids i-xxxxx
+aws ec2 reboot-instances --instance-ids i-xxxxx
+aws ec2 terminate-instances --instance-ids i-xxxxx
 ```
 
 ## Athena
 
-#### List table and fields
+### List table and fields
 
 ```bash
 aws athena list-table-metadata \
@@ -603,10 +739,10 @@ LIMIT 10
 
 ```bash
 brew upgrade awscli
-// if errors due to Python version: `xcode-select --install`
-// if you installed via other methods and want to clean-up:
+# if errors due to Python version: xcode-select --install
+# if you installed via other methods and want to clean up:
 pip3 uninstall awscli
-brew link awscli 
+brew link awscli
 ```
 
 #### Persisted config and credentials
@@ -625,12 +761,12 @@ cat ~/.aws/credentials
 
 ```bash
 > aws configure list
-         
+
       Name                    Value             Type    Location
       ----                    -----             ----    --------
    profile                <not set>             None    None
-access_key     ****************DYXW shared-credentials-file    
-secret_key     ****************zO0/ shared-credentials-file    
+access_key     ****************DYXW shared-credentials-file
+secret_key     ****************zO0/ shared-credentials-file
     region                eu-west-1      config-file    ~/.aws/config
 
 
@@ -660,9 +796,9 @@ Default output format [None]: json
 
 ## aws-sso
 
-#### Set up
+### Set up
 
-```sh
+```bash
 # install
 brew install aws-sso-cli
 
@@ -684,11 +820,17 @@ export AWS_PROFILE=1234567890:ReadOnly \
 
 # verify it all worked
 aws sts get-caller-identity
+
+# native AWS CLI v2 SSO commands (alternative to aws-sso-cli)
+aws configure sso       # interactive SSO setup → writes a profile to ~/.aws/config
+aws sso login           # opens browser, refreshes credentials
+aws sso login --profile my-prod-profile
+aws sso logout          # clears cached SSO credentials
 ```
 
-#### Day-2-day usage
+### Day-2-day usage
 
-```sh
+```bash
 # kick start the download of credentials after SSO completes
 aws-sso config-profiles
 
@@ -700,24 +842,14 @@ export AWS_PROFILE="1234567890:ReadOnly" \
 # if it failed, check other profiles are not taking over
 unset AWS_ENDPOINT_URL_S3 \
   && unset AWS_ACCESS_KEY_ID \
-  && $AWS_SECRET_ACCESS_KEY
+  && unset AWS_SECRET_ACCESS_KEY
 ```
 
 ## saml2aws
 
-#### Set up
+> CLI tool which enables you to login and retrieve AWS temporary credentials via a SAML identity provider (Google Workspace, Okta, ADFS, etc.).
 
-```bash
-brew install awscli
-brew install saml2aws
-saml2aws --version
-
-
-## saml2aws
-
-> CLI tool which enables you to login and retrieve AWS temporary credentials.
-
-#### Set up
+### Set up
 
 ```bash
 brew install awscli
@@ -725,20 +857,20 @@ brew install saml2aws
 saml2aws --version
 
 saml2aws configure
-Select provider ( like Google )
-URL: enter URL of Identity Provider
-Username: email known to Identity Provider
-Password: Password associated to email
+# Select provider (like Google)
+# URL: enter URL of Identity Provider
+# Username: email known to Identity Provider
+# Password: Password associated to email
 ```
 
-#### Day-2-Day use
+### Day-2-Day use
 
 ```bash
 # Normal login
 saml2aws login
 
 # check if logged in
-eval $(saml2aws script)     
+eval $(saml2aws script)
 
 # Debugging info
 saml2aws login --verbose
@@ -761,15 +893,15 @@ Great [AWS article](https://aws-blog.de/2021/08/iam-what-happens-when-you-assume
 
 > authentication (principals) and authorization (policies)
 
-#### IAM account summary
+### IAM account summary
 
 ```bash
-aws organizations list-accounts 
+aws organizations list-accounts
 aws iam get-account-summary
 aws iam list-roles
 ```
 
-#### Roles and Policies
+### Roles and Policies
 
 ```bash
 # List Roles with certain Prefix
@@ -825,17 +957,98 @@ aws iam list-groups
 
 ```
 
-#### Best practices
+### Create role / policy / user (lifecycle)
+
+```bash
+# Create a managed policy from a JSON file
+aws iam create-policy \
+    --policy-name MyAppReadOnly \
+    --policy-document file://policy.json
+# → returns the policy ARN
+
+# Create a role with a trust policy (who can assume it)
+aws iam create-role \
+    --role-name MyAppRole \
+    --assume-role-policy-document file://trust-policy.json
+
+# Attach a managed policy to a role
+aws iam attach-role-policy \
+    --role-name MyAppRole \
+    --policy-arn arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+
+# Attach a managed policy to a user / group
+aws iam attach-user-policy --user-name alice --policy-arn ${POLICY_ARN}
+aws iam attach-group-policy --group-name Devs --policy-arn ${POLICY_ARN}
+
+# Put an inline policy on a role (less reusable, fine for one-offs)
+aws iam put-role-policy \
+    --role-name MyAppRole \
+    --policy-name InlineExtra \
+    --policy-document file://inline.json
+
+# Detach + delete (cleanup order matters: detach first, then delete)
+aws iam detach-role-policy --role-name MyAppRole --policy-arn ${POLICY_ARN}
+aws iam delete-role-policy --role-name MyAppRole --policy-name InlineExtra
+aws iam delete-role --role-name MyAppRole
+aws iam delete-policy --policy-arn ${POLICY_ARN}
+
+# Create a user + access key (use sparingly — prefer SSO/roles)
+aws iam create-user --user-name alice
+aws iam create-access-key --user-name alice
+aws iam delete-access-key --user-name alice --access-key-id AKIAxxxx
+aws iam delete-user --user-name alice
+```
+
+### Example trust policy (`trust-policy.json`)
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": { "Service": "lambda.amazonaws.com" },
+    "Action": "sts:AssumeRole"
+  }]
+}
+```
+
+For cross-account, replace the Principal with `{ "AWS": "arn:aws:iam::OTHER-ACCT:root" }` and add an `sts:ExternalId` condition for third-party access (the confused-deputy fix).
+
+### Assume a role (STS) — worked example
+
+```bash
+# 1. Assume the role and capture credentials
+CREDS=$(aws sts assume-role \
+    --role-arn arn:aws:iam::123456789012:role/CrossAccountAdmin \
+    --role-session-name alice-session \
+    --duration-seconds 3600 \
+    --query Credentials --output json)
+
+# 2. Export the temporary credentials into the environment
+export AWS_ACCESS_KEY_ID=$(echo "$CREDS" | jq -r .AccessKeyId)
+export AWS_SECRET_ACCESS_KEY=$(echo "$CREDS" | jq -r .SecretAccessKey)
+export AWS_SESSION_TOKEN=$(echo "$CREDS" | jq -r .SessionToken)
+
+# 3. Verify (note the ASIA prefix on AccessKeyId = temporary creds)
+aws sts get-caller-identity
+
+# 4. When done, unset to return to your normal identity
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+```
+
+For cross-account third-party access, add `--external-id <unique-string>` — required by the role's trust policy `sts:ExternalId` condition.
+
+### Best practices
 
 - [AWS best practice guidance](https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html)
 - [Best practices for managing AWS access keys](https://docs.aws.amazon.com/general/latest/gr/aws-access-keys-best-practices.html)
 - [Good tips on Access Keys](https://ashishrajan.medium.com/aws-security-best-practices-access-keys-cloudsecurity-facb20aa0db6)
 
-#### Temporary credentials trump Access Keys
+### Temporary credentials trump Access Keys
 
 >Use IAM roles instead of long-term access keys  In many scenarios, you don't need long-term access keys that never expire (as you have with an IAM user). Instead, you can create IAM roles and generate temporary security credentials. Temporary security credentials consist of an access key ID and a secret access key, but they also include a security token that indicates when the credentials expire.
 
-#### Retire long-term AWS keys for 2FA and temp credentials
+### Retire long-term AWS keys for 2FA and temp credentials
 
 General [reference](https://mklein.io/2021/02/09/temporary-credentials-cli-console/) and [aws reference](https://docs.aws.amazon.com/IAM/latest/UserGuide/tutorial_users-self-manage-mfa-and-creds.html) or [Terraform reference](https://klaviyo.tech/implementing-mfa-for-aws-cd9aab246103).  I found an article that got me over the "assign a MFA device to a IAM User" was [this excellent article](https://www.vlent.nl/weblog/2019/02/24/using-mfa-with-aws-cli/):
 
@@ -853,7 +1066,7 @@ If you look inside this role, it has restrictions:
                 "organizations:*",
                 "account:*"
             ]
-            
+
 # Create policy
 aws iam create-policy --policy-name AllowAssumeRolePolicy --policy-document file://assume-role-policy.json
 
@@ -861,7 +1074,7 @@ aws iam create-policy --policy-name AllowAssumeRolePolicy --policy-document file
 aws iam attach-user-policy --user-name rm_lite --policy-arn arn:aws:iam::400000000000:policy/AllowAssumeRolePolicy
 ```
 
-#### Add new 2FA device in AWS IAM Console
+### Add new 2FA device in AWS IAM Console
 
 ```bash
 # Go into AWS Console
@@ -882,11 +1095,11 @@ aws sts get-session-token \
 }
 ```
 
-#### Up to 12 hours CLI access via Temp Credentials
+### Up to 12 hours CLI access via Temp Credentials
 
 [Set up 12 hours CLI access](https://aws.amazon.com/blogs/security/enable-federated-api-access-to-your-aws-resources-for-up-to-12-hours-using-iam-roles/)
 
-#### Set new, temp profile
+### Set new, temp profile
 
 ```bash
 aws configure --profile mfa set source_profile default
@@ -895,7 +1108,7 @@ aws configure --profile mfa set duration_seconds 3600
 aws configure --profile mfa set mfa_serial arn:aws:iam::400000000000:mfa/rm_lite
 aws configure set aws_session_token dd --profile jd
 
-aws iam list-users --profile mfa 
+aws iam list-users --profile mfa
 # Enter MFA code for arn:aws:iam::________
 
 ```
@@ -932,21 +1145,21 @@ aws iam list-users --profile mfa
 }
 ```
 
-#### Get csv file of all accounts
+### Get csv file of all accounts
 
 ```bash
 aws iam generate-credential-report
 aws iam get-credential-report --output text --query Content  | base64 -D > aws_cred_report.csv
 ```
 
-#### Dormant accounts manually
+### Dormant accounts manually
 
 ```bash
 aws iam list-access-keys          // ListAccessKeys
 aws iam get-access-key-last-used --access-key-id FFFFFFFFFFFFFFFF
 ```
 
-#### List users
+### List users
 
 ```bash
 aws iam list-users --output json
@@ -954,14 +1167,14 @@ aws iam list-users --output text | awk '{print $NF}'        // just username
 aws iam list-users --output text > users.txt | wc -l        // count users
 ```
 
-#### List Access Keys by User
+### List Access Keys by User
 
 ```bash
 aws iam list-access-keys --user-name 'foobar'
 aws iam list-access-keys --user-name 'foobar_with_multiple_keys' --max-items 5
 ```
 
-#### List all Access Key IDs
+### List all Access Key IDs
 
 List all [Key IDs](https://stackoverflow.com/questions/24028610/find-the-owner-of-an-aws-access-key).
 
@@ -980,7 +1193,7 @@ done
 ### Info
 
 ```bash
-# list 10 lambdas available in region and account, if any 
+# list 10 lambdas available in region and account, if any
 aws lambda list-functions --max-items 10
 
 # get all env variables and settings ( memory, timeouts, ARNs )
@@ -1045,16 +1258,61 @@ Then push:
 
 ```bash
 aws lambda update-function-code \
-    --function-name  MyPyLambdaFunction \
-    --zip-file fileb://my-deployment-package.zip \
+    --function-name MyPyLambdaFunction \
+    --zip-file fileb://my-deployment-package.zip
 ```
 
-### Update environmental variable
+Or push a container image:
 
 ```bash
 aws lambda update-function-code \
-    --function-name  MyPyLambdaFunction \
-    --environment Variables={LD_LIBRARY_PATH=/usr/bin/test/lib64}
+    --function-name MyPyLambdaFunction \
+    --image-uri ${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/my-image:latest
+```
+
+### Update configuration (env vars, memory, timeout, layers)
+
+```bash
+# environment variables (use update-function-configuration, NOT update-function-code)
+aws lambda update-function-configuration \
+    --function-name MyPyLambdaFunction \
+    --environment Variables={LD_LIBRARY_PATH=/usr/bin/test/lib64,LOG_LEVEL=DEBUG}
+
+# memory and timeout
+aws lambda update-function-configuration \
+    --function-name MyPyLambdaFunction \
+    --memory-size 1024 \
+    --timeout 30
+
+# attach layers
+aws lambda update-function-configuration \
+    --function-name MyPyLambdaFunction \
+    --layers arn:aws:lambda:eu-west-1:account-id:layer:my-layer:3
+```
+
+### Publish a version and create an alias
+
+```bash
+# snapshot current code+config as immutable version
+aws lambda publish-version --function-name MyPyLambdaFunction
+
+# create/update an alias pointing at a version
+aws lambda create-alias --function-name MyPyLambdaFunction --name prod --function-version 7
+aws lambda update-alias --function-name MyPyLambdaFunction --name prod --function-version 8
+
+# weighted alias for canary deploys (90% v7, 10% v8)
+aws lambda update-alias \
+    --function-name MyPyLambdaFunction \
+    --name prod \
+    --function-version 7 \
+    --routing-config 'AdditionalVersionWeights={"8"=0.1}'
+```
+
+### Delete
+
+```bash
+aws lambda delete-function --function-name MyPyLambdaFunction
+aws lambda delete-alias --function-name MyPyLambdaFunction --name prod
 ```
 
 ## Invoke Lambda
@@ -1071,7 +1329,7 @@ aws lambda invoke \
 aws lambda invoke \
     --function-name foobar \
     --cli-binary-format raw-in-base64-out \
-    --payload '{"foo":"bar"}' \            
+    --payload '{"foo":"bar"}' \
     out.json
 
 # Debug
@@ -1157,11 +1415,11 @@ openssl rand -out PlaintextKeyMaterial.bin 32
 xxd PlaintextKeyMaterial.bin                    # print key to stdio
 
 # Encrypt Key Material
-openssl rsautl -encrypt \                                                             
+openssl rsautl -encrypt \
                  -in PlaintextKeyMaterial.bin \
                  -oaep \
-                 -inkey PublicKey.pem \   
-                 -keyform PEM \   
+                 -inkey PublicKey.pem \
+                 -keyform PEM \
                  -pubin \
                  -out EncryptedKeyMaterial.bin
 
@@ -1194,8 +1452,77 @@ aws kms import-key-material \
 ### Test key is registered
 
 ```bash
-aws kms describe-key \
-    --key-id ${KEY_ID}
+aws kms describe-key --key-id ${KEY_ID}
+```
+
+### Encrypt / decrypt small payloads directly
+
+For data ≤ 4 KB you can call KMS directly. For anything bigger, use **envelope encryption** (next section).
+
+```bash
+# Encrypt — output is binary; --query lets us strip to base64 ciphertext
+aws kms encrypt \
+    --key-id alias/my-key \
+    --plaintext fileb://secret.txt \
+    --query CiphertextBlob \
+    --output text > ciphertext.b64
+
+# Decrypt — feed the base64 ciphertext back in
+aws kms decrypt \
+    --ciphertext-blob fileb://<(base64 -d ciphertext.b64) \
+    --query Plaintext \
+    --output text | base64 -d > secret-recovered.txt
+```
+
+### Envelope encryption (for larger data)
+
+KMS encrypts a *data key*; the data key encrypts your actual data locally.
+
+```bash
+# 1. Ask KMS for a data key (returns both plaintext + encrypted versions)
+aws kms generate-data-key \
+    --key-id alias/my-key \
+    --key-spec AES_256
+
+# 2. App uses the plaintext data key to AES-encrypt the data
+# 3. App stores [encrypted data | encrypted data key] together
+# 4. To decrypt: send the encrypted data key back to KMS
+aws kms decrypt --ciphertext-blob fileb://encrypted-data-key.bin
+
+# Get only the data key (without plaintext) if you only need to store it
+aws kms generate-data-key-without-plaintext --key-id alias/my-key --key-spec AES_256
+```
+
+### Aliases (use these, not raw key IDs)
+
+```bash
+# list aliases
+aws kms list-aliases
+
+# create an alias pointing at a key
+aws kms create-alias --alias-name alias/my-key --target-key-id ${KEY_ID}
+
+# update what an alias points at (key rotation by reference)
+aws kms update-alias --alias-name alias/my-key --target-key-id ${NEW_KEY_ID}
+
+# delete an alias
+aws kms delete-alias --alias-name alias/my-key
+```
+
+### Rotation, deletion, key policy
+
+```bash
+# enable automatic annual rotation (customer-managed keys only)
+aws kms enable-key-rotation --key-id ${KEY_ID}
+aws kms get-key-rotation-status --key-id ${KEY_ID}
+
+# schedule key deletion (7-30 days waiting period; cancel within window)
+aws kms schedule-key-deletion --key-id ${KEY_ID} --pending-window-in-days 30
+aws kms cancel-key-deletion --key-id ${KEY_ID}
+
+# get / put key policy (the resource-based policy on the key itself)
+aws kms get-key-policy --key-id ${KEY_ID} --policy-name default
+aws kms put-key-policy --key-id ${KEY_ID} --policy-name default --policy file://key-policy.json
 ```
 
 ### Reference
@@ -1204,7 +1531,7 @@ aws kms describe-key \
 
 ## ECR
 
-```shell
+```bash
 # Describe Registry
 aws ecr describe-registry
 
@@ -1224,7 +1551,7 @@ aws ecr list-images --repository-name $REPO | jq '.imageIds | unique_by(.imageDi
 aws ecr get-lifecycle-policy-preview --repository-name ${REPO}
 
 # list policy
-aws ecr get-repository-policy --repository-name ${REPO} 
+aws ecr get-repository-policy --repository-name ${REPO}
 
 # Create repo
 aws ecr create-repository --repository-name ${REPO_NAME}
@@ -1233,9 +1560,9 @@ export REG_ID=< repo ID >
 export REPO_NAME=< repo name >
 export REGION=eu-west-2
 
-aws ecr put-lifecycle-policy \   
+aws ecr put-lifecycle-policy \
     --registry-id ${REG_ID} \
-    --repository-name ${REPO_NAME} \        
+    --repository-name ${REPO_NAME} \
     --lifecycle-policy-text '{"rules":[{"rulePriority":10,"description":"Expire old images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":800},"action":{"type":"expire"}}]}'
 
 # Create repo with auto vulnerability scan
@@ -1255,7 +1582,7 @@ $(aws ecr get-login --registry-ids ${REG_ID} --no-include-email)
 
 ## Proxy AWS CLI traffic
 
-#### Set CLI not to verify the server's Certificate Chain
+### Set CLI not to verify the server's Certificate Chain
 
 `aws sts get-caller-identity --no-verify-ssl`
 
@@ -1275,8 +1602,31 @@ aws secretsmanager describe-secret --secret-id ${SECRET_ID}
 # Delete secret permanently ( not possible via UI )
 aws secretsmanager delete-secret --secret-id ${SECRET_ID} --force-delete-without-recovery
 
-#get Secret value
+# Get secret value (the actual secret string)
 aws secretsmanager get-secret-value --secret-id ${NAME_OF_SECRET}
+aws secretsmanager get-secret-value --secret-id ${NAME_OF_SECRET} --query SecretString --output text
+aws secretsmanager get-secret-value --secret-id ${NAME_OF_SECRET} --query SecretString --output text | jq .
+
+# Create a new secret
+aws secretsmanager create-secret \
+    --name my-app/db-password \
+    --description "DB password for my-app" \
+    --secret-string '{"username":"admin","password":"hunter2"}' \
+    --kms-key-id alias/my-key
+
+# Update an existing secret's value (creates a new version)
+aws secretsmanager put-secret-value \
+    --secret-id my-app/db-password \
+    --secret-string '{"username":"admin","password":"new-pass"}'
+
+# Generate a strong random password (without creating a secret)
+aws secretsmanager get-random-password --password-length 32 --exclude-characters '"@/\'
+
+# Rotate a secret immediately (requires a Lambda rotation function attached)
+aws secretsmanager rotate-secret --secret-id my-app/db-password
+
+# Restore a deleted-pending secret (within the recovery window)
+aws secretsmanager restore-secret --secret-id ${SECRET_ID}
 ```
 
 ## Elastic Container Service ( ECS )
@@ -1306,11 +1656,61 @@ aws ecs describe-container-instances \
     --cluster ${CLUSTER_NAME} \
     --container-instances ${CONTAINER_INSTANCE_ID}
 
+# Describe a service (desired vs running count, events, etc.)
+aws ecs describe-services --cluster ${CLUSTER_NAME} --services ${SERVICE_NAME}
+
+# Force a service to redeploy with the latest task definition
+aws ecs update-service --cluster ${CLUSTER_NAME} --service ${SERVICE_NAME} --force-new-deployment
+
+# Exec into a running task (requires execute-command enabled on the service + SSM agent)
+aws ecs execute-command \
+    --cluster ${CLUSTER_NAME} \
+    --task ${TASK_ARN} \
+    --container ${CONTAINER_NAME} \
+    --command "/bin/sh" \
+    --interactive
+
+# Stop a running task
+aws ecs stop-task --cluster ${CLUSTER_NAME} --task ${TASK_ARN}
+
+# Register a new task definition from a JSON file
+aws ecs register-task-definition --cli-input-json file://taskdef.json
+
+# Describe a task definition
+aws ecs describe-task-definition --task-definition my-task:42
+
 ```
 
 ## SSM Sessions
 
+Browser-less / SSH-less shell into EC2 / ECS containers via SSM agent.
+
 ```bash
+# Simplest — start an interactive shell on an instance
+aws ssm start-session --target i-xxxxx
+
+# With a specific profile / region
+aws ssm start-session --target i-xxxxx --profile prod --region eu-west-1
+
+# Run a one-shot command (no interactive shell)
+aws ssm send-command \
+    --instance-ids i-xxxxx \
+    --document-name "AWS-RunShellScript" \
+    --parameters 'commands=["uname -a","df -h"]'
+
+# Get the output of a send-command invocation
+aws ssm get-command-invocation --command-id ${COMMAND_ID} --instance-id i-xxxxx
+
+# Port forwarding (e.g. tunnel local 5432 → RDS in private subnet)
+aws ssm start-session \
+    --target i-xxxxx \
+    --document-name AWS-StartPortForwardingSessionToRemoteHost \
+    --parameters '{"host":["my-db.xxx.eu-west-1.rds.amazonaws.com"],"portNumber":["5432"],"localPortNumber":["5432"]}'
+
+# List managed instances (those the SSM agent has registered)
+aws ssm describe-instance-information
+
+# Exec into an ECS container (the older complex form)
 export encodedCommands=$(echo "bash" | base64)
 export ecsInstanceId="i-xxxx"
 # the 64-char Container Runtime ID
@@ -1322,9 +1722,11 @@ aws ssm start-session \
     --parameters command="$encodedCommands",container="$containerId"
 ```
 
+For ECS Fargate / ECS-on-EC2 with awsvpc mode, prefer `aws ecs execute-command` (see ECS section).
+
 ## SSM Parameter Store
 
-#### Set
+### Set
 
 ```bash
 aws ssm put-parameter \
@@ -1334,7 +1736,7 @@ aws ssm put-parameter \
     --tags "Key=month,Value=april2021"
 ```
 
-#### Set encrypted
+### Set encrypted
 
 ```bash
 aws ssm put-parameter \
@@ -1344,24 +1746,57 @@ aws ssm put-parameter \
     --key-id "alias name"
 ```
 
-#### Get
+### Get
 
 ```bash
 export AWS_PROFILE=foo
+
+# list all parameters in account/region (just names)
 aws ssm describe-parameters
-aws ssm get-parameters --name "username"
-aws ssm get-parameters --name "username" --with-decryption
-aws ssm get-parameters-by-path --path "/foo/bar/"    <-- full path minus the parameter name
+
+# get a single parameter
+aws ssm get-parameter --name "username"
+aws ssm get-parameter --name "username" --with-decryption          # decrypts SecureString
+aws ssm get-parameter --name "username" --query 'Parameter.Value' --output text
+
+# get multiple parameters by exact name
+aws ssm get-parameters --names "username" "password" --with-decryption
+
+# get a whole tree of parameters (hierarchical lookup)
+aws ssm get-parameters-by-path --path "/myapp/prod/" --recursive --with-decryption
+
+# get a specific version of a parameter
+aws ssm get-parameter --name "username:3"     # version 3
+
+# get parameter history
+aws ssm get-parameter-history --name "username"
 ```
 
-#### Secrets Manager vs SSM
+### Reference a Secrets Manager secret from Parameter Store
 
 ```bash
-https://www.stackery.io/blog/serverless-secrets/
-
-https://acloudguru.com/blog/engineering/an-inside-look-at-aws-secrets-manager-vs-parameter-store?utm_source=legacyla&utm_medium=redirect&utm_campaign=one_platform
-
-https://www.1strategy.com/blog/2019/02/28/aws-parameter-store-vs-aws-secrets-manager/
-
-https://liuhongbo.medium.com/build-an-aws-serverless-application-using-sam-aae383e68b6f
+# Parameter Store can transparently resolve to a Secrets Manager secret —
+# apps read everything via one API, rotating secrets are managed in Secrets Manager.
+aws ssm get-parameter \
+    --name "/aws/reference/secretsmanager/my-app/db-password" \
+    --with-decryption
 ```
+
+### Delete
+
+```bash
+aws ssm delete-parameter --name "username"
+aws ssm delete-parameters --names "param1" "param2" "param3"
+```
+
+### Secrets Manager vs SSM Parameter Store
+
+- **Parameter Store** — Standard tier is free up to 10,000 params; 4 KB max value; no native rotation; hierarchical paths; great for config + non-rotating secrets
+- **Secrets Manager** — $0.40/secret/month; 64 KB max; native rotation for RDS/Aurora/DocumentDB/Redshift; resource policies; multi-region replication
+
+Common pattern: config in Parameter Store, rotating secrets in Secrets Manager, referenced from Parameter Store via `/aws/reference/secretsmanager/<name>`. See the main study notes for the full comparison.
+
+References:
+- [Serverless Secrets](https://www.stackery.io/blog/serverless-secrets/)
+- [Secrets Manager vs Parameter Store (A Cloud Guru)](https://acloudguru.com/blog/engineering/an-inside-look-at-aws-secrets-manager-vs-parameter-store)
+- [1Strategy comparison](https://www.1strategy.com/blog/2019/02/28/aws-parameter-store-vs-aws-secrets-manager/)
