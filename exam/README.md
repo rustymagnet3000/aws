@@ -40,6 +40,7 @@
   - [Direct Connect and Site-to-Site VPN](#direct-connect-and-site-to-site-vpn)
   - [AWS Client VPN](#aws-client-vpn)
   - [Gateway Load Balancer (GWLB)](#gateway-load-balancer-gwlb)
+  - [Networking Cost Anti-patterns and Optimisation](#networking-cost-anti-patterns-and-optimisation)
   - [VPC Anti-patterns (exam wrong answers)](#vpc-anti-patterns-exam-wrong-answers)
   - [VPC Exam Triggers](#vpc-exam-triggers)
 - [EFS](#efs)
@@ -774,6 +775,181 @@ Understanding which is which is the single biggest source of "why doesn't this w
 - **Default VPC** — every region has one pre-created, with public subnets in each AZ. Fine for experiments, not for production.
 - **AWS reserves 5 IPs per subnet** — `.0` (network), `.1` (VPC router), `.2` (DNS), `.3` (future use), `.255` (broadcast). A `/28` subnet has 16 IPs but only 11 are usable.
 
+#### The Three RFC 1918 Private Ranges (memorise these)
+
+VPC CIDRs must come from the private (RFC 1918) IPv4 space. There are exactly three blocks — knowing them by heart is required for the exam.
+
+| Block | Range | Size | Notes |
+| ----- | ----- | ---- | ----- |
+| **`10.0.0.0/8`** | 10.0.0.0 – 10.255.255.255 | ~16.7M addresses | The largest. Most enterprises use this for their main on-prem network |
+| **`172.16.0.0/12`** | **172.16.0.0 – 172.31.255.255** | ~1M addresses | The awkward-bounded one. **NOT** all of 172.x — only the .16 to .31 second-octet range |
+| **`192.168.0.0/16`** | 192.168.0.0 – 192.168.255.255 | ~65k addresses | The smallest. Default for most home routers, common for satellite offices |
+
+**The `172` gotcha** — RFC 1918's 172 block is `172.16.0.0/12`, which is **only** `172.16.x.x` through `172.31.x.x`. The blocks `172.0.x` to `172.15.x` and `172.32.x` onwards are **public** IPv4. AWS will reject these for a VPC:
+
+- ✅ `172.20.0.0/16` — valid (within `172.16/12`)
+- ✅ `172.31.0.0/16` — valid (upper edge of `172.16/12`)
+- ❌ `172.32.0.0/16` — invalid (just outside RFC 1918)
+- ❌ `172.10.0.0/16` — invalid (just below RFC 1918)
+
+#### Worked Example: "Pick a VPC CIDR" — overlap, not size, is the test
+
+This is the exam pattern that catches engineers whose instinct is to start calculating host counts. The question:
+
+> *You have a corporate network of size `10.0.0.0/8` and a satellite office of size `192.168.0.0/16`. Which CIDR is acceptable for your AWS VPC if you plan on connecting your networks later on?*
+
+**The wrong instinct:** start calculating how many hosts you need, sizing /16 vs /17 vs /20, etc. **Wrong because the question isn't about capacity.**
+
+**The right thought process:** the exam is testing whether you understand that **VPC Peering / Transit Gateway / VPN / Direct Connect all require non-overlapping CIDRs**. If your VPC overlaps with either existing network, the connection won't route — and **you can't change a VPC's primary CIDR after creation**.
+
+So the answer is pure RFC 1918 elimination:
+
+```
+Step 1: Which RFC 1918 ranges are taken by existing networks?
+  10.0.0.0/8     → taken by corporate network
+  192.168.0.0/16 → taken by satellite office
+  172.16.0.0/12  → FREE
+
+Step 2: Pick from the free range. Done.
+```
+
+Answer: any subset of **`172.16.0.0/12`** — e.g. `172.20.0.0/16`. Anything starting `10.x` or `192.168.x` would conflict.
+
+#### Why Overlap Avoidance Matters
+
+Routers can't disambiguate overlapping CIDRs. If your VPC is `10.0.0.0/16` and your on-prem is also `10.0.0.0/8`, then `10.0.1.5` could mean *either* network — there's no way for a TGW / VPN / DX gateway to know which side to send traffic to. The connection technically can be created, but traffic routing breaks:
+
+```
+Bad:
+  VPC:     10.0.0.0/16   ← overlaps
+  On-prem: 10.0.0.0/8    ← overlaps
+  → Peering created, but packets to 10.0.x.x have ambiguous destination
+  → traffic gets dropped or sent the wrong way
+
+Good:
+  VPC:     172.20.0.0/16  ← no overlap
+  On-prem: 10.0.0.0/8     ← no overlap
+  → Routing tables can cleanly direct each prefix
+```
+
+The same logic applies to **multi-VPC** designs — every VPC you might ever peer or attach to a TGW needs a unique CIDR. This is why large orgs use **IPAM** (covered later) for centralised CIDR planning.
+
+#### When Sizing **Does** Matter (so the instinct isn't always wrong)
+
+| Question type | Approach |
+| ------------- | -------- |
+| *"Which CIDR is acceptable to peer with existing networks?"* | **Overlap check** — pick the free RFC 1918 range |
+| *"How many EC2 instances fit in a /24 subnet?"* | **Sizing maths** — 256 − 5 (AWS-reserved) = 251 |
+| *"Smallest VPC CIDR AWS allows?"* | `/28` (16 IPs, 11 usable) |
+| *"Largest VPC CIDR AWS allows?"* | `/16` (~65k IPs) |
+| *"Need IPs for 50,000 EC2 instances"* | Sizing — `/16` × multiple via secondary CIDRs, or IPv6 |
+| *"EKS cluster for 10,000 pods + 500 nodes"* | Sizing matters; consider IPv6 |
+
+#### Mental Model
+
+> *VPC CIDR questions come in two flavours. **"Which CIDR can I use?"** is testing **overlap avoidance** — pick the RFC 1918 range no one else has. **"How big a CIDR do I need?"** is testing **sizing** — calculate hosts vs subnet bits. Read the question carefully: the first is pattern matching against the three private ranges; the second is maths. Don't bring the maths to the overlap question.*
+
+#### Exam Triggers
+
+- *"Existing networks A and B, picking a VPC CIDR"* → **non-overlapping RFC 1918 range** (overlap check, not sizing)
+- *"Why isn't traffic flowing across our VPC peering / VPN / TGW?"* → likely **overlapping CIDRs**
+- *"Acquired a company whose VPCs use 10.10.0.0/16; planning to peer"* → your VPC must avoid `10.10.0.0/16`
+- *"Three VPCs need to communicate via TGW"* → **all three need non-overlapping CIDRs**
+- *"Need IPs for 50,000 EC2 instances"* → **sizing** — `/16` + secondary CIDRs, or IPv6
+- *"172.x is a private address?"* → only **172.16.x – 172.31.x** is; the rest of 172.x is public
+- *"Can I change a VPC's primary CIDR after creation?"* → **No** (you can only add secondary CIDRs). Choose carefully
+
+#### Subnet Sizing — the 5-IP Reservation and the Off-by-One Trap
+
+Sizing questions ("smallest subnet for N instances") have a classic trap: AWS reserves **5 IPs per subnet**, not the standard 2. If you forget, your `/27` (32 total) gives you **27 usable**, not 30.
+
+**What each of the 5 reserved IPs actually does** (using `10.0.1.0/24` as the example):
+
+| Address | Purpose | Why reserved |
+| ------- | ------- | ------------ |
+| **`10.0.1.0`** | **Network address** | Standard IP networking convention — identifies the subnet itself |
+| **`10.0.1.1`** | **VPC router** | The implicit default gateway for the subnet. Every packet leaving the subnet routes via this address. Not a physical host — a virtualised AWS service |
+| **`10.0.1.2`** | **Amazon-provided DNS** (Route 53 Resolver) | The DNS server entries in EC2's `/etc/resolv.conf` point here. Forwards to the VPC-level resolver at `VPC_CIDR_base + 2`. Disabled if you turn off `enableDnsSupport` |
+| **`10.0.1.3`** | **Reserved for future use** by AWS | The mysterious one. Not publicly documented — AWS preserves it across every subnet for future networking features |
+| **`10.0.1.255`** | **Broadcast address** | Standard IP networking convention. AWS doesn't actually use broadcast in VPCs, but reserves it for compatibility |
+
+The first two and last one are standard networking. The middle three (`.1`, `.2`, `.3`) are AWS-specific — that's where the off-by-one comes from compared to traditional subnetting (which reserves only `.0` and `.last`).
+
+##### Worked example: "Subnet for 28 EC2 instances, smallest CIDR?"
+
+```
+Need: 28 usable IPs
+
+/27 attempt:
+  32 total IPs (2^5)
+  - 5 AWS-reserved
+  = 27 USABLE
+  → 27 < 28, NOT ENOUGH ❌
+
+/26 attempt:
+  64 total IPs (2^6)
+  - 5 AWS-reserved
+  = 59 USABLE
+  → 59 ≥ 28, FITS ✅
+
+Answer: /26 is the minimum.
+```
+
+The natural instinct (*"28 < 32, so `/27` fits"*) is wrong by exactly 1 IP because of the extra 3 AWS reservations.
+
+**The sizing cheat-table — memorise the common ones:**
+
+| Mask | Total IPs | Usable (AWS) | Standard usable (for comparison) | Common use |
+| ---- | --------- | ------------ | --------------------------------- | ---------- |
+| `/28` | 16 | **11** | 14 | Smallest AWS allows. Bastion / single-service / VPC endpoints |
+| `/27` | 32 | **27** | 30 | Small management subnets |
+| `/26` | 64 | **59** | 62 | Small app tiers |
+| `/25` | 128 | **123** | 126 | Medium app tiers |
+| `/24` | 256 | **251** | 254 | Standard subnet size (most common) |
+| `/23` | 512 | **507** | 510 | Large workload subnets |
+| `/22` | 1024 | **1019** | 1022 | Big app fleets |
+| `/20` | 4096 | **4091** | 4094 | Heavy compute / EKS node subnets |
+| `/16` | 65,536 | **65,531** | 65,534 | Maximum VPC and subnet size |
+
+**The formula:**
+
+```
+AWS usable = 2^(32 - mask) - 5
+```
+
+vs the standard:
+
+```
+General networking usable = 2^(32 - mask) - 2
+```
+
+The 3-IP difference is the trap.
+
+**The four common usable counts worth memorising:**
+
+- `/28` → **11**
+- `/27` → **27**
+- `/26` → **59**
+- `/24` → **251**
+
+If you can recall these without thinking, sizing questions become instant.
+
+**IPv6 nuance:** AWS reserves **4 addresses** (not 5) in IPv6 subnets — first, +1 (router), +2 (DNS), +3 (future). No broadcast in IPv6 (multicast instead), so the last address isn't reserved.
+
+**Mental model:**
+
+> *AWS reserves **3 extra IPs** beyond standard networking conventions because subnet routing and DNS are virtualised services that occupy IPs in your subnet (`.1` = router, `.2` = DNS, `.3` = future infrastructure). Combined with the standard `.0` (network) and `.last` (broadcast), that's **5 reserved per IPv4 subnet**. Always subtract 5, not 2, when sizing — that's where the `/27` = 27 (not 30) off-by-one trap comes from.*
+
+**Exam triggers (sizing-specific):**
+
+- *"Subnet for N EC2 instances — smallest CIDR?"* → calculate `2^(32-mask) - 5 ≥ N`
+- *"Why does my `/28` only have 11 usable IPs, not 14?"* → AWS reserves 5, not 2
+- *"Smallest subnet AWS allows?"* → **`/28`** (16 total, 11 usable)
+- *"Largest subnet AWS allows?"* → **`/16`** (~65k total, 65,531 usable) — same as max VPC
+- *"My `/27` only fits 27 instances, not 30 — why?"* → AWS-reserved `.0`, `.1` (router), `.2` (DNS), `.3` (future), `.last` (broadcast) = 5 reservations
+- *"What does the `.2` address in my subnet do?"* → Amazon-provided DNS resolver
+- *"Can I use the `.1` address for an instance?"* → No — VPC router
+
 ### Subnets
 
 A subnet is a slice of the VPC's CIDR, **scoped to one Availability Zone**.
@@ -810,7 +986,183 @@ Public subnet route table:
 
 An instance also needs a **public IP** or **Elastic IP** to be reachable from the internet — the IGW alone isn't enough.
 
-**For IPv6 outbound only — Egress-Only Internet Gateway:** IPv6 addresses are *all* globally routable (no NAT in IPv6), so a regular NAT Gateway doesn't apply. The **Egress-Only Internet Gateway** is the IPv6 equivalent — lets IPv6 instances initiate **outbound** connections but blocks all **unsolicited inbound** traffic. Attaches to the VPC; route table entry: `::/0 → eigw-xxx`. Exam trigger: *"private IPv6 instances need to make outbound API calls but not be reachable from the internet"* → **Egress-Only IGW**.
+#### Does "Private IP" Exist in IPv6? (the conceptual shift)
+
+Before the Egress-Only IGW makes sense, you need to grok how IPv6 addressing differs from IPv4. **The concept of "private IP" exists in IPv6 but AWS deliberately doesn't use it.** This is the foundation everything else builds on.
+
+**IPv6 address scopes (the rough equivalents):**
+
+| IPv6 scope | Range | IPv4 equivalent | Where used |
+| ---------- | ----- | --------------- | ---------- |
+| **Global Unicast Address (GUA)** | `2000::/3` | Public IPv4 | Globally routable. **AWS gives you a `/56` GUA per VPC** from its `2600::/8` allocation |
+| **Unique Local Address (ULA)** | `fc00::/7` | **RFC 1918 (10.0.0.0/8 etc.)** | The closest IPv6 equivalent of "private" — explicitly not routable on the public internet. RFC 4193. **AWS doesn't use it** |
+| **Link-Local Address** | `fe80::/10` | 169.254.0.0/16 | Auto-configured on every interface, only valid on the local link (subnet) |
+| **Loopback** | `::1` | `127.0.0.1` | Same purpose |
+| **Multicast** | `ff00::/8` | 224.0.0.0/4 | Same purpose |
+
+So **ULA is the direct equivalent of RFC 1918**. It exists. AWS just doesn't allocate from it.
+
+**What AWS actually does:**
+
+Every IPv6 address inside your VPC is a **globally unique, publicly routable** GUA — even instances in your "private" subnet:
+
+```
+IPv4 instance in "private" subnet: 10.0.1.10
+  → NOT routable on the internet (RFC 1918 by definition)
+  → "private" because the ADDRESS RANGE is private
+
+IPv6 instance in "private" subnet: 2600:1f18:1234::10
+  → IS globally routable (it's a GUA in AWS's range)
+  → "private" only because the ROUTING and FIREWALLS make it so
+```
+
+**In IPv6 + AWS, "private" is a policy choice, not an address property.**
+
+**Why AWS chose GUA over ULA:**
+
+| Reason | Detail |
+| ------ | ------ |
+| **Flexibility** | Same address works whether you decide to expose to internet or not. No re-addressing later |
+| **No NAT philosophy** | The whole point of IPv6 is "no NAT." Using ULA would reintroduce NAT66 translation pain |
+| **Simpler ops** | One address per interface; reachability controlled purely by SG / NACL / routes |
+| **M&A friendly** | Globally unique addresses don't collide. Acquired companies' VPCs never conflict |
+
+**What "private subnet" means in IPv6:**
+
+| | "Public" IPv6 subnet | "Private" IPv6 subnet |
+| - | --------------------- | ---------------------- |
+| Route table | `::/0 → igw-xxx` | `::/0 → eigw-xxx` (Egress-Only IGW) or **no route at all** |
+| Inbound from internet | Possible (if SG/NACL allows) | **Not possible** (Egress-Only IGW blocks unsolicited inbound) |
+| Outbound to internet | Possible | Possible via Egress-Only IGW, or none |
+| Address visible on internet | Yes (same address; just unreachable due to route/firewall) | Yes (same address; just unreachable due to route/firewall) |
+
+The address itself is identical and globally unique in both cases. The "privacy" is purely the route + firewall config.
+
+**The risk this creates — no IP-as-safety-net:**
+
+In IPv4 you have a safety net: if you accidentally add `0.0.0.0/0 → IGW` to a private subnet's route table, `10.0.1.10` still can't be reached from the internet — the internet has no idea how to route to a 10/8 destination.
+
+In IPv6 with AWS GUA, **no such safety net**:
+
+- Every instance's IPv6 address is globally routable
+- If you accidentally add `::/0 → igw-xxx`, anyone on the internet can send packets to those addresses
+- Your **only** protection is the Security Group + NACL
+
+This makes Security Groups and NACLs *more* important in IPv6 thinking. A misconfigured route can expose every instance in the subnet, with no IP-range-as-defence-in-depth.
+
+**Mental model:**
+
+> *In IPv4, "private" was baked into the **address range** (RFC 1918 = literally unroutable). In IPv6 with AWS, every address is a **globally unique, publicly routable** GUA. "Private" becomes a **policy decision**, enforced by routes + Security Groups + NACLs, not by the address itself. The IPv6 ULA range (`fc00::/7`) is the direct RFC 1918 equivalent, but AWS chose GUA for flexibility — trading the IP-range-as-safety-net for "no NAT needed, ever."*
+
+**Exam triggers:**
+
+- *"Why is my IPv6 instance reachable from the internet despite being in a 'private' subnet?"* → likely an **incorrect route table** (`::/0 → igw-xxx` instead of `::/0 → eigw-xxx`); IPv6 addresses are globally routable so route + firewall config is the only protection
+- *"What's the IPv6 equivalent of RFC 1918 (private addresses)?"* → **Unique Local Addresses (ULA), `fc00::/7`** — but **AWS uses GUA**, not ULA
+- *"Source IP preserved at destination for IPv6 traffic"* → yes, no NAT means original GUA preserved end-to-end
+- *"Can two VPCs have overlapping IPv6 ranges?"* → No — AWS GUA allocations are globally unique by design (M&A relief)
+- *"Need private IPv6 addresses for compliance"* → AWS only allocates GUA; if you need ULA-style truly-unroutable addresses you'd have to BYOIP your own ULA prefix (uncommon)
+
+#### Egress-Only Internet Gateway (vs NAT Gateway)
+
+The IGW handles **bidirectional** internet traffic (the source of most VPC internet connectivity). For "outbound only" patterns there are two parallel tools — one for each IP version. Knowing which goes with which is the most-tested IPv6 question.
+
+**The fundamental difference:**
+
+| | **NAT Gateway** | **Egress-Only IGW** |
+| - | --------------- | ------------------- |
+| IP version | **IPv4 only** | **IPv6 only** |
+| Job | Translate private IPv4 → public IPv4 **AND** block inbound | Block unsolicited inbound IPv6 (no translation needed) |
+| Cost | ~$33/month per AZ + $0.045/GB | **Free** — no hourly, no per-GB |
+| Multi-AZ | One per AZ for HA | One per VPC (covers all AZs) |
+| 55k connection limit per destination | Yes | **No** |
+| Source IP preserved at destination | ❌ No — destination sees NAT's public IP | ✅ Yes — original IPv6 preserved |
+| Route table entry | `0.0.0.0/0 → nat-xxx` | `::/0 → eigw-xxx` |
+
+They're **not alternatives** — they're parallel constructs for the two IP families. Dual-stack VPCs use **both**, with separate route-table entries.
+
+**Why both exist — the conceptual reason:**
+
+NAT Gateway does **two jobs at once** in IPv4:
+
+```
+NAT Gateway in IPv4:
+  1. Translate private IP → public IP   ← REQUIRED because RFC 1918 IPs
+                                          can't route on the internet
+  2. Block unsolicited inbound          ← side effect of NAT (no translation
+                                          entry = nowhere to send inbound)
+```
+
+IPv6 addresses are **globally routable by design**. There are no "private" IPv6 addresses in the same sense — every IPv6 address you get from AWS *is* a public, internet-routable address. So **job #1 isn't needed**. You don't translate anything.
+
+But you still want *"private subnet, no inbound from internet."* That's where Egress-Only IGW comes in — it's specifically the **"block inbound, allow outbound"** gateway, without any translation overhead:
+
+```
+Egress-Only IGW in IPv6:
+  1. (no translation needed)
+  2. Block unsolicited inbound          ← the only job
+
+Just job #2. That's why it's free — no translation infrastructure to run.
+```
+
+**How a request flows through Egress-Only IGW:**
+
+```
+IPv6 instance in private subnet (2001:db8:1:1::10)
+  │
+  │ HTTPS request to api.example.com (2606:4700::1)
+  ▼
+Subnet route table:  ::/0 → eigw-xxx
+  │
+  ▼
+Egress-Only IGW: stateful — records the outbound flow
+  │
+  ▼
+AWS backbone → internet → api.example.com
+                            (sees the request from 2001:db8:1:1::10 — the
+                             ACTUAL instance address, not a translated one)
+
+Reply (api.example.com → 2001:db8:1:1::10):
+  Egress-Only IGW: "I have state for this flow → allow"  → reaches instance
+
+Unsolicited inbound from internet to 2001:db8:1:1::10:
+  Egress-Only IGW: "no state — this wasn't initiated from inside"  → blocked
+```
+
+The stateful behaviour is identical to NAT Gateway's "outbound creates state, inbound matched against state." Just no IP translation step.
+
+**Benefits beyond cost:**
+
+1. **No 55k connection limit per destination** — the NAT Gateway gotcha doesn't apply (no port translation table)
+2. **Source IP preserved at destination** — 1,000 instances calling the same external API show up as 1,000 distinct IPv6 addresses (vs all appearing as the single NAT IP). Better debugging, better third-party allowlisting, better forensics
+3. **Simpler HA** — one Egress-Only IGW per VPC covers all AZs (vs NAT needing one per AZ + asymmetric routing risk)
+4. **No data-processing charge** — at 10 TB/month outbound, NAT's $0.045/GB = ~$450/month of pure overhead. Egress-Only IGW = $0
+
+**When you'd use each:**
+
+| Scenario | Use |
+| -------- | --- |
+| **IPv4-only VPC** (most VPCs today) | **NAT Gateway** for IPv4 outbound; no Egress-Only IGW |
+| **IPv6-only VPC** (e.g. EKS at scale) | **Egress-Only IGW** for IPv6 outbound; no NAT Gateway |
+| **Dual-stack VPC** (IPv4 + IPv6) | **Both** — NAT for IPv4 traffic, Egress-Only IGW for IPv6 traffic |
+
+**The catch (why everyone isn't using it):**
+
+- **Destination must be IPv6-reachable.** Most modern public services are dual-stack (AWS, Google, Cloudflare, GitHub, npm, PyPI, Docker Hub). Legacy/niche IPv4-only destinations still need NAT
+- **App stack must speak IPv6.** Older runtimes/libraries sometimes default to IPv4 and need configuration
+- **On-prem might not be IPv6-ready** — peered / VPN / DX traffic to on-prem is typically IPv4 and needs NAT
+
+**Mental model:**
+
+> *NAT Gateway does **two jobs**: translate private→public AND block inbound (the second is a side effect of the first). Egress-Only IGW does **only the second job** because IPv6 addresses are already globally routable. That's why Egress-Only IGW is free: there's no translation infrastructure to run. They're not alternatives — they're parallel constructs for the two IP families. Dual-stack = use both.*
+
+**Exam triggers:**
+
+- *"IPv6 instances need outbound internet but not inbound"* → **Egress-Only IGW**
+- *"Save NAT Gateway costs for high-volume outbound at scale"* → **dual-stack + Egress-Only IGW** for the IPv6 traffic
+- *"Preserve source IP at the destination for thousands of instances"* → **Egress-Only IGW** (NAT hides them all behind one public IP)
+- *"NAT Gateway connection-limit exhaustion (55k per destination)"* → IPv6 + **Egress-Only IGW** sidesteps it
+- *"My IPv4 instance needs internet but not inbound"* → **NAT Gateway**, not Egress-Only IGW (this is the trap)
+- *"Why does my IPv6 instance still not reach the internet despite Egress-Only IGW?"* → either the destination is IPv4-only, or the route table is missing `::/0 → eigw-xxx`
 
 ### NAT Gateway vs NAT Instance
 
@@ -1555,7 +1907,7 @@ Same TGW endpoint = same firewall = stateful inspection works.
 
 ### PrivateLink
 
-Expose a service running in **your** VPC to **other** VPCs (or accounts) without peering, without overlapping CIDR concerns, without internet.
+**Anchored as: "expose one service, not a whole network."** PrivateLink lets a service in one VPC be consumed by other VPCs (or accounts) over private IPs, without peering, without internet, and without CIDR overlap concerns. It's the architecture behind every AWS Interface VPC Endpoint and the way SaaS vendors (Snowflake, Datadog, Confluent, MongoDB Atlas) expose their products privately to customers' VPCs.
 
 ```
 Provider VPC:    [Your service behind an NLB] → "VPC Endpoint Service"
@@ -1568,7 +1920,152 @@ Consumer VPC:    [Interface Endpoint] → reaches your service via private IPs
 - Traffic stays on the AWS backbone — never traverses the public internet.
 - The two VPCs **can have overlapping CIDRs** — PrivateLink doesn't route between them, it just exposes the service.
 
-Use case: SaaS providers exposing their product to customers' VPCs (Snowflake, Datadog, etc. all use PrivateLink).
+#### The four-component architecture
+
+Most PrivateLink confusion comes from mixing up provider-side vs consumer-side terminology. There are exactly four things:
+
+| Component | Side | What it is |
+| --------- | ---- | ---------- |
+| **Network Load Balancer (NLB)** or **Gateway Load Balancer (GWLB)** | Provider | Sits in front of your actual service (EC2 / ECS / EKS / Lambda via ALB target). PrivateLink only works with NLB or GWLB — not ALB directly |
+| **VPC Endpoint Service** | Provider | Resource you create that *exposes* the NLB via PrivateLink. Has a unique service name like `com.amazonaws.vpce.eu-west-1.vpce-svc-abc123` |
+| **Interface VPC Endpoint** | Consumer | An ENI in the consumer's subnet (with a private IP) that connects to the provider's endpoint service |
+| **Acceptance / allow-list** | Provider | Provider controls *which AWS accounts / IAM principals* are allowed to connect. Either manual acceptance per request, or pre-allowlist of account ARNs |
+
+The mental model: provider "publishes" an NLB-backed service into the PrivateLink fabric → AWS gives it a globally-unique service name → consumers in any VPC create an Interface Endpoint that connects.
+
+#### Why people use it instead of VPC Peering
+
+This is the most-tested PrivateLink decision:
+
+| | **VPC Peering** | **PrivateLink** |
+| - | ---------------- | --------------- |
+| What's exposed | The **whole VPC** | **One specific service** behind an NLB |
+| CIDR overlap | Not allowed | **Allowed** (PrivateLink doesn't route between VPCs; just exposes the service) |
+| Granularity | Network-level | Service-level |
+| Direction | Bidirectional | **Consumer initiates only** (one-way) |
+| Cross-account | Yes | Yes |
+| Cross-region | Yes | **No** (need per-region endpoints — see below) |
+| Use for | Trusted internal VPC connectivity | Vendor-style "expose this one service to many consumers" |
+
+If you only need to share *one service* (not the whole network) and want CIDR-overlap immunity, PrivateLink wins. The trade-off: it's per-service plumbing, so dozens of services means dozens of endpoints.
+
+#### Acceptance vs allow-listing
+
+Provider controls who can connect via two mechanisms:
+
+| Mechanism | Detail |
+| --------- | ------ |
+| **Acceptance required** | Every new consumer connection sits in `Pending` until provider manually accepts. Good for low-volume / sensitive services |
+| **Allowed Principals list** | Pre-allowlist specific AWS account ARNs or IAM principals; their connections auto-accept. Good for many consumers |
+| **Both off** | Anyone with the endpoint service name can connect. Rarely used; mostly for internal trusted multi-account |
+
+SaaS providers typically pre-allowlist customer account ARNs after the customer signs a contract — that's how Snowflake / Datadog onboard you.
+
+#### Private DNS for endpoint services (custom domain names)
+
+By default, consumers reach the provider via a generated DNS name like:
+
+```
+vpce-abc-xyz.com.amazonaws.vpce.eu-west-1.vpce-svc-abc.amazonaws.com
+```
+
+That's ugly and brittle. Providers can configure a **custom Private DNS name** (e.g. `api.acme-saas.com`):
+
+- Provider proves they own `acme-saas.com` via a DNS TXT record
+- Consumer's VPC resolves `api.acme-saas.com` directly to the endpoint's private IP
+- Consumer's app code uses the same public-looking hostname as if calling the internet — no changes
+
+This is how Snowflake / Datadog give you a "regular" hostname for their service that resolves privately inside your VPC.
+
+#### Cross-region PrivateLink — there isn't really one
+
+PrivateLink is **regional**. An Interface Endpoint in `eu-west-1` can only connect to a service published in `eu-west-1`. There's no native cross-region PrivateLink. Workarounds:
+
+| Need | Workaround |
+| ---- | ---------- |
+| Same provider service in multiple regions | Provider deploys the service + NLB + endpoint service **in each region** consumers want |
+| One provider region serving global consumers | Consumers route via **internet**, or via DX/VPN back to provider region — defeats PrivateLink's point |
+| Cross-region private connectivity in general | **VPC Peering** or **Transit Gateway peering**, not PrivateLink |
+
+#### PrivateLink for the SaaS provider — how to be the seller, not the buyer
+
+Most exam framing is "consumer using PrivateLink to reach a vendor." Worth flipping that around to understand the **provider side** because it shows up too:
+
+```
+You run a SaaS service. To expose it via PrivateLink:
+
+1. Put your service behind an NLB in YOUR VPC
+2. Create an "Endpoint Service" pointing at the NLB
+3. Note the service name (vpce-svc-xxx)
+4. Either: allow-list your customers' AWS account ARNs
+       OR: require manual acceptance and approve each
+5. Optionally: configure a custom Private DNS name
+6. Share the service name + your custom DNS with customers
+7. Customer creates an Interface Endpoint in their VPC,
+   referencing your service name
+8. Their connection appears in your endpoint service console
+   → accept it (if manual)
+9. Customer traffic now reaches your NLB → your service
+```
+
+The provider model is what makes SaaS-on-AWS scale: each customer's VPC reaches your service privately without any of your or their CIDRs touching each other.
+
+#### Cost
+
+PrivateLink isn't free on either side:
+
+| Side | Cost |
+| ---- | ---- |
+| Consumer Interface Endpoint | **$0.01/hour per AZ** + **$0.01/GB processed** |
+| Provider Endpoint Service | Free (you pay normal NLB costs) |
+| Provider NLB | Standard NLB hourly + LCU-based pricing |
+| Cross-AZ traffic | Standard cross-AZ data transfer applies |
+
+For a SaaS vendor with many customers, the **consumer pays for their own endpoint**. Provider just pays for NLB.
+
+#### Limitations and gotchas
+
+| Limitation | Detail |
+| ---------- | ------ |
+| **NLB or GWLB only** | Can't expose an ALB directly via PrivateLink. If your service needs HTTP-level features, you may need NLB → ALB → service, or use **VPC Lattice** instead |
+| **Regional** | No cross-region; need per-region deployment |
+| **IPv6** | Supported in many configurations now, but check service-by-service |
+| **Connection scaling** | NLB scales horizontally; PrivateLink follows. But there are per-region soft limits on endpoints + connections |
+| **No transitive routing** | Consumer can reach the published service only — can't use the Interface Endpoint as a "back door" into the provider's broader VPC |
+| **DNS resolution scope** | Private DNS only works inside the consumer's VPC (or via Resolver from on-prem with extra config) |
+
+#### PrivateLink vs VPC Peering vs Transit Gateway vs VPC Lattice (the constant exam question)
+
+| Need | Use |
+| ---- | --- |
+| **Expose one service to many consumers (possibly overlapping CIDRs)** | **PrivateLink** |
+| **Two or three VPCs need full network-level connectivity** | **VPC Peering** |
+| **Many VPCs + hybrid + transitive routing in a hub-and-spoke** | **Transit Gateway** |
+| **Service-mesh-style HTTP-only east-west between many services** | **VPC Lattice** (newer; replaces some PrivateLink patterns for HTTP) |
+| **AWS service access from VPC (S3, KMS, etc.)** | **VPC Interface Endpoint** (which is PrivateLink under the hood) or Gateway Endpoint for S3/DynamoDB |
+
+#### Common anti-patterns
+
+- *"Use PrivateLink to share a whole VPC"* → wrong tool; use **VPC Peering** or **TGW**. PrivateLink is service-level only
+- *"PrivateLink with an ALB"* → not supported directly; need **NLB → ALB → service** chain, or use **VPC Lattice**
+- *"Cross-region PrivateLink"* → doesn't exist; deploy per-region endpoint services
+- *"Bi-directional service exposure via PrivateLink"* → it's one-way (consumer initiates). For bidirectional, each side publishes its own endpoint service
+- *"Forget about acceptance / allow-list"* → if both are off, anyone with the service name can connect. Always lock down
+
+#### Mental model
+
+> *PrivateLink = **"expose one service, not a whole network."** Provider puts an **NLB + Endpoint Service** in their VPC; consumer creates an **Interface Endpoint** in theirs. Traffic stays on the AWS backbone; CIDRs can overlap because no routing happens between VPCs. It's how AWS exposes its own services to your VPC (Interface VPC Endpoints ARE PrivateLink), and it's how SaaS vendors (Snowflake, Datadog) expose theirs to customers. **NLB only, regional only, one-way only** — those are the three constraints.*
+
+#### Exam triggers
+
+- *"Expose my service to many customer VPCs without peering"* → **PrivateLink** (Endpoint Service + customers create Interface Endpoints)
+- *"Connect to a SaaS like Snowflake / Datadog privately"* → **PrivateLink** (consumer creates Interface Endpoint to the provider's service)
+- *"Two VPCs with overlapping CIDRs need to share one service"* → **PrivateLink** (peering won't work due to overlap)
+- *"Expose service to multiple AWS accounts with per-account control"* → **PrivateLink + Allowed Principals allow-list**
+- *"Custom DNS name for my exposed service"* → **PrivateLink Private DNS name** (verify domain via TXT record)
+- *"PrivateLink with an ALB"* → not directly; use **NLB → ALB → service** or **VPC Lattice**
+- *"Cross-region PrivateLink"* → **doesn't exist**; deploy per-region
+- *"Why is AWS Interface VPC Endpoint similar to vendor PrivateLink?"* → because it IS PrivateLink under the hood
 
 ### DNS in a VPC
 
@@ -2162,6 +2659,86 @@ Do you have an on-prem data centre that needs to integrate with AWS?
 
 **Mental model:** *Direct Connect isn't really about "fast network" — it's about **predictable cost** (per-GB egress vs internet), **predictable performance** (no jitter), and **compliance documentation** (auditor wants a private circuit on paper). Big enough on-prem footprint + regulated enough to need private paths + moving enough data that egress savings matter → DX. Startups and pure-cloud orgs don't need it.*
 
+#### Is Direct Connect a Physical Appliance? (No)
+
+A common misconception: people hear "private line" or "dedicated circuit" and assume AWS ships hardware. **They don't.** There's no AWS Direct Connect appliance, no rack, no box on your site.
+
+**What DX physically is:** a **dedicated network cross-connect** in a specific colocation facility called a **Direct Connect location** (e.g. Equinix, CoreSite, Digital Realty). AWS has equipment present in ~100+ of these facilities globally. The "physical" part = a **fibre cable** running inside the colo between AWS's router and your (or your partner's) router.
+
+**The architecture:**
+
+```
+Your office/data centre                  DX Location (e.g. Equinix LD8)
+─────────────────────                    ──────────────────────────────
+
+Your router/firewall                     ┌──────────┐    ┌─────────────┐
+that knows about AWS  ────MPLS/leased──▶ │  Your    │───▶│  AWS router │
+(at YOUR site)             line / partner│  router  │    │  (AWS's     │
+                                          │  or      │    │   cage)     │
+                                          │  partner │    │             │
+                                          │  router  │    └─────────────┘
+                                          └──────────┘    cross-connect
+                                                         (a fibre cable in
+                                                          the same building)
+```
+
+- **At your site:** your own router that you already owned (Cisco, Juniper, Palo Alto, etc.). AWS doesn't supply or specify it
+- **In the DX location:** either *your* router (if your company has presence there) or a *partner's* router (much more common — AT&T, Verizon, Megaport, BT, Lumen)
+- **The cross-connect:** a literal fibre cable that the colo facility runs between your/partner's cage and AWS's cage. Ordered as a "cross-connect" ticket with the colo provider
+
+**Three connection types — who installs what:**
+
+| Type | What it is | Customer install burden |
+| ---- | ---------- | ----------------------- |
+| **Dedicated Connection** | A whole AWS port (1G / 10G / 100G) reserved for you | Need router presence in a DX location (or via partner); order cross-connect to AWS's cage |
+| **Hosted Connection** | A slice (50 Mbps – 10 Gbps) of a partner's existing port | Partner handles AWS-facing side; you just need connectivity to the partner |
+| **Hosted VIF** | Just a Virtual Interface on someone else's connection | You configure VIF settings; partner handles physical layer |
+
+Most companies use **Hosted Connections** — they don't have presence in a DX colo themselves, so the partner does the physical bit.
+
+**Contrast with AWS Outposts (this IS shipped hardware):**
+
+| | **Direct Connect** | **AWS Outposts** |
+| - | ------------------ | ----------------- |
+| Physical AWS hardware at your site? | ❌ No | ✅ Yes — AWS ships a rack |
+| Where AWS hardware lives | In a colo facility | **In your data centre** |
+| What you're buying | A private network path to AWS | A piece of AWS *running on your premises* |
+| Setup | Order DX, cross-connect, BGP | AWS installs the rack physically |
+
+**Outposts** = AWS hardware on-prem. **Direct Connect** = a private network path to AWS via a colo.
+
+**Why setup takes weeks-to-months:**
+
+1. **Order from AWS** — pick DX location + port speed (minutes)
+2. **Get Letter of Authorization (LOA-CFA)** from AWS — tells colo which cage to cross-connect to
+3. **Order the cross-connect** — colo schedules engineer to physically run fibre (days to weeks)
+4. **Set up your end** — your router or partner provisions their side (weeks if using a partner who needs to lay leased lines / MPLS / fibre to your site)
+5. **Configure BGP + VIFs** — the AWS-side configuration (hours)
+
+The AWS side is fast; the **physical fibre work + last-mile networking** is what takes time.
+
+**What the customer actually needs:**
+
+| Requirement | Detail |
+| ----------- | ------ |
+| **Router speaking BGP** | Cisco / Juniper / Arista / whatever you already own |
+| **Single-mode fibre** of the right type | 1000BASE-LX, 10GBASE-LR, 100GBASE-LR4 etc. — for the cross-connect |
+| **Path to a DX location** | Either presence there, or via a partner |
+| **BGP ASN** | Your own AS number (public or private) |
+| **Patience** | 4–12 weeks (dedicated); 1–3 weeks (hosted) |
+
+**Mental model:**
+
+> *Direct Connect isn't a box AWS ships — it's a **fibre cable in a colocation facility**. AWS has equipment in ~100+ colos globally; you (or your partner) need to be in one too. Your side uses your **own existing routing hardware** — AWS doesn't supply or specify it. **Compare with AWS Outposts: that's the service where AWS does ship a physical rack to your DC.***
+
+**Exam triggers:**
+
+- *"Does Direct Connect require AWS hardware on-prem?"* → **No** — DX is a cross-connect in a colo. **Outposts** is the AWS hardware-on-prem service
+- *"Customer doesn't have presence in any DX location"* → use a **hosted connection** via an AWS Partner (Megaport, AT&T, Verizon, etc.)
+- *"Reduce DX setup time"* → **Hosted Connection** via existing partner (days/weeks) vs **Dedicated Connection** (weeks/months)
+- *"Customer's own router for DX"* → yes, customer-owned and -managed — anything supporting BGP at the required speed
+- *"What is a Direct Connect location?"* → AWS-equipped **colocation facility** (Equinix, CoreSite, etc.) — not an AWS data centre, not at your site
+
 #### Direct Connect Deeper Bits
 
 **Virtual Interfaces (VIFs)** — the logical channel on top of the physical DX line. Three types, each tested:
@@ -2305,6 +2882,35 @@ Even for "just one VPC today" scenarios, **TGW is often chosen** for future-proo
 
 **The mental model:** *Site-to-Site VPN = the encrypted IPsec service. **VGW vs TGW** = the actual choice on the AWS side. VGW = "this one VPC only." TGW = "this VPC and any others I want, plus future hybrid connectivity." Customer Gateway = AWS's name for your on-prem router.*
 
+**The setup flow (where Customer Gateway fits):**
+
+```
+1. You have an on-prem VPN device with public IP 203.0.113.10
+       ↓
+2. In AWS: Create Customer Gateway resource
+   → enter IP 203.0.113.10 + BGP ASN
+   → AWS creates cgw-abc123 (just metadata about your device)
+       ↓
+3. Create Site-to-Site VPN Connection
+   → choose the cgw-abc123 + your VGW or TGW
+   → AWS provisions 2 tunnels (dual-tunnel HA by default)
+       ↓
+4. Download the AWS-generated configuration file
+   → tailored to your device vendor (Cisco, Juniper, Palo Alto, etc.)
+   → contains: IPsec parameters, BGP config, pre-shared keys
+       ↓
+5. Apply the config to YOUR device
+   → your network team SSHes in and pastes / loads the config
+       ↓
+6. Your device initiates the IPsec tunnels to AWS's endpoints
+   → tunnels come up
+   → BGP peering establishes if using dynamic routing
+       ↓
+7. Traffic flows over the encrypted tunnels
+```
+
+The **CGW resource** (`cgw-abc123`) is just AWS's metadata record. The **actual VPN device** (Cisco / Juniper / pfSense / strongSwan / etc.) is what your network team installs and configures — AWS doesn't supply it. AWS provides device-specific config files for ~30+ common vendors that you paste into your router.
+
 ### AWS Client VPN
 
 **Anchored as workforce VPN: laptops → AWS.** Site-to-Site VPN connects entire networks; **Client VPN connects individual users**. The exam constantly tests the distinction.
@@ -2434,6 +3040,100 @@ Traffic flows: **app VPC → GWLBE → GENEVE-tunnelled to Security VPC → thro
 - *"Transparent inline traffic inspection without changing source/dest IPs"* → **GWLB** (uses GENEVE)
 - *"Centralised security appliance inspection across many VPCs"* → **GWLB in security VPC + GWLBEs in app VPCs**
 - *"My existing Palo Alto / Check Point / Fortinet team wants to run their cloud appliance in AWS"* → **GWLB + vendor's AMI**
+
+### Networking Cost Anti-patterns and Optimisation
+
+Cost-optimisation questions are increasingly common on the SAA exam — and AWS networking is one of the biggest "where did this bill come from?" sources for real teams. Individual cost gotchas are scattered through earlier sections (NAT 55k limit, Flow Logs cost, Interface Endpoint break-even); this subsection consolidates them with the underlying patterns.
+
+#### The seven cost categories that bite hardest
+
+| # | Cost | Rate | Where it kills you |
+| - | ---- | ---- | ------------------ |
+| 1 | **Cross-AZ data transfer** | $0.01/GB out + $0.01/GB in = **$0.02/GB total** | App in AZ-a hammering RDS / ElastiCache / dependencies in AZ-b. Symmetric — both ends bill |
+| 2 | **NAT Gateway data processing** | **$0.045/GB processed** (separate from data transfer) | Container image pulls from Docker Hub, S3 traffic that should be using a Gateway Endpoint, package manager updates across a fleet |
+| 3 | **Internet egress** | **$0.09/GB** then tiered: $0.085 (10-50 TB), $0.07 (50-150 TB), $0.05 (150 TB+) | Video / downloads / large API responses straight to internet without CloudFront |
+| 4 | **Transit Gateway data processing** | **$0.02/GB processed** | Every byte through a TGW pays; centralised egress pays TGW + then NAT processing |
+| 5 | **VPC Interface Endpoint** | **$0.01/hour per AZ + $0.01/GB processed** | "Just-in-case" endpoints across many AZs in many regions stacks up |
+| 6 | **Inter-region data transfer** | **~$0.02/GB** (varies by region pair) | Cross-region replication of "everything just in case"; cross-region service calls |
+| 7 | **Load Balancer LCU billing** | LCU-hours based on highest of: new connections, active connections, processed bytes, rule evaluations | High-traffic ALBs with complex rule sets |
+
+#### The optimisation principle: co-locate services
+
+The single biggest cost lever in AWS networking: **keep related services in the same AZ / same region**. The cost of NOT co-locating compounds across every request.
+
+| Co-location level | What it saves | When to use |
+| ----------------- | ------------- | ----------- |
+| **Same AZ** | Zero AZ-transfer cost ($0.02/GB), lowest latency (~0.1ms) | Tightly-coupled services: app + RDS reads, app + ElastiCache, app + DynamoDB |
+| **Same region** | Zero inter-region transfer ($0.02/GB), low latency (single-digit ms) | Most service-to-service calls |
+| **Cross-region** | Adds inter-region transfer + 50-200ms latency | Only for genuine DR, compliance geo-distribution, or global apps |
+
+**Specific co-location patterns that save real money:**
+
+| Pattern | Why it wins |
+| ------- | ----------- |
+| **S3 bucket in same region as compute, accessed via Gateway Endpoint** | S3 to EC2 in same region = **free**. Gateway Endpoint avoids NAT charges |
+| **RDS / ElastiCache in same region as app tier** | No inter-region transfer; same-AZ replicas avoid AZ-transfer |
+| **EKS topology-aware routing** (`traffic policy: Local`, `topologyKeys`) | Keeps pod-to-pod traffic within the same AZ |
+| **CloudFront in front of internet-facing services** | First 1 TB/month free + lower per-GB rates than direct internet egress |
+| **Lambda + DynamoDB in same region** | Cross-region DynamoDB calls pay inter-region transfer; same-region is free |
+| **Direct Connect for high-volume on-prem traffic** | ~$0.02/GB vs $0.09/GB internet egress |
+| **Gateway Endpoints for S3 + DynamoDB** | Free — bypass NAT entirely. Always enable if you use these services |
+| **VPC Sharing via RAM for shared NAT/endpoints** | Many accounts share owner's NAT Gateway instead of paying for one each |
+
+#### The full anti-pattern catalogue
+
+| Anti-pattern | Cost impact | Fix |
+| ------------ | ----------- | --- |
+| **Hairpinning** — traffic exits VPC, returns via internet | Pays egress AND ingress, both with NAT processing | Use PrivateLink / VPC Endpoints to keep traffic on the AWS backbone |
+| **Docker image pulls from Docker Hub via NAT** | Massive NAT processing charges (gigabytes per pull × many nodes) | Use **ECR** (regional, no NAT charge with VPC endpoint) |
+| **Multi-AZ everything without AZ affinity** | 2× the data transfer of single-AZ topology | EKS topology-aware routing; co-locate app + dependencies in same AZ where possible |
+| **Direct internet egress for high-volume APIs** | $0.09/GB at low volumes; CloudFront would be cheaper | **CloudFront in front** — free first 1 TB + lower per-GB |
+| **Forgetting Gateway Endpoints for S3/DynamoDB** | NAT processing fees on every call | Always enable — Gateway Endpoints are **free** |
+| **TGW for two VPCs that could just peer** | TGW $0.02/GB processing + attachment hourly | **VPC Peering** — free for intra-region |
+| **Cross-region replication of "everything just in case"** | Inter-region transfer at scale | Replicate only what genuinely needs DR; lifecycle to cheaper storage classes |
+| **Interface Endpoints in every VPC** | $7/month/AZ stacks fast across many VPCs | **VPC Sharing** with shared endpoints, or only enable when traffic justifies it |
+| **NAT Gateway per VPC across 30 accounts** | 30 × $33/AZ × 3 AZs = ~$3,000/month idle | **Centralised egress VPC** (covered in NAT section) — 1 set of NATs shared via TGW |
+| **EKS pods using public Docker Hub for base images** | NAT charges + Docker Hub rate limits | **ECR pull-through cache** + ECR endpoint |
+| **App tier in AZ-a calling RDS primary in AZ-b** | $0.02/GB per query (adds up at high QPS) | Use **read replicas in same AZ** for read traffic; primary can stay in another AZ for Multi-AZ HA |
+| **ALB with cross-zone load balancing forcing AZ-spread** | Even traffic distribution wins, but AZ-transfer cost can be brutal at high QPS | Consider **disabling cross-zone LB** for very high traffic apps — accept uneven distribution |
+| **VPN over the public internet for high-volume hybrid** | Pays both egress + sometimes ingress | **Direct Connect** — ~$0.02/GB vs $0.09/GB |
+| **CloudWatch Logs for everything at high volume** | $0.50/GB ingested + retention | Ship Flow Logs / app logs to **S3 Parquet + Athena** — ~10× cheaper at scale |
+
+#### Real-world example: the "bill spike" pattern
+
+```
+Engineer: "Why did our AWS bill jump $5k this month?"
+       ↓
+Forensics:
+  1. Check Cost Explorer → "data transfer" doubled
+  2. Drill into DT-Regional-Bytes → cross-AZ traffic up 4×
+  3. Trace it: a new EKS deployment spread pods across all AZs
+     (default behaviour) talking to a cross-AZ Postgres replica
+       ↓
+Fix:
+  - Add topology-aware routing in EKS service
+  - Move read traffic to local-AZ Postgres replica
+  - Cost drops back
+```
+
+This pattern (innocent-looking change → AZ spread → bill spike) is one of the most common surprise-bill stories.
+
+#### Exam triggers (cost optimisation)
+
+- *"Reduce NAT Gateway costs across 30 VPCs"* → **Centralised egress VPC with TGW** (covered in NAT section)
+- *"Reduce data transfer costs from EKS pods to dependencies"* → **AZ affinity / topology-aware routing**
+- *"S3 traffic from VPC is racking up NAT processing fees"* → **S3 Gateway Endpoint** (free)
+- *"Internet egress costs are high for our public API"* → **CloudFront in front** (cheaper per-GB tiers)
+- *"Inter-region traffic costs are high"* → **co-locate services** in the same region where possible; use **CloudFront** for cross-region delivery
+- *"Container image pulls from Docker Hub are expensive"* → **ECR + VPC endpoint for ECR**
+- *"Cross-AZ database traffic is expensive"* → **read replicas in same AZ as compute**; primary in another AZ for HA
+- *"Hairpinning — traffic exits AWS and comes back"* → **PrivateLink / VPC Endpoints** to keep on AWS backbone
+- *"High-volume hybrid traffic costs"* → **Direct Connect** instead of VPN / internet
+- *"VPN tunnel between two VPCs costs more than expected"* → **VPC Peering** (free intra-region) instead of VPN
+
+#### Mental model
+
+> *AWS networking costs follow one principle: **the further the data travels, the more you pay**. Same AZ = essentially free. Cross-AZ = $0.02/GB. Cross-region = $0.02/GB + latency. Internet egress = $0.09/GB. The optimisation playbook is always **co-locate, cache, use VPC Endpoints / CloudFront**. Hairpinning is just the most-obvious instance of "traffic taking a longer path than it should." Watch your Cost Explorer "Data Transfer" line — any sudden jump is almost always a topology change that broke AZ/region affinity.*
 
 ### VPC Anti-patterns (exam wrong answers)
 
@@ -6453,6 +7153,93 @@ Two services covered together because they're complementary and often confused. 
 | **Domain list rules** | Block / allow based on **HTTP Host header** or **TLS SNI** (e.g. *"block all egress except `*.amazonaws.com`"*) |
 | **Suricata rules** | Open-source IDS/IPS rule format — gives you access to rich community + commercial rule sets (Proofpoint ET, etc.) |
 
+#### Stateful Rule Evaluation: Strict vs Default Order (misleading naming)
+
+This is the most-tested Network Firewall mechanic — and AWS's naming is **actively misleading**. There are two stateful rule evaluation modes:
+
+| Setting | What it actually does |
+| ------- | --------------------- |
+| **Default order** (historical default) | Evaluates rules **grouped by action type**, not by your specified order. **Pass rules first**, then Drop, then Reject, then Alert. NOT first-match-wins |
+| **Strict order** (added 2021, recommended for new policies) | Evaluates rules **in the order you wrote them**, top-down. **First match wins.** The behaviour you'd expect a "default" to have |
+
+The intuition *"start at the top, go through each rule until a match"* is **strict order**. The thing called "default" is the opposite.
+
+**Why "default" works the way it does — the Suricata background:**
+
+Network Firewall is built on **Suricata**, the open-source IDS/IPS engine. Suricata's traditional behaviour evaluates by **action priority** — Pass > Drop > Alert. The logic:
+
+> *"Pass rules represent explicit allow-listing. If an admin wrote a Pass rule, they really meant to allow that thing — so we honour it before considering any Drop rule."*
+
+That's the Suricata convention. AWS preserved it as the default for compatibility with imported rule sets (Proofpoint ET, vendor IDS feeds, etc.) — but the name *"default"* surprises everyone coming from traditional firewall thinking.
+
+**Worked example showing the opposite outcomes:**
+
+Same two rules, same packet → completely different outcomes:
+
+```
+Rules (in this order):
+  Rule 1: Drop all traffic from 1.2.3.4
+  Rule 2: Pass HTTPS (port 443) from anywhere
+
+A packet arrives:  source=1.2.3.4, dst port=443
+```
+
+| Mode | Evaluation | Outcome |
+| ---- | ---------- | ------- |
+| **Default order** | "Pass rules first": Rule 2 matches → **PASS** (1.2.3.4 gets through despite Drop rule) | ❌ The attacker's traffic is allowed |
+| **Strict order** | Top-down: Rule 1 matches first → **DROP**; Rule 2 never evaluated | ✅ Attacker dropped |
+
+The same ruleset — opposite security outcome.
+
+**The action-priority order in default mode:**
+
+```
+1. Pass rules    (highest priority — wins if any match)
+2. Drop rules    (next)
+3. Reject rules  (next)
+4. Alert rules   (lowest — just logs, doesn't affect packet)
+
+All rules evaluated; the action with highest priority wins.
+Order between rules of the same action type doesn't matter.
+```
+
+In default mode you're essentially writing **action-based policy**: *"these things are always allowed (Pass), these things are always denied (Drop), these things just generate alerts."*
+
+**Strict order — traditional firewall behaviour:**
+
+```
+Top-down evaluation, first match wins.
+Stop processing once a match is found.
+
+Order rules carefully:
+  - More-specific rules at the top
+  - Catch-all defaults at the bottom
+```
+
+This matches every traditional firewall (Cisco, iptables, NACL). What most engineers expect.
+
+**Configuration scope and immutability:**
+
+- The order setting is **per stateful rule group**, not per firewall
+- **You can't change it after creation** — you'd recreate the rule group
+- Be deliberate at creation time
+
+**Recommendation:**
+
+- **New policies → Strict order.** Top-down, first-match-wins, predictable
+- **Default order** only when: importing existing Suricata rulesets that assume action-priority, or explicitly want "Pass beats Drop" allow-list-precedence policies
+
+**Mental model:**
+
+> *"Default" order in Network Firewall isn't top-down — it's **action-priority** (Pass > Drop > Reject > Alert). "Strict" order is what you'd normally expect a default to do: top-down, first-match-wins. The naming is genuinely misleading; it exists for Suricata-import compatibility. AWS recommends Strict for new policies.*
+
+**Exam triggers:**
+
+- *"Why did my Drop rule not block this traffic despite being listed first?"* → **Default order** evaluates Pass rules first regardless of position; use **Strict order** for top-down
+- *"How should I order rules in a new Network Firewall policy?"* → **Strict order**, more-specific first, catch-all at the bottom
+- *"Importing Suricata rules from an external IDS vendor"* → **Default order** matches Suricata's traditional action-priority model
+- *"Firewall behaviour changed unexpectedly after a Suricata Pass rule was added"* → Pass rule now winning over an existing Drop rule under default order — switch to **Strict order**
+
 #### Where Network Firewall Sits (the architecture pattern)
 
 ```
@@ -6485,6 +7272,117 @@ Two services covered together because they're complementary and often confused. 
 - **IDS/IPS via Suricata rules** — signature-based detection of known exploits
 - **DNS filtering** — block resolution of malicious / unapproved domains
 - **Compliance** — required by many regulated frameworks for "deep packet inspection"
+- **Deep inspection of encrypted traffic** — requires TLS Inspection (below)
+
+#### TLS Inspection — Network Firewall as a Burp Suite for VPC traffic
+
+**Anchored against Burp Suite / Charles Proxy / mitmproxy / ZAP.** Same architecture, same MITM pattern: intercept the TLS handshake, generate a fake cert signed by *your* CA, decrypt traffic in transit, inspect the plaintext, re-encrypt to the real destination. The browser/client must trust your CA — same trust-store dance you do when setting up Burp to test an iOS app.
+
+This is a 2023+ feature that fundamentally changes what Network Firewall can inspect.
+
+**The problem TLS solves and what it costs the firewall:**
+
+Modern traffic is overwhelmingly HTTPS. Without TLS inspection, Network Firewall sees:
+
+- Source / destination IP and port
+- TLS handshake metadata: **SNI** (Server Name Indication — the domain in the Client Hello)
+- TCP flow size and timing
+- That's it
+
+It cannot see HTTP request paths, methods, headers, bodies, file downloads, or exfiltrated data. You can block by domain (via SNI) but can't apply Suricata's HTTP-aware rules to the encrypted payload.
+
+**The architecture (identical to Burp / Charles / mitmproxy):**
+
+```
+1. EC2 in VPC initiates HTTPS to api.external.com
+       ↓
+2. Network Firewall intercepts the TLS handshake
+       ↓
+3. NFW generates a cert for "api.external.com" on the fly,
+   signed by YOUR Certificate Authority
+   (must already be in the EC2's trust store —
+    same prerequisite as installing Burp's CA in your browser)
+       ↓
+4. NFW completes TLS handshake with the EC2 (using the fake cert)
+   → has session keys for the EC2-side TLS session
+       ↓
+5. NFW separately initiates ITS OWN TLS to api.external.com
+   → has session keys for the destination-side TLS session
+       ↓
+6. NFW decrypts traffic from EC2 — sees plaintext HTTP
+       ↓
+7. Suricata rules evaluate the plaintext
+       ↓
+8. If allowed: re-encrypt with destination-side session keys,
+   forward to api.external.com
+   If blocked: drop / reset / alert
+       ↓
+9. Response path: decrypt destination → Suricata → re-encrypt → forward to EC2
+```
+
+The EC2 thinks it's talking directly to `api.external.com`. The destination thinks it's talking directly to the EC2. Network Firewall is in the middle decrypting both directions. **This is exactly what Burp Suite does in a security testing setup — same trust model, same cert dance, same MITM mechanics — just sitting in a VPC data path instead of on the security tester's laptop.**
+
+**Setup ingredients:**
+
+| Ingredient | What |
+| ---------- | ---- |
+| **TLS Inspection Configuration** | References certificate(s) Network Firewall uses to sign on-the-fly MITM certs |
+| **Certificate source** | **ACM Private CA** (most common) or imported cert |
+| **CA distributed to client trust stores** | Every instance whose traffic will be inspected must trust the CA. Same as installing Burp's CA in your browser. Without it, clients see *"untrusted certificate"* errors and refuse to connect. Distribute via Systems Manager / golden AMI / config management |
+| **Policy reference** | TLS Inspection Configuration attached to the firewall policy |
+| **Inspection scope** | Choose which flows to inspect via rules with SNI / 5-tuple matching — don't have to inspect everything |
+
+**What TLS inspection unlocks:**
+
+| Use case | Why it needs TLS inspection |
+| -------- | ---------------------------- |
+| **Malware detection in encrypted downloads** | Suricata IDS rules scan file contents for known signatures only when decrypted |
+| **Data exfiltration prevention** | Detect sensitive patterns (credit cards, internal hostnames, secret tokens) being uploaded via HTTPS |
+| **Block specific URLs/paths inside HTTPS** | Allow `github.com` but block `github.com/some-restricted-org/*` — can't do this without seeing inside the TLS payload |
+| **Apply HTTP-specific Suricata rules** | Most Suricata signatures target HTTP methods, headers, payloads. Useless on encrypted traffic |
+| **Compliance** | PCI-DSS / HIPAA sometimes require inspection of encrypted traffic |
+| **SOC visibility** | Decrypted traffic produces meaningful alerts; encrypted traffic produces "TLS to unknown destination" |
+
+**Limitations and gotchas (exam favourites):**
+
+| Limitation | What breaks |
+| ---------- | ----------- |
+| **Certificate pinning** | Mobile apps, IoT devices, banking apps pin the original cert. Your MITM cert is rejected — connection fails. **Whitelist these domains** from inspection. Same problem Burp users hit when testing pinned mobile apps |
+| **Mutual TLS (mTLS)** | Client cert presented to server — breaks inspection handshake. Often needs bypass |
+| **QUIC / HTTP3** | UDP + embedded TLS — different model. NFW can drop QUIC to force fallback to TCP TLS where it can inspect, but can't fully inspect QUIC itself |
+| **Encrypted SNI / ECH** | Newer TLS extension encrypts the SNI itself — prevents SNI-based decisions |
+| **Privacy / legal** | Decrypting employee traffic to personal banking / healthcare / email raises HR + legal concerns. Always whitelist |
+| **Performance** | TLS termination + re-termination = CPU + latency overhead |
+| **Cost** | Inspection adds processing charges on top of standard Network Firewall fees |
+| **Cert distribution** | Every client needs your CA in its trust store — easy for managed AMIs, hard for third-party AMIs and IoT |
+
+**Network Firewall TLS inspection vs WAF:**
+
+| | **Network Firewall TLS Inspection** | **AWS WAF** |
+| - | ----------------------------------- | ----------- |
+| Where | Within the VPC data path | At CloudFront / ALB / API Gateway |
+| TLS handling | **Decrypts** in transit (MITM) | TLS already terminated by ALB / CF; WAF sees plaintext for free |
+| What it inspects | All TLS flows you choose to inspect — any destination | HTTP traffic terminating at your AWS resources |
+| Setup | Need ACM PCA + CA in trust stores | Just attach Web ACL — no cert dance |
+| Use for | **Egress filtering** of encrypted traffic to third parties | **Ingress filtering** of public-facing apps |
+| Direction | East-west and north-south egress | Inbound to AWS-hosted services |
+
+**Decision rule:** *"Filter inbound to my app at CloudFront / ALB"* → **WAF** (no TLS inspection setup; AWS terminates TLS). *"Filter outbound from VPC to external HTTPS"* → **Network Firewall TLS Inspection** (you must terminate + re-encrypt).
+
+**Mental model:**
+
+> *Network Firewall TLS Inspection = **Burp Suite for VPC traffic**. Same MITM architecture, same fake-cert-from-your-CA mechanic, same trust-store distribution problem. Without it, NFW is half-blind on modern traffic — sees SNI + metadata but not content. With it, NFW decrypts → Suricata-inspects → re-encrypts → forwards. Use it for **egress malware/exfiltration detection** and applying HTTP-aware Suricata rules to encrypted egress traffic. WAF doesn't need this dance because it inspects at points where AWS already terminated TLS.*
+
+**Exam triggers:**
+
+- *"Inspect content of TLS-encrypted traffic egressing from VPC"* → **Network Firewall TLS Inspection**
+- *"Block specific URLs / paths inside HTTPS traffic from a VPC"* → **Network Firewall TLS Inspection** (without it, you can only block by domain via SNI)
+- *"Detect malware in encrypted downloads"* → **Network Firewall TLS Inspection** + Suricata signatures
+- *"Why does our mobile app break after enabling TLS inspection?"* → **Certificate pinning** — whitelist that domain from inspection
+- *"Bypass TLS inspection for banking / healthcare domains"* → **Scope inspection rules** to exclude those SNIs (privacy / legal compliance)
+- *"WAF vs Network Firewall for inspecting encrypted HTTPS"* → **WAF** for inbound to your AWS-hosted apps (TLS already terminated by ALB/CF); **Network Firewall TLS Inspection** for outbound to third parties
+- *"Decrypted traffic visibility for our SOC tooling"* → **Network Firewall TLS Inspection + alert logging to Firehose**
+- *"How does Network Firewall act on encrypted traffic without inspection?"* → SNI-based domain list rules + 5-tuple matching (no payload visibility)
 
 #### Pricing (the gotcha)
 
