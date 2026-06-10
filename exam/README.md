@@ -1964,6 +1964,7 @@ SaaS providers typically pre-allowlist customer account ARNs after the customer 
 #### Private DNS for endpoint services (custom domain names)
 
 By default, consumers reach the provider via a generated DNS name like:
+
 ```
 vpce-abc-xyz.com.amazonaws.vpce.eu-west-1.vpce-svc-abc.amazonaws.com
 ```
