@@ -859,6 +859,97 @@ The same logic applies to **multi-VPC** designs — every VPC you might ever pee
 - *"172.x is a private address?"* → only **172.16.x – 172.31.x** is; the rest of 172.x is public
 - *"Can I change a VPC's primary CIDR after creation?"* → **No** (you can only add secondary CIDRs). Choose carefully
 
+#### Subnet Sizing — the 5-IP Reservation and the Off-by-One Trap
+
+Sizing questions ("smallest subnet for N instances") have a classic trap: AWS reserves **5 IPs per subnet**, not the standard 2. If you forget, your `/27` (32 total) gives you **27 usable**, not 30.
+
+**What each of the 5 reserved IPs actually does** (using `10.0.1.0/24` as the example):
+
+| Address | Purpose | Why reserved |
+| ------- | ------- | ------------ |
+| **`10.0.1.0`** | **Network address** | Standard IP networking convention — identifies the subnet itself |
+| **`10.0.1.1`** | **VPC router** | The implicit default gateway for the subnet. Every packet leaving the subnet routes via this address. Not a physical host — a virtualised AWS service |
+| **`10.0.1.2`** | **Amazon-provided DNS** (Route 53 Resolver) | The DNS server entries in EC2's `/etc/resolv.conf` point here. Forwards to the VPC-level resolver at `VPC_CIDR_base + 2`. Disabled if you turn off `enableDnsSupport` |
+| **`10.0.1.3`** | **Reserved for future use** by AWS | The mysterious one. Not publicly documented — AWS preserves it across every subnet for future networking features |
+| **`10.0.1.255`** | **Broadcast address** | Standard IP networking convention. AWS doesn't actually use broadcast in VPCs, but reserves it for compatibility |
+
+The first two and last one are standard networking. The middle three (`.1`, `.2`, `.3`) are AWS-specific — that's where the off-by-one comes from compared to traditional subnetting (which reserves only `.0` and `.last`).
+
+**Worked example: "Subnet for 28 EC2 instances, smallest CIDR?"**
+
+```
+Need: 28 usable IPs
+
+/27 attempt:
+  32 total IPs (2^5)
+  - 5 AWS-reserved
+  = 27 USABLE
+  → 27 < 28, NOT ENOUGH ❌
+
+/26 attempt:
+  64 total IPs (2^6)
+  - 5 AWS-reserved
+  = 59 USABLE
+  → 59 ≥ 28, FITS ✅
+
+Answer: /26 is the minimum.
+```
+
+The natural instinct (*"28 < 32, so `/27` fits"*) is wrong by exactly 1 IP because of the extra 3 AWS reservations.
+
+**The sizing cheat-table — memorise the common ones:**
+
+| Mask | Total IPs | Usable (AWS) | Standard usable (for comparison) | Common use |
+| ---- | --------- | ------------ | --------------------------------- | ---------- |
+| `/28` | 16 | **11** | 14 | Smallest AWS allows. Bastion / single-service / VPC endpoints |
+| `/27` | 32 | **27** | 30 | Small management subnets |
+| `/26` | 64 | **59** | 62 | Small app tiers |
+| `/25` | 128 | **123** | 126 | Medium app tiers |
+| `/24` | 256 | **251** | 254 | Standard subnet size (most common) |
+| `/23` | 512 | **507** | 510 | Large workload subnets |
+| `/22` | 1024 | **1019** | 1022 | Big app fleets |
+| `/20` | 4096 | **4091** | 4094 | Heavy compute / EKS node subnets |
+| `/16` | 65,536 | **65,531** | 65,534 | Maximum VPC and subnet size |
+
+**The formula:**
+
+```
+AWS usable = 2^(32 - mask) - 5
+```
+
+vs the standard:
+
+```
+General networking usable = 2^(32 - mask) - 2
+```
+
+The 3-IP difference is the trap.
+
+**The four common usable counts worth memorising:**
+
+- `/28` → **11**
+- `/27` → **27**
+- `/26` → **59**
+- `/24` → **251**
+
+If you can recall these without thinking, sizing questions become instant.
+
+**IPv6 nuance:** AWS reserves **4 addresses** (not 5) in IPv6 subnets — first, +1 (router), +2 (DNS), +3 (future). No broadcast in IPv6 (multicast instead), so the last address isn't reserved.
+
+**Mental model:**
+
+> *AWS reserves **3 extra IPs** beyond standard networking conventions because subnet routing and DNS are virtualised services that occupy IPs in your subnet (`.1` = router, `.2` = DNS, `.3` = future infrastructure). Combined with the standard `.0` (network) and `.last` (broadcast), that's **5 reserved per IPv4 subnet**. Always subtract 5, not 2, when sizing — that's where the `/27` = 27 (not 30) off-by-one trap comes from.*
+
+**Exam triggers (sizing-specific):**
+
+- *"Subnet for N EC2 instances — smallest CIDR?"* → calculate `2^(32-mask) - 5 ≥ N`
+- *"Why does my `/28` only have 11 usable IPs, not 14?"* → AWS reserves 5, not 2
+- *"Smallest subnet AWS allows?"* → **`/28`** (16 total, 11 usable)
+- *"Largest subnet AWS allows?"* → **`/16`** (~65k total, 65,531 usable) — same as max VPC
+- *"My `/27` only fits 27 instances, not 30 — why?"* → AWS-reserved `.0`, `.1` (router), `.2` (DNS), `.3` (future), `.last` (broadcast) = 5 reservations
+- *"What does the `.2` address in my subnet do?"* → Amazon-provided DNS resolver
+- *"Can I use the `.1` address for an instance?"* → No — VPC router
+
 ### Subnets
 
 A subnet is a slice of the VPC's CIDR, **scoped to one Availability Zone**.
