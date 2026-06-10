@@ -2737,6 +2737,35 @@ Even for "just one VPC today" scenarios, **TGW is often chosen** for future-proo
 
 **The mental model:** *Site-to-Site VPN = the encrypted IPsec service. **VGW vs TGW** = the actual choice on the AWS side. VGW = "this one VPC only." TGW = "this VPC and any others I want, plus future hybrid connectivity." Customer Gateway = AWS's name for your on-prem router.*
 
+**The setup flow (where Customer Gateway fits):**
+
+```
+1. You have an on-prem VPN device with public IP 203.0.113.10
+       ↓
+2. In AWS: Create Customer Gateway resource
+   → enter IP 203.0.113.10 + BGP ASN
+   → AWS creates cgw-abc123 (just metadata about your device)
+       ↓
+3. Create Site-to-Site VPN Connection
+   → choose the cgw-abc123 + your VGW or TGW
+   → AWS provisions 2 tunnels (dual-tunnel HA by default)
+       ↓
+4. Download the AWS-generated configuration file
+   → tailored to your device vendor (Cisco, Juniper, Palo Alto, etc.)
+   → contains: IPsec parameters, BGP config, pre-shared keys
+       ↓
+5. Apply the config to YOUR device
+   → your network team SSHes in and pastes / loads the config
+       ↓
+6. Your device initiates the IPsec tunnels to AWS's endpoints
+   → tunnels come up
+   → BGP peering establishes if using dynamic routing
+       ↓
+7. Traffic flows over the encrypted tunnels
+```
+
+The **CGW resource** (`cgw-abc123`) is just AWS's metadata record. The **actual VPN device** (Cisco / Juniper / pfSense / strongSwan / etc.) is what your network team installs and configures — AWS doesn't supply it. AWS provides device-specific config files for ~30+ common vendors that you paste into your router.
+
 ### AWS Client VPN
 
 **Anchored as workforce VPN: laptops → AWS.** Site-to-Site VPN connects entire networks; **Client VPN connects individual users**. The exam constantly tests the distinction.
