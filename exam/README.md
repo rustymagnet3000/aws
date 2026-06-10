@@ -875,7 +875,7 @@ Sizing questions ("smallest subnet for N instances") have a classic trap: AWS re
 
 The first two and last one are standard networking. The middle three (`.1`, `.2`, `.3`) are AWS-specific — that's where the off-by-one comes from compared to traditional subnetting (which reserves only `.0` and `.last`).
 
-**Worked example: "Subnet for 28 EC2 instances, smallest CIDR?"**
+##### Worked example: "Subnet for 28 EC2 instances, smallest CIDR?"
 
 ```
 Need: 28 usable IPs
