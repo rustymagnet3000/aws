@@ -294,6 +294,20 @@
   - [TTL (Time to Live)](#ttl-time-to-live)
   - [Route 53 Health Checks](#route-53-health-checks)
   - [Route 53 Resolver (Hybrid DNS)](#route-53-resolver-hybrid-dns)
+- [AWS Disaster Recovery](#aws-disaster-recovery)
+  - [What DR is NOT (the boundaries)](#what-dr-is-not-the-boundaries)
+  - [RTO and RPO — the two metrics every DR question asks about](#rto-and-rpo--the-two-metrics-every-dr-question-asks-about)
+  - [The Four DR Strategies (THE framework)](#the-four-dr-strategies-the-framework)
+  - [Decision matrix — picking a strategy](#decision-matrix--picking-a-strategy)
+  - [AWS Elastic Disaster Recovery (DRS) — formerly CloudEndure](#aws-elastic-disaster-recovery-drs--formerly-cloudendure)
+  - [AWS Backup — centralised backup orchestration](#aws-backup--centralised-backup-orchestration)
+  - [Cross-Region Replication by Service (the data layer)](#cross-region-replication-by-service-the-data-layer)
+  - [Route 53 DR Failover Patterns](#route-53-dr-failover-patterns)
+  - [Multi-AZ vs Multi-Region — when each is enough](#multi-az-vs-multi-region--when-each-is-enough)
+  - [DR Testing — the missing half of any plan](#dr-testing--the-missing-half-of-any-plan)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-21)
+  - [Exam Triggers](#exam-triggers-21)
+  - [Mental Model](#mental-model-2)
 - [Elastic Beanstalk](#elastic-beanstalk)
 - [Solution Architecture Examples](#solution-architecture-examples)
   - [Classic Web App](#classic-web-app)
@@ -9766,6 +9780,326 @@ EC2 instance → "what is legacy-app.corp.local?"
 - *"hybrid DNS resolution across VPN"* → Route 53 Resolver endpoints
 - *"stop sending traffic to an unhealthy instance via DNS"* → health check + any routing policy that supports it
 - *"check is healthy only if multiple services are healthy"* → Calculated health check
+
+## AWS Disaster Recovery
+
+Disaster Recovery (DR) is *"what happens when an entire region or service fails — how fast do we recover and how much data do we lose?"* The exam tests two metrics, four strategies, and a handful of AWS-native services that implement them.
+
+### What DR is NOT (the boundaries)
+
+| Confused with | Actually is |
+| ------------- | ----------- |
+| **High Availability (HA)** | HA = surviving component / AZ failures *automatically within a region* (Multi-AZ, Auto Scaling, multi-instance ALBs). DR = surviving *region-wide* failure with a documented failover process |
+| **Backup** | Backups are *necessary* but not sufficient — DR is the orchestrated *use* of backups + replication + DNS + automation to actually restore service |
+| **Chaos Engineering** | Chaos engineering *tests* resilience by injecting failures. DR is the *plan + capability* to recover from a real one |
+| **Multi-AZ deployment** | Multi-AZ is HA for AZ failure, not DR. A region-level outage takes down all your AZs |
+
+### RTO and RPO — the two metrics every DR question asks about
+
+The exam phrases scenarios around these. Get them straight and ~half the DR questions answer themselves.
+
+| Metric | What it measures | "How much can we tolerate?" |
+| ------ | ---------------- | --------------------------- |
+| **RTO (Recovery Time Objective)** | How long until service is **restored** after the disaster | **Downtime tolerance** — "how many minutes / hours can we be offline?" |
+| **RPO (Recovery Point Objective)** | How much **data loss** is acceptable | "How much recent data can we afford to lose?" Measured backwards from disaster moment |
+
+```
+Timeline:
+                    ╔════════════════╗
+  ──── normal ─────►║   DISASTER     ║──── recovery ────► service restored
+                    ╚════════════════╝
+       ◄────RPO────► (data loss window)        ◄────RTO────► (downtime window)
+       last good                                              fully operational
+       backup point                                           in DR region
+```
+
+**Reading exam questions:**
+
+- *"Tolerate 4 hours of data loss"* → RPO = 4 hours → Backup & Restore is enough
+- *"Service must be back within 5 minutes"* → RTO = 5 minutes → Warm Standby or better
+- *"Zero downtime, zero data loss"* → RTO ≈ 0, RPO ≈ 0 → Multi-Site Active-Active
+
+### The Four DR Strategies (THE framework)
+
+AWS's Well-Architected DR framework defines four tiers. Each trades cost for RTO/RPO.
+
+| Strategy | RTO | RPO | Cost | What's running in DR region |
+| -------- | --- | --- | ---- | --------------------------- |
+| **Backup & Restore** | Hours–days | Hours | $ (cheapest) | **Nothing** — just backups in S3 / cross-region snapshots |
+| **Pilot Light** | 10s of minutes | Minutes | $$ | **Minimal core only** — database replicated and live, app servers off, AMIs ready to launch |
+| **Warm Standby** | Minutes | Seconds | $$$ | **Scaled-down full environment** — everything running but undersized |
+| **Multi-Site Active-Active** | Near-zero | Near-zero | $$$$ (most expensive) | **Full environment in multiple regions**, all serving traffic simultaneously |
+
+The progression: **more pre-running infrastructure → faster recovery → higher cost**. Pick the cheapest tier that meets your business RTO/RPO.
+
+#### Worked example for each strategy
+
+##### 1. Backup & Restore (RTO hours–days, RPO hours, $)
+
+```
+Primary region (us-east-1)               DR region (eu-west-1)
+─────────────────────────                ─────────────────────
+EC2 + RDS + S3                           ← nothing running
+        │                                  AMIs copied cross-region (read-only)
+        ▼                                  RDS snapshots copied cross-region (read-only)
+   Daily snapshots →─── replicate ─────►  S3 CRR mirrors data
+   S3 → CRR replication
+
+On disaster:
+  1. Launch EC2 from the cross-region AMI
+  2. Restore RDS from the latest snapshot
+  3. Update Route 53 to point at the new ALB
+  4. Verify and accept the data lost since last snapshot
+```
+
+Use when: low business criticality, infrequently-changing data, cost matters most.
+
+##### 2. Pilot Light (RTO 10s of min, RPO minutes, $$)
+
+```
+Primary region                            DR region
+──────────────                            ─────────
+EC2 + RDS + ElastiCache                   RDS read replica (active, replicating)
+        │                                  ElastiCache cluster (off)
+        │                                  ASG with desired-count=0 (AMIs ready)
+        ▼                                  ALB pre-provisioned (DNS not active)
+   Continuous DB replication               S3 CRR mirrors data
+
+On disaster:
+  1. Promote RDS read replica to writer (~1-2 min)
+  2. Scale ASG from 0 → N (~5-10 min for instances + warm-up)
+  3. Update Route 53 to point at the DR ALB
+  4. Service back, with replication-lag data loss only
+```
+
+The DB is *always lit* (the "pilot light"), everything else is dark.
+
+##### 3. Warm Standby (RTO minutes, RPO seconds, $$$)
+
+```
+Primary region                            DR region
+──────────────                            ─────────
+EC2 fleet (full size) + RDS               EC2 fleet (1-2 instances, undersized)
+        │                                  RDS read replica (active)
+        │                                  ALB live (already in Route 53 with low weight)
+        ▼                                  ElastiCache running (smaller)
+   Real-time DB replication
+
+On disaster:
+  1. Scale up DR fleet to production capacity (~minutes)
+  2. Promote DB
+  3. Route 53 shifts 100% traffic to DR (seconds)
+  4. Service back with near-real-time data
+```
+
+DR region is *always serving some traffic* — confirmed working at all times.
+
+##### 4. Multi-Site Active-Active (RTO near-zero, RPO near-zero, $$$$)
+
+```
+Primary region                            DR region
+──────────────                            ─────────
+EC2 + DynamoDB Global Table               EC2 + DynamoDB Global Table
+       │ ◄──── bidirectional ─────────►   │
+       ▼      replication                 ▼
+Route 53 latency-based or weighted routing — both regions serving live traffic
+ALB / app tier scaled for full prod load in EACH region
+Aurora Global Database with managed failover OR DynamoDB Global Tables
+
+On disaster:
+  1. Route 53 health check detects unhealthy region (seconds)
+  2. Routes 100% traffic to surviving region (already at full capacity)
+  3. No promotion needed for DynamoDB Global Tables
+  4. Aurora Global: takeover ~1 minute via "managed failover"
+```
+
+Most expensive, near-zero data loss, near-zero downtime. Only worth it for revenue-critical workloads.
+
+### Decision matrix — picking a strategy
+
+```
+Is RTO measured in days/hours?
+  └── YES → Backup & Restore
+  └── NO → Is RTO measured in 10s of minutes and RPO in minutes?
+            └── YES → Pilot Light
+            └── NO → Is RTO < 5 min and RPO ~ seconds?
+                      └── YES → Warm Standby
+                      └── NO → Multi-Site Active-Active (RTO ~ 0, RPO ~ 0)
+```
+
+The cheapest tier that hits your business-defined RTO/RPO wins. Going beyond what the business needs is wasted cost.
+
+### AWS Elastic Disaster Recovery (DRS) — formerly CloudEndure
+
+A managed DR service that replicates **entire VMs** continuously to AWS, then orchestrates failover into EC2 instances when triggered. Originally an acquired product (CloudEndure), now natively AWS.
+
+**Key capabilities:**
+
+- **Continuous block-level replication** of source machines (on-prem, other clouds, or AWS-to-AWS) → low-cost staging area in AWS
+- **Sub-second RPO** because replication is continuous
+- **Minutes RTO** — automated launch of EC2 from the replicated state
+- **Drill / failback support** — non-disruptive test failovers; failback after failure
+- **Cost model** — pay for the staging area (small EBS + tiny T-instance per source machine) + EC2 only during actual failover or drill
+
+**When DRS is the right answer (exam triggers):**
+
+- *"DR for on-prem VMs into AWS without re-architecting"* → **DRS**
+- *"Continuous replication with sub-second RPO and minutes RTO"* → **DRS** (faster RPO than snapshot-based)
+- *"DR for a Windows / legacy app that can't be made cloud-native"* → **DRS**
+- *"DR drills without affecting production"* → **DRS test recovery instances**
+
+DRS is NOT a substitute for cloud-native patterns (Aurora Global, DynamoDB Global Tables) for cloud-native apps. It shines for **lift-and-shift DR**.
+
+### AWS Backup — centralised backup orchestration
+
+The umbrella service for **backups across many AWS services** with policy-based scheduling, cross-region copy, cross-account copy, and immutability.
+
+**What AWS Backup covers:**
+
+| Service | Backup type |
+| ------- | ----------- |
+| **EBS, EFS, FSx, RDS, Aurora, DynamoDB, S3, Storage Gateway** | Snapshot-based backups |
+| **EC2** (whole instance, with EBS + metadata) | Image + snapshot |
+| **VMware (via AWS Backup Gateway)** | On-prem VM backups |
+| **Redshift** | Snapshot |
+| **Neptune, DocumentDB, Timestream** | Snapshot |
+
+**Headline features the exam tests:**
+
+| Feature | What it does |
+| ------- | ------------ |
+| **Backup plans** | Schedule + retention + lifecycle in a single policy. Apply to many resources by tag |
+| **Backup vaults** | Where backups land. Per-vault KMS encryption + access policy |
+| **Cross-region copy** | Plans can copy backups to another region automatically |
+| **Cross-account copy** | Copy to a vault in a *separate* security/log-archive account (defence against compromised source account) |
+| **Vault Lock** | Make a vault **immutable** (WORM) — backups can't be deleted, not even by AWS root user. Ransomware defence |
+| **Audit Manager integration** | Compliance evidence for backup policies |
+| **Org-wide policies** | Set backup policy at the Organisation level — applies to all accounts |
+
+**The org-wide ransomware pattern (heavily tested):**
+
+```
+Source account                  Central backup account (locked down)
+──────────────                  ────────────────────────────────────
+EBS / RDS / DynamoDB     ───►   Backup vault (KMS-encrypted)
+   ↑                              + Vault Lock (immutable)
+   Attacker compromises           + Cross-region copy
+   source account; deletes        + Limited IAM access
+   local backups                  → Attacker cannot reach or delete
+                                    these backups from source account
+```
+
+Even if an attacker compromises the source account and deletes all local backups, the immutable cross-account vault survives.
+
+### Cross-Region Replication by Service (the data layer)
+
+The replication mechanism each service offers — which is what backs each DR strategy.
+
+| Service | Cross-region option | RPO | Notes |
+| ------- | ------------------- | --- | ----- |
+| **S3** | **Cross-Region Replication (CRR)** | Seconds–minutes | Async; per-bucket rule + per-prefix filter; requires versioning on both buckets |
+| **S3 Multi-Region Access Points** | N/A — routing only | n/a | Active-active S3 endpoints across regions; pairs with CRR for full multi-region S3 |
+| **DynamoDB** | **Global Tables** | <1 second (typical) | Multi-master active-active replication; conflict resolution via last-writer-wins |
+| **Aurora** | **Aurora Global Database** | <1 second | One primary region, up to 5 read replicas in other regions; failover ~1 minute via "managed failover" |
+| **RDS** (non-Aurora) | **Cross-region read replicas** | Minutes (binlog-based) | Promote replica to writer on failover; manual promotion |
+| **EBS** | **Snapshot copy** (cross-region) | Hours–days | Snapshot-frequency-bound; AMIs built on EBS snapshots can also be copied |
+| **AMI** | **Copy AMI** to another region | Hours | Required for launching from pre-baked images in DR region |
+| **EFS** | **Replication** | Minutes | Built-in cross-region replication |
+| **FSx for Windows / Lustre / NetApp** | Backup + cross-region copy via AWS Backup | Hours | No direct continuous replication |
+| **Redshift** | **Cross-region snapshot copy** | Hours | Plus snapshot retention up to 35 days |
+| **Route 53** | Inherently global | n/a | Already replicated across AWS edge globally |
+| **CloudFront** | Inherently global | n/a | Edge service; not a regional concern |
+| **KMS keys** | **Multi-region keys** | n/a — replicated, not async | Required for encrypted snapshots/objects to work in DR region |
+
+**The KMS gotcha:** if your S3 / EBS / RDS data is encrypted with a **single-region KMS key**, cross-region replication fails on the decrypt side. Use **multi-region KMS keys** or grant cross-region permissions explicitly.
+
+### Route 53 DR Failover Patterns
+
+DNS is the conductor. Three Route 53 routing policies map to DR strategies:
+
+| Routing policy | Use for DR | How |
+| -------------- | ---------- | --- |
+| **Failover** | **Active-passive** (Backup-Restore / Pilot Light / Warm Standby) | Primary record + secondary record + health check. Secondary kicks in only when primary fails |
+| **Latency-based** | **Active-active** (Multi-Site) | Routes users to lowest-latency healthy region. On region failure, automatically routes to next-best |
+| **Weighted** | **Gradual cutover or canary DR** | Send 1% / 10% / 100% to DR region. Manual progression |
+| **Multi-value answer** | Lightweight DR | Returns multiple healthy IPs; client picks one. Not as deterministic as Failover |
+
+**The health check choice:**
+
+- **Endpoint health checks** — Route 53 pings your endpoint
+- **CloudWatch alarm health checks** — fail if a CloudWatch alarm fires (useful for composite signals)
+- **Calculated health checks** — combine multiple child health checks
+
+**TTL strategy for DR:** lower TTLs = faster client-side cutover during failover (~60 seconds typical). Higher TTLs = lower DNS query cost but slower failover. Most DR setups use 60-second TTLs.
+
+### Multi-AZ vs Multi-Region — when each is enough
+
+The exam loves making people pick.
+
+| Failure mode you're protecting against | Use |
+| --------------------------------------- | --- |
+| **Single instance / EBS volume failure** | Auto Scaling + EBS snapshots (no DR needed) |
+| **AZ-level outage** (entire AZ goes down) | **Multi-AZ** — RDS Multi-AZ, ALB with multi-AZ targets, ASGs spanning AZs |
+| **Region-level outage** (extremely rare but real) | **Multi-Region DR** — one of the four strategies above |
+| **AWS-wide outage / global control-plane issue** | Multi-cloud (rare; only the largest orgs do this) |
+| **Compliance demands cross-region resilience** | Multi-Region DR (often required by financial regulators) |
+| **Application bug / config error** | Backups + roll-back; no DR needed if same code in DR region |
+| **Ransomware / accidental deletion** | **AWS Backup with Vault Lock** in a separate account |
+
+**Region failures are rare** (~once every few years per region, usually for a few hours of degradation, not total). Multi-Region DR is **expensive insurance** — most workloads can live with Multi-AZ + good backups.
+
+### DR Testing — the missing half of any plan
+
+A DR plan you've never tested is a DR plan that doesn't work. The exam sometimes tests on this implicitly.
+
+| Testing approach | What it does |
+| ---------------- | ------------ |
+| **Tabletop exercises** | Walk through the runbook on paper, no actual failover |
+| **Component testing** | Test parts in isolation — promote a read replica, restore a snapshot |
+| **Game days** | Scheduled, controlled, end-to-end failover drill (often in a non-prod environment) |
+| **DRS test recovery instances** | Spin up DR EC2 instances in isolation, validate, then tear down. Non-disruptive |
+| **Chaos engineering** | Inject failures during normal operation to validate ongoing resilience |
+
+Most regulated orgs are **required** to perform a DR test at least annually with documented results.
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Multi-AZ RDS solves DR"* → wrong. **Multi-AZ is HA, not DR.** A region failure takes all AZs down
+- *"Daily backups give us RPO of zero"* → wrong. RPO = max acceptable data loss, and daily backups mean up to 24h loss
+- *"Pilot Light means the DR region is fully running"* → wrong. Pilot Light = **DB only**; app is **off** until needed
+- *"Replicating only the database is enough"* → no — you also need AMIs / containers / config / secrets / network setup in the DR region
+- *"Multi-Site Active-Active for everything"* → wasteful; pick the cheapest tier that meets the business RTO/RPO
+- *"Single-region KMS key for cross-region EBS snapshots"* → fails on decrypt in DR region. Use **multi-region KMS keys**
+- *"We don't need to test our DR plan — the docs are good"* → untested DR plans fail. Schedule game days
+- *"Route 53 failover works without health checks"* → no — failover routing **requires** health checks to know when to switch
+- *"Backups in the same account = ransomware-safe"* → no. Use **AWS Backup Vault Lock** + **cross-account vault** in a separate security account
+- *"AWS Elastic DR for a cloud-native serverless app"* → wrong tool. DRS is for **VM-based** workloads. Use Aurora Global / DynamoDB Global Tables / serverless-native patterns instead
+
+### Exam Triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"RTO measured in days, RPO measured in hours, lowest cost"* | **Backup & Restore** |
+| *"RTO of ~15 minutes, RPO of a few minutes, cost-conscious"* | **Pilot Light** |
+| *"RTO of a few minutes, RPO of seconds, willing to pay more"* | **Warm Standby** |
+| *"Near-zero RTO and RPO, mission-critical"* | **Multi-Site Active-Active** with DynamoDB Global Tables / Aurora Global |
+| *"DR for on-prem VMs to AWS continuously"* | **AWS Elastic Disaster Recovery (DRS)** |
+| *"Centralised backup policy across many AWS services + cross-region + cross-account"* | **AWS Backup** with backup plans + Vault Lock |
+| *"Protect backups from ransomware / malicious deletion"* | **AWS Backup Vault Lock** + **cross-account vault** |
+| *"<1 second cross-region database RPO"* | **Aurora Global Database** or **DynamoDB Global Tables** |
+| *"Auto-failover DNS based on region health"* | **Route 53 Failover routing + health checks** |
+| *"Lowest-latency routing across active-active regions"* | **Route 53 latency-based routing** |
+| *"Multi-region S3 replication"* | **S3 Cross-Region Replication (CRR)** with versioning enabled |
+| *"Region went down — Multi-AZ saved us"* | **Trap.** Multi-AZ is HA, not DR. Region failure needs Multi-Region |
+| *"DR test without affecting production"* | **DRS test recovery instances** or game day in isolated environment |
+| *"Encrypted snapshot won't decrypt in DR region"* | Use **multi-region KMS keys** |
+| *"Promote RDS read replica to standalone primary"* | Manual failover for cross-region RDS read replicas |
+| *"Aurora cross-region with managed failover"* | **Aurora Global Database** (1 primary + up to 5 secondaries) |
+| *"DynamoDB active-active multi-master"* | **DynamoDB Global Tables** |
+
+### Mental Model
+
+> *DR boils down to two questions and four strategies. **Two questions:** what's your RTO (downtime tolerance) and RPO (data loss tolerance)? **Four strategies:** Backup-Restore (cheapest, hours/days), Pilot Light (DB always on, app off, ~minutes), Warm Standby (scaled-down full env, ~minutes/seconds), Active-Active (full prod in 2+ regions, near-zero). Pick the cheapest tier that hits your business RTO/RPO. **AWS Backup** orchestrates the backups; **AWS Elastic Disaster Recovery (DRS)** orchestrates lift-and-shift VM replication; **Route 53** orchestrates DNS-level failover; **Aurora Global / DynamoDB Global Tables / S3 CRR** are the cross-region replication primitives. Multi-AZ ≠ DR (it's HA). An untested DR plan is a DR plan that doesn't work.*
 
 ## Elastic Beanstalk
 
