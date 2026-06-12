@@ -286,6 +286,29 @@
   - [When DMS Is Not the Answer](#when-dms-is-not-the-answer)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers)
   - [Exam Triggers](#exam-triggers)
+- [AWS Application Migration Service (MGN)](#aws-application-migration-service-mgn)
+  - [What MGN is NOT](#what-mgn-is-not)
+  - [How MGN actually works](#how-mgn-actually-works)
+  - [Core concepts](#core-concepts-7)
+  - [Numbered migration flow](#numbered-migration-flow)
+  - [Wave / Application organisation (for big migrations)](#wave--application-organisation-for-big-migrations)
+  - [MGN vs DRS — when each fits](#mgn-vs-drs--when-each-fits)
+  - [Application Discovery Service (the precursor to MGN)](#application-discovery-service-the-precursor-to-mgn)
+  - [Use cases](#use-cases)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-22)
+  - [Exam Triggers](#exam-triggers-22)
+  - [Mental model](#mental-model-3)
+- [AWS Migration Hub](#aws-migration-hub)
+  - [What Migration Hub is NOT](#what-migration-hub-is-not)
+  - [The three main components](#the-three-main-components)
+  - [How a migration project actually flows](#how-a-migration-project-actually-flows)
+  - [The 6 Rs framework (you'll see this on the exam)](#the-6-rs-framework-youll-see-this-on-the-exam)
+  - [Application Discovery Service deep dive](#application-discovery-service-deep-dive)
+  - [Refactor Spaces (the strangler-fig tool)](#refactor-spaces-the-strangler-fig-tool)
+  - [Use cases](#use-cases-1)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-23)
+  - [Exam Triggers](#exam-triggers-23)
+  - [Mental model](#mental-model-4)
 - [Route 53](#route-53)
   - [Authoritative vs Non-Authoritative DNS](#authoritative-vs-non-authoritative-dns)
   - [DNS Record Types](#dns-record-types)
@@ -9469,6 +9492,318 @@ For 90%+ of RDS / Aurora DR scenarios, native features win.
 - *"convert database schema from one engine to another"* → **SCT**
 - *"initial load is too big to stream over the internet"* → **Snowball Edge** for bulk + **DMS** CDC for catch-up
 - *"migrate VMs, not just the database"* → **MGN** (AWS Application Migration Service), not DMS
+
+## AWS Application Migration Service (MGN)
+
+**Anchored against DRS — same underlying tech, different lifecycle.** MGN is the **one-time migration** tool: replicate on-prem VMs to AWS, cut over, decommission the source. DRS is the **ongoing DR** tool: replicate VMs to AWS indefinitely, drill regularly, fail over only on disaster. Both derive from the acquired CloudEndure product, but they're configured and billed differently because they solve different problems.
+
+MGN replaced the older **AWS Server Migration Service (SMS)** in 2022. If you see SMS on an old practice exam, treat it as "use MGN instead."
+
+### What MGN is NOT
+
+| Question | Service | Not MGN because... |
+| -------- | ------- | ------------------- |
+| *"Ongoing DR for VMs"* | **AWS Elastic Disaster Recovery (DRS)** | Same tech, but DRS is designed to run indefinitely with drills + failback. MGN is designed to be temporary |
+| *"Migrate just a database"* | **AWS Database Migration Service (DMS)** | MGN moves whole VMs; DMS moves database data with optional schema conversion |
+| *"Migrate file / object data"* | **AWS DataSync** or **Snow Family** | Storage-only migration, no VM involved |
+| *"Track and orchestrate a migration project across many services"* | **AWS Migration Hub** | Migration Hub is the umbrella console; MGN is one of the replication engines it tracks |
+| *"Discover what's running on-prem before migrating"* | **AWS Application Discovery Service** (part of Migration Hub) | Discovery comes before MGN |
+
+### How MGN actually works
+
+```
+On-prem (source)                          AWS account (target region)
+────────────────                          ───────────────────────────
+
+  Source server                            Staging area:
+  (Linux / Windows VM,                       - Small t-shirt EC2 instance
+   physical, or another cloud)               - Replicated EBS volumes
+        │                                    - Continuous block sync
+        │  AWS Replication                   - Pay per source server
+        │  Agent installed                     while replicating
+        ▼
+   Continuous block-level ──► HTTPS to MGN ──►  Staging volumes
+   replication                                  catch up to source
+
+   ── On test launch ──
+                                          Launch TEST instances in
+                                          isolated subnets → verify
+                                          → tear down
+
+   ── On cutover ──
+                                          Launch CUTOVER instances
+                                          (full prod-sized, in target VPC)
+                                          → swing DNS / app endpoints
+                                          → stop the source server
+                                          → MGN "finalised"; staging deleted
+```
+
+The shape mirrors DRS exactly — same agent, same staging area architecture. The difference is **what happens next**: MGN expects you to *cut over and decommission* the source; DRS expects you to *keep replicating indefinitely* and only fail over on disaster.
+
+### Core concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Replication Agent** | Installed on each source server; performs continuous block-level replication to AWS |
+| **Replication Settings** | Per-application config: which subnet to stage in, EBS volume types, bandwidth throttle, network bandwidth |
+| **Launch Template** | What the cutover EC2 instance looks like: instance type, VPC, subnet, security groups, IAM role, tags |
+| **Test launch** | Spin up the target instance in **test mode** (isolated networking) → validate the app works → tear down. Repeat as needed without disrupting source |
+| **Cutover launch** | Spin up the production-grade target instance + swing traffic + stop the source |
+| **Post-launch actions** | SSM Automation runbooks that run after launch (install agents, configure monitoring, run validation scripts) |
+| **Wave** | A logical grouping of source servers to migrate together (e.g. "Wave 3: payment-app servers") |
+| **Application** | Higher-level grouping (e.g. "Payment app" contains 5 source servers across multiple waves) |
+| **Source server lifecycle** | `Not ready` → `Initial sync` → `Healthy` (replicating) → `Tested` → `Cutover` → `Cutover complete` (source can now be decommissioned) → `Archived` |
+
+### Numbered migration flow
+
+```
+1. Plan: discover on-prem servers (Application Discovery Service or manual inventory)
+       ↓
+2. Install Replication Agent on each source server
+       ↓
+3. MGN replicates continuously to the staging area (initial sync + ongoing CDC)
+       ↓
+4. Configure Launch Templates (target VPC, instance type, SGs, IAM role)
+       ↓
+5. Test launch — spin up target instance in isolated subnet
+       ↓
+6. Validate the app works (login, run smoke tests, check integrations)
+       ↓
+7. Iterate on launch template / post-launch actions until tests pass
+       ↓
+8. Schedule cutover with stakeholders
+       ↓
+9. Cutover launch — spin up production-grade target + swing DNS / app config
+       ↓
+10. Stop the source server (don't delete yet — keep for rollback window)
+       ↓
+11. Mark cutover complete in MGN → MGN tears down the staging area
+       ↓
+12. After acceptance period, decommission source
+```
+
+### Wave / Application organisation (for big migrations)
+
+Most real migrations move dozens to thousands of servers. MGN supports this with:
+
+| Construct | Use |
+| --------- | --- |
+| **Application** | Group of source servers belonging to the same workload (e.g. "Order management" = 8 servers) |
+| **Wave** | Group of applications migrated together in a single weekend / window (e.g. "Wave 5: payment-related apps") |
+| **Tags** | Custom metadata for filtering / reporting |
+| **Migration Hub integration** | Surface progress at the program level across waves |
+
+This lets a programme manager track *"40% of servers migrated; current wave is 80% tested, cutover scheduled for Saturday"*.
+
+### MGN vs DRS — when each fits
+
+| Need | Use |
+| ---- | --- |
+| **Move VMs from on-prem to AWS, then decommission source** | **MGN** |
+| **Move VMs from another cloud to AWS, then decommission source** | **MGN** |
+| **Continuously protect VMs against disaster, ongoing posture** | **DRS** |
+| **Regular DR drills without affecting production** | **DRS** (built-in test recovery) |
+| **AWS-to-AWS cross-region DR for EC2 fleets** | **DRS** |
+| **Lift-and-shift to AWS as part of a data centre exit** | **MGN** |
+| **Mid-migration, DR-side benefit while migration is ongoing** | MGN provides this implicitly (the AWS-side staged state acts as a temporary DR copy) |
+
+**Mnemonic:** *MGN = "move once and forget the source." DRS = "keep replicating in case the source dies."*
+
+### Application Discovery Service (the precursor to MGN)
+
+Most large migrations start with **discovery** — knowing what to move. AWS provides:
+
+| Tool | What it does |
+| ---- | ------------ |
+| **Application Discovery Service — Agentless Collector** | A VMware appliance you deploy in your data centre; pulls VM inventory + performance metrics from vCenter |
+| **Application Discovery Service — Agent-Based** | Install an agent on each Linux/Windows server for richer per-host data (running processes, network deps) |
+| **Migration Hub Strategy Recommendations** | Analyses discovered data + recommends migration strategy per app (rehost / replatform / refactor / retire) |
+
+Discovery data feeds directly into MGN waves and the Migration Hub project dashboard.
+
+### Use cases
+
+| Scenario | Why MGN fits |
+| -------- | ------------ |
+| **Data centre exit** (move 100s–1000s of servers to AWS) | Canonical case; MGN was designed for this |
+| **Cross-cloud migration** (Azure / GCP / OCI → AWS) | Same agent works on VMs in other clouds |
+| **Legacy app migration** that can't be containerised | Lift-and-shift unchanged; refactor later if needed |
+| **Acquired company integration** | Migrate the acquired company's VMs into your AWS estate |
+| **VMware migration with the source going away** | Pair with VMware Cloud on AWS or migrate directly to EC2 |
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Using MGN for ongoing DR** → MGN is for one-time migration. Use **DRS** for ongoing replication
+- **Using MGN to migrate just a database** → use **DMS** + SCT. MGN migrates the whole VM (overkill if you only need the DB on a different engine)
+- **Skipping the test launch** → cutover failures are painful. Test launches are non-disruptive and reveal issues early
+- **Migrating without discovery** → you'll miss dependencies; apps break post-cutover when they can't reach forgotten services
+- **One giant cutover instead of waves** → too risky; wave-based approach allows rollback and learning
+- **Using the deprecated Server Migration Service (SMS)** → SMS is end-of-life; AWS pushes everyone to MGN
+- **Forgetting post-launch actions** → cutover instances may be missing monitoring agents, config management, security tooling. Use post-launch SSM Automation
+
+### Exam Triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Migrate on-prem VMs to AWS and decommission source"* | **AWS Application Migration Service (MGN)** |
+| *"Lift-and-shift hundreds of servers to AWS in waves"* | **MGN with Wave / Application organisation** |
+| *"Test the migrated app without affecting production"* | **MGN test launch** (isolated subnets) |
+| *"Migrate VMs from Azure / GCP to AWS"* | **MGN** (works with non-AWS sources) |
+| *"Continuously protect VMs for DR posture"* | **DRS**, not MGN |
+| *"Track migration progress across many services and waves"* | **AWS Migration Hub** (see next section) |
+| *"Discover on-prem servers before migrating"* | **Application Discovery Service** (part of Migration Hub) |
+| *"Migrate a Windows file server — keep file shares working"* | **MGN** (lifts the whole server) |
+| *"Cutover the migrated app, then keep the source for 2 weeks as fallback"* | **MGN cutover** (then mark complete after acceptance period) |
+| *"Modernise an app — break monolith into microservices during migration"* | **AWS Migration Hub Refactor Spaces** (strangler-fig), not MGN |
+| *"Why does my AWS doc still mention Server Migration Service?"* | **SMS is deprecated** — use MGN |
+
+### Mental model
+
+> *MGN = **DRS's sibling for one-time migration.** Same agent, same staging area, same continuous replication — but the workflow ends with **cutover + decommission source**, not **drill + failback**. Use it for data centre exits, cross-cloud lift-and-shift, and legacy app migration. Pair with **Application Discovery Service** for "what do we have?" and **Migration Hub** for "how's the project going?" If the source needs to stay running forever and you want DR insurance, that's **DRS**, not MGN.*
+
+## AWS Migration Hub
+
+**Anchored as the migration project dashboard.** Migration Hub is the **central console + status tracker** for migrating to AWS — it doesn't move anything itself, it orchestrates and reports on the underlying replication services (MGN, DRS, DMS) and adds discovery + planning + refactor tooling on top.
+
+Think of it as Jira-for-migrations: the place a programme manager goes to see *"how many servers across how many waves, what's their status, what's blocked?"*
+
+### What Migration Hub is NOT
+
+| Question | Service | Not Migration Hub because... |
+| -------- | ------- | ----------------------------- |
+| *"Actually move VMs to AWS"* | **MGN** | MGN does the replication; Migration Hub tracks it |
+| *"Actually move databases"* | **DMS** | DMS does the replication; Migration Hub aggregates the status |
+| *"Discover what's running on-prem"* | **Application Discovery Service** | ADS is a *component* of Migration Hub, not the whole thing |
+| *"Break a monolith into microservices"* | **Migration Hub Refactor Spaces** (a Migration Hub component) | Refactor Spaces is the strangler-fig piece; the rest of Migration Hub is about lift-and-shift |
+| *"Bill all my migration costs in one place"* | **AWS Cost Explorer / Budgets** | Migration Hub tracks project status, not cost |
+
+### The three main components
+
+| Component | Purpose |
+| --------- | ------- |
+| **Migration Hub Discovery** | The "what do we have on-prem?" tool. Uses **Application Discovery Service** (agentless + agent-based) to inventory servers, dependencies, performance metrics |
+| **Migration Hub Strategy Recommendations** | Analyses discovered data + recommends migration strategy per app: **rehost** (lift-and-shift) / **replatform** (some changes) / **refactor** (rebuild cloud-native) / **retire** / **retain** |
+| **Migration Hub Refactor Spaces** | The strangler-fig migration tool — gradually replace pieces of a monolith with microservices while keeping the app running. Routes traffic between old + new |
+| **Migration Hub Orchestrator** | Workflow automation — codify migration steps as runbooks, run them across waves |
+
+Plus status tracking — Migration Hub pulls status from MGN, DRS, DMS, and shows a unified migration project view.
+
+### How a migration project actually flows
+
+```
+1. PLAN
+   └── Migration Hub Discovery
+       └── Application Discovery Service finds on-prem servers,
+           captures performance + dependency data
+       └── Strategy Recommendations suggest 6R (rehost / replatform /
+           refactor / repurchase / retire / retain) per app
+
+2. PREPARE
+   └── Organise discovered servers into Applications + Waves
+   └── Configure target AWS environment (VPCs, IAM, networking)
+   └── Choose tools per app:
+       - Rehost     → MGN
+       - Replatform → MGN + post-launch customisations
+       - Refactor   → Migration Hub Refactor Spaces (strangler-fig)
+       - Repurchase → manual (SaaS)
+       - Retire     → manual (decommission)
+       - Retain     → keep on-prem
+
+3. MIGRATE
+   └── For each wave:
+       - Replication via MGN / DRS / DMS
+       - Test launches
+       - Cutover
+   └── Migration Hub tracks status across all of this
+
+4. OPERATE
+   └── Source decommissioned
+   └── New AWS environment monitored, optimised
+   └── Migration Hub closes out the project
+```
+
+### The 6 Rs framework (you'll see this on the exam)
+
+AWS's framework for what to do with each app being migrated:
+
+| R | Meaning | When to use |
+| - | ------- | ----------- |
+| **Rehost** | Lift-and-shift — move VM as-is | Quick migration, no app changes; use **MGN** |
+| **Replatform** | Minor changes (e.g. move DB to RDS instead of self-managed) | Modest cloud benefits without rewriting |
+| **Refactor** (or Re-architect) | Rewrite for cloud-native (serverless / microservices) | Maximum cloud benefits; use **Refactor Spaces** for strangler-fig |
+| **Repurchase** | Replace with a SaaS alternative | Switch from self-hosted CRM to Salesforce, etc. |
+| **Retire** | Turn it off — nobody uses it | Discovery reveals unused servers |
+| **Retain** | Keep on-prem for now | Compliance / latency / not-worth-it apps |
+
+Some sources list a seventh: **Relocate** (move VMware workloads to VMware Cloud on AWS without conversion). Same idea — the framework is "the 6/7 Rs."
+
+### Application Discovery Service deep dive
+
+Two collection modes:
+
+| Mode | How it works | Use when |
+| ---- | ------------ | -------- |
+| **Agentless Collector** | OVA (virtual appliance) deployed in your VMware environment. Pulls VM inventory + performance from vCenter | VMware-heavy environments; you can't install agents on every server |
+| **Agent-Based** | Install the Discovery Agent on each Linux/Windows server | Richer data: running processes, network connections between hosts, dependency mapping |
+
+Data is encrypted in transit + at rest, retained as long as Migration Hub exists, and feeds into Strategy Recommendations and into MGN/DRS for actual migration.
+
+### Refactor Spaces (the strangler-fig tool)
+
+For when you're not lifting-and-shifting — you're rebuilding while keeping the original running:
+
+```
+Before refactor:
+  Users ──► Monolith on-prem
+
+During refactor (Refactor Spaces routes traffic):
+  Users ──► API Gateway (Refactor Spaces)
+              ├──► Microservice A on AWS  (new — strangler)
+              ├──► Microservice B on AWS  (new)
+              └──► Monolith on-prem        (everything else, until refactored)
+
+After refactor:
+  Users ──► API Gateway ──► Microservices on AWS
+                            (monolith decommissioned)
+```
+
+Refactor Spaces handles the routing layer so you can incrementally peel functionality off the monolith without a big-bang cutover. Useful for the **Refactor** R in the 6 Rs.
+
+### Use cases
+
+| Scenario | Why Migration Hub fits |
+| -------- | ----------------------- |
+| **Large enterprise migration** (100s–1000s of servers) | Discovery + planning + status tracking are essential at scale |
+| **Migration programme** with multiple teams using MGN / DMS / DRS | Single console aggregates status across services |
+| **Compliance audit** of migration progress | Migration Hub exports project status / audit trails |
+| **Modernising a monolith incrementally** | Refactor Spaces + the Refactor R from the 6 Rs framework |
+| **Discovering "what's running" in a data centre** before deciding what to do | Application Discovery Service |
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Use Migration Hub to move VMs"* → Migration Hub orchestrates; **MGN** moves
+- *"Migration Hub does database migration"* → no — that's **DMS**
+- *"Use Application Discovery Service after migration"* → discovery is for **before** — to know what to migrate
+- *"Refactor Spaces lifts-and-shifts a monolith to AWS"* → no — Refactor Spaces is for **incremental refactoring**, not lift-and-shift. Use MGN for lift-and-shift
+- *"Skip discovery for a small migration"* → can be fine for <10 servers; essential for larger
+- *"Skip the 6 Rs analysis"* → leads to lifting-and-shifting things that should be retired or repurchased
+
+### Exam Triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Central console / dashboard tracking all migration activity"* | **AWS Migration Hub** |
+| *"Discover servers + dependencies in a data centre before migrating"* | **Application Discovery Service** |
+| *"Recommend whether each app should be rehosted / refactored / retired"* | **Migration Hub Strategy Recommendations** + 6 Rs framework |
+| *"Incrementally refactor a monolith to microservices without a big-bang cutover"* | **Migration Hub Refactor Spaces** (strangler-fig pattern) |
+| *"Track migration progress across MGN, DMS, and DRS in one place"* | **AWS Migration Hub** |
+| *"Plan and orchestrate a multi-wave migration programme"* | **Migration Hub** with Application/Wave constructs |
+| *"VMware environment — agentless discovery"* | **Application Discovery Service Agentless Collector** |
+| *"Detailed per-host dependency mapping with running processes"* | **Application Discovery Service Agent-Based** |
+
+### Mental model
+
+> *Migration Hub = **the migration project dashboard.** It doesn't move anything itself — **MGN / DRS / DMS** do the actual work. Migration Hub adds **discovery** (Application Discovery Service to find what to move), **planning** (Strategy Recommendations + the 6 Rs framework), **tracking** (unified status across replication services), and **refactoring** (Refactor Spaces for the strangler-fig pattern). For small migrations (a handful of servers), you can skip Migration Hub and just use MGN directly. For enterprise programmes (100s+ servers across teams), Migration Hub is what stops it becoming chaos.*
 
 ## Route 53
 
