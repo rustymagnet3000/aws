@@ -9362,6 +9362,93 @@ Common confusions on the exam:
 - **Migrate the OS + database on EC2** → MGN, then point DMS at the new instance if you want to move the DB engine afterward
 - **Continuous data integration between cloud systems forever** → DMS *can* do this but a streaming service (Kinesis, MSK) or change data capture pipeline is often a better long-term answer
 
+### DMS vs Native DR for RDS and ElastiCache
+
+This is a common trap: people pick DMS for *"DR for my RDS database"* when AWS's native features beat it on every dimension. **DMS is a migration / heterogeneous-replication tool, not a DR tool.** For same-engine cross-region DR, the native features win.
+
+#### RDS DR options compared
+
+| Option | RTO | RPO | Cross-region? | Cost | Best for |
+| ------ | --- | --- | -------------- | ---- | -------- |
+| **Multi-AZ deployment** | Seconds–~1 min | ~0 (synchronous) | ❌ **Same region** | $$ (2× single-AZ) | **HA, not DR** — surviving AZ failure |
+| **Cross-region read replica** | Minutes (manual promotion) | Seconds (async binlog) | ✅ | $$ (replica + transfer) | **Standard RDS DR** for non-Aurora |
+| **Automated snapshots + cross-region copy** | Hours (restore) | Hours (snapshot frequency) | ✅ | $ | Backup & Restore tier |
+| **AWS Backup with cross-region copy** | Hours | Hours | ✅ | $ | Centralised orchestration + Vault Lock for ransomware |
+| **DMS with CDC to another region** | Minutes | Seconds | ✅ | $$$ (replication instance) | **Edge case only** — see below |
+
+**Why cross-region read replica beats DMS for RDS DR:**
+
+| Dimension | RDS read replica | DMS |
+| --------- | ---------------- | --- |
+| Setup complexity | One click in the console | Configure source/target endpoints + replication instance + tasks |
+| Cost | Replica only | Replication instance ($$$) + replica costs |
+| Promotion | Built-in `promote-read-replica` API | Manual cutover + re-point app |
+| RPO | Native async (seconds) | Native CDC (seconds) — same |
+| Operational overhead | Minimal | Manage the replication instance, monitor task health |
+
+Read replica wins on every dimension *except* heterogeneous engine support — which DR scenarios don't usually need.
+
+#### Aurora DR — Global Database is in a class of its own
+
+| Option | RTO | RPO | Notes |
+| ------ | --- | --- | ----- |
+| **Aurora Global Database** | **~1 minute** (managed failover) | **<1 second** | Storage-level replication; 1 primary + up to 5 secondary regions |
+| **Aurora cross-region snapshot copy** | Hours | Hours | Backup tier |
+| **Aurora Backtrack** | Minutes (in-place rewind) | n/a | **Same-region** time travel — not DR |
+| **DMS CDC to another Aurora** | Minutes | Seconds | Strictly worse than Global Database for the same job |
+
+**Why Aurora Global Database beats DMS:**
+
+- Global Database uses **storage-level replication** (Aurora's secret sauce) — faster than DMS's logical CDC
+- **Managed failover** button promotes a secondary to primary
+- Cross-region **read scaling** as a bonus
+- DMS would replicate via binlog/WAL, slower and more management
+
+**Rule:** use DMS to *migrate into* Aurora from a different engine. Use Aurora Global Database for ongoing DR once you're in Aurora.
+
+#### ElastiCache DR — totally different problem
+
+Caches are usually treated as rebuildable from the source-of-truth DB. But Redis sometimes holds session state / leaderboards that need DR. DMS doesn't help here — **ElastiCache is not a DMS source or target**.
+
+**Redis DR options:**
+
+| Option | RTO | RPO | Notes |
+| ------ | --- | --- | ----- |
+| **Multi-AZ with automatic failover** | <1 min | ~0 (sync to replica) | **HA, not DR** — within a region |
+| **ElastiCache Global Datastore for Redis** | Minutes | <1 second (async) | **The DR answer for Redis** — 1 primary + up to 2 secondary regions |
+| **Manual snapshot → cross-region copy** | Hours | Hours | Backup tier; RDB export to S3 + copy |
+| **DMS** | ❌ Not supported | n/a | ElastiCache isn't a DMS source or target |
+
+**Memcached DR:** **none**. Memcached has no persistence, no replication, no cross-region. Treat as ephemeral; **re-warm the cache from the source-of-truth DB** after failover. Plan for the cache-miss spike that hits the DB during cutover.
+
+#### When DMS IS actually the right answer for DR
+
+Edge cases only. If you see these, DMS is in scope:
+
+| Edge case | Why DMS fits |
+| --------- | ------------ |
+| **DR target is a different engine** (heterogeneous) | E.g. on-prem Oracle → AWS RDS PostgreSQL as the DR target. DMS + SCT |
+| **Mid-migration DR posture** | While migrating on-prem → AWS via DMS, the AWS-side DB *is* your DR target automatically |
+| **Cross-account DR where read replicas can't span the boundary** | Read replicas usually stay within an account; DMS can replicate cross-account |
+| **CDC into a non-DB target as part of DR posture** | E.g. mirror DB changes to S3 / Kinesis for downstream replay during DR |
+
+For 90%+ of RDS / Aurora DR scenarios, native features win.
+
+#### Exam triggers (DMS vs DR options)
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"DR for Aurora MySQL across regions, ~1 min RTO, sub-second RPO"* | **Aurora Global Database** (not DMS) |
+| *"DR for RDS PostgreSQL across regions"* | **Cross-region read replica + manual promotion** (not DMS) |
+| *"DR for ElastiCache Redis across regions"* | **Global Datastore for Redis** (not DMS — ElastiCache isn't a DMS target) |
+| *"DR for ElastiCache Memcached"* | **None — re-warm from DB after failover** (Memcached has no persistence) |
+| *"Cheapest RDS DR — accept hours of data loss"* | **Cross-region snapshot copy** (Backup & Restore tier) |
+| *"Cross-account RDS replication where read replicas can't span accounts"* | **DMS** (one of the few edge cases where DMS beats native) |
+| *"Migrate Oracle on-prem to Aurora PostgreSQL with ongoing CDC until cutover"* | **DMS + SCT** (migration, not DR) |
+| *"Promote RDS read replica in DR region to standalone primary"* | **`promote-read-replica`** API |
+
+**The mental model:** *DMS is for heterogeneous migration and CDC. For same-engine cross-region DR, AWS's native features (Aurora Global Database / RDS cross-region read replicas / ElastiCache Global Datastore for Redis) are simpler, cheaper, and faster. The trap is picking DMS for "DR for our RDS database" when the right answer is the native feature.*
+
 ### Common Anti-patterns (exam wrong answers)
 
 - **Picking DMS for a homogeneous migration but forgetting CDC** → full-load-only forces downtime equal to the load time. Production cutovers almost always need full load + CDC.
