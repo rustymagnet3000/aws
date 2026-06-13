@@ -322,6 +322,7 @@
   - [RTO and RPO — the two metrics every DR question asks about](#rto-and-rpo--the-two-metrics-every-dr-question-asks-about)
   - [The Four DR Strategies (THE framework)](#the-four-dr-strategies-the-framework)
   - [Decision matrix — picking a strategy](#decision-matrix--picking-a-strategy)
+  - [Keyword decoder for DR exam questions](#keyword-decoder-for-dr-exam-questions)
   - [AWS Elastic Disaster Recovery (DRS) — formerly CloudEndure](#aws-elastic-disaster-recovery-drs--formerly-cloudendure)
   - [AWS Backup — centralised backup orchestration](#aws-backup--centralised-backup-orchestration)
   - [Cross-Region Replication by Service (the data layer)](#cross-region-replication-by-service-the-data-layer)
@@ -10350,6 +10351,43 @@ Is RTO measured in days/hours?
 ```
 
 The cheapest tier that hits your business-defined RTO/RPO wins. Going beyond what the business needs is wasted cost.
+
+### Keyword decoder for DR exam questions
+
+Exam questions rarely give you RTO/RPO as numbers — they describe **what's running in the DR region** with phrases that map to specific strategies. Decoding the phrase is more reliable than guessing from the RTO/RPO alone, because Backup & Restore and Pilot Light both have *"longer RTO"* — the only thing that separates them is **whether anything is pre-provisioned**.
+
+| Phrasing in question | Maps to |
+| -------------------- | ------- |
+| *"Nothing pre-provisioned in DR region"* / *"Restore from backup"* / *"Just backups copied cross-region"* / *"Cheapest option"* | **Backup & Restore** |
+| *"Only the critical infrastructure up and running"* / *"Minimal / critical / core running"* / *"Database replicating, app off"* / *"AMIs ready, launch on disaster"* | **Pilot Light** |
+| *"Scaled-down full environment always running"* / *"Smaller copy of production in DR region"* / *"Reduced capacity but ready"* | **Warm Standby** |
+| *"Full environment in multiple regions serving traffic"* / *"Active-active"* / *"Near-zero RTO/RPO"* / *"No noticeable downtime"* | **Multi-Site Active-Active** |
+
+#### The disambiguation ladder
+
+Ask in this order to pick the right strategy from question wording:
+
+```
+1. "Is ANYTHING running in the DR region pre-disaster?"
+     └── NO  → Backup & Restore
+     └── YES → continue ↓
+
+2. "Is it just the database / minimum core?"
+     └── YES → Pilot Light
+     └── NO  → continue ↓
+
+3. "Is it a scaled-down full environment?"
+     └── YES → Warm Standby
+     └── NO, it's full-sized across multiple regions → Multi-Site Active-Active
+```
+
+The very first question disambiguates **Backup & Restore** from **Pilot Light** — the most common trap. Both have long-ish RTOs and feel similar, but only Pilot Light has anything running pre-disaster.
+
+#### Why the "pilot light" metaphor matters
+
+Literal interpretation: the small flame in an old gas boiler that lets the main burner light up instantly. The **database is the pilot light**; the app tier *ignites from it* when needed. So "only the critical infrastructure up and running" — the DB is on, app tier off — = **Pilot Light** every time.
+
+Contrast with Backup & Restore: the DR region is **completely dark**, the database has to be **restored from a snapshot** during the disaster. That restore time is usually the slowest part of recovery, which is why Pilot Light (skipping it) cuts RTO from hours to minutes.
 
 ### AWS Elastic Disaster Recovery (DRS) — formerly CloudEndure
 
