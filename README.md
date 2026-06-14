@@ -10667,44 +10667,98 @@ DRS works at the **VM block-level** — for AWS-native services with their own D
 
 ### AWS Backup — centralised backup orchestration
 
-The umbrella service for **backups across many AWS services** with policy-based scheduling, cross-region copy, cross-account copy, and immutability.
+The umbrella service for **backups across many AWS services** with policy-based scheduling, cross-region copy, cross-account copy, and immutability. It's a **manager**, not a new backup engine — it calls the underlying snapshot mechanisms (EBS snapshots, RDS snapshots, etc.) under the hood.
 
-**What AWS Backup covers:**
+#### What AWS Backup is NOT
+
+| Misconception | Reality |
+| ------------- | ------- |
+| *"Replaces the underlying snapshot mechanism"* | No — calls EBS snapshots, RDS snapshots, etc. under the hood. It's a manager, not a new backup engine |
+| *"Manages every type of data on AWS"* | No — only specific services (see supported list below) |
+| *"Includes app-level / cross-instance consistency by default"* | Most backups are crash-consistent. For consistent DB backups, the underlying service's snapshot is application-aware (e.g. RDS knows the engine and quiesces correctly) |
+| *"Replaces DRS for VM DR"* | No — DRS is continuous replication for VMs. AWS Backup is point-in-time snapshots |
+| *"Manages CloudWatch Logs / CloudTrail logs"* | No — log data uses its own retention / S3 export, not AWS Backup |
+
+#### What AWS Backup supports
 
 | Service | Backup type |
 | ------- | ----------- |
-| **EBS, EFS, FSx, RDS, Aurora, DynamoDB, S3, Storage Gateway** | Snapshot-based backups |
-| **EC2** (whole instance, with EBS + metadata) | Image + snapshot |
-| **VMware (via AWS Backup Gateway)** | On-prem VM backups |
-| **Redshift** | Snapshot |
-| **Neptune, DocumentDB, Timestream** | Snapshot |
+| **EBS** | EBS snapshots |
+| **EFS** | EFS backups |
+| **FSx** (Windows / Lustre / NetApp ONTAP / OpenZFS) | FSx backups |
+| **RDS / Aurora** | Snapshots (with optional PITR for Aurora) |
+| **DynamoDB** | On-demand + continuous backups (PITR) |
+| **S3** | Bucket-level backups (newer; covers versioned objects) |
+| **Storage Gateway** | Volume snapshots |
+| **EC2** | Image + snapshot (whole-instance, including instance metadata) |
+| **Redshift** | Snapshots |
+| **Neptune, DocumentDB, Timestream** | Snapshots |
+| **VMware on-prem** (via **AWS Backup Gateway** virtual appliance) | VM-level backups into AWS |
+| **SAP HANA on EC2** | Application-aware backups |
 
-**Headline features the exam tests:**
+#### What it does NOT support
+
+| Not supported | Use instead |
+| ------------- | ----------- |
+| **ElastiCache (Redis or Memcached)** | Native ElastiCache snapshots → manually export to S3; Memcached has no DR |
+| **CloudWatch Logs / CloudTrail logs** | Native log retention / export to S3 + Glacier |
+| **Lambda function code** | SAM / CDK / IaC for code; AWS Backup isn't for code artefacts |
+| **CodeCommit repositories** | Git is its own backup story |
+| **OpenSearch** | Native OpenSearch snapshots to S3 |
+
+#### Headline features the exam tests
 
 | Feature | What it does |
 | ------- | ------------ |
-| **Backup plans** | Schedule + retention + lifecycle in a single policy. Apply to many resources by tag |
-| **Backup vaults** | Where backups land. Per-vault KMS encryption + access policy |
-| **Cross-region copy** | Plans can copy backups to another region automatically |
-| **Cross-account copy** | Copy to a vault in a *separate* security/log-archive account (defence against compromised source account) |
-| **Vault Lock** | Make a vault **immutable** (WORM) — backups can't be deleted, not even by AWS root user. Ransomware defence |
-| **Audit Manager integration** | Compliance evidence for backup policies |
-| **Org-wide policies** | Set backup policy at the Organisation level — applies to all accounts |
+| **Backup plans** | Schedule + retention + lifecycle in a single policy. Apply via **tag selectors** so any resource with a matching tag is auto-backed-up |
+| **Backup vaults** | Where backups land. Per-vault **KMS key** + IAM access policy |
+| **Cross-region copy** | Plans can copy backups to another region automatically (for DR) |
+| **Cross-account copy** | Copy to a vault in a *separate* security/log-archive account — survives a compromised source account |
+| **Vault Lock** | Make a vault **immutable (WORM)** — backups can't be deleted, not even by AWS root user. The ransomware defence. Two modes (see below) |
+| **Vault Lock — Governance mode** | Admins with specific IAM permissions **can** override / change retention. Useful when you want most users locked out but admins can fix mistakes |
+| **Vault Lock — Compliance mode** | **Truly immutable. Irreversible.** Even the root user can't delete or shorten retention. Required for regulated workloads (SEC 17a-4, FINRA). **Set with care — cannot be undone** |
+| **Backup Audit Manager** | Pre-built reports for backup compliance — resource coverage, plan adherence, audit logs. Maps to SOC2 / HIPAA / PCI controls |
+| **Point-in-Time Recovery (PITR)** | For Aurora, DynamoDB, RDS — restore to any second within the retention window (not just to the snapshot times) |
+| **Org-wide backup policies** | Set backup policy at the **AWS Organisations** level → applied to all member accounts via Service Control Policy-style enforcement |
+| **Tag-based resource selection** | Backup plan can target *"any resource with tag `Backup=daily`"* — no need to enumerate resources individually |
+| **Lifecycle to cold storage** | Backups can transition to **cold-storage tier** after N days (cheaper, slower restore) |
+| **On-demand backups** | Trigger an immediate backup outside the schedule (e.g. pre-deployment) |
 
-**The org-wide ransomware pattern (heavily tested):**
+#### Vault Lock — Compliance vs Governance (the critical distinction)
+
+| | **Governance mode** | **Compliance mode** |
+| - | ------------------- | -------------------- |
+| Can be unlocked / changed? | ✅ Yes, by IAM-permitted admins | ❌ **No — irreversible** |
+| Can shorten retention? | ✅ Yes (with permission) | ❌ No, even by root |
+| Use for | Internal policy enforcement, ransomware protection with admin escape valve | Regulatory mandates (SEC 17a-4, FINRA, GxP) where law requires immutability |
+| Trap | Easy to revert; doesn't satisfy strict regulators | **Permanent — there is no "undo"**. Set the retention window carefully |
+
+**Exam trap:** *"financial services regulation requires immutable backups for 7 years"* → **Compliance mode** (Governance isn't strict enough). *"prevent accidental deletion but allow admin overrides"* → **Governance mode**.
+
+#### The org-wide ransomware pattern (heavily tested)
 
 ```
 Source account                  Central backup account (locked down)
 ──────────────                  ────────────────────────────────────
 EBS / RDS / DynamoDB     ───►   Backup vault (KMS-encrypted)
-   ↑                              + Vault Lock (immutable)
+   ↑                              + Vault Lock (Compliance mode)
    Attacker compromises           + Cross-region copy
-   source account; deletes        + Limited IAM access
+   source account; deletes        + Restrictive IAM access
    local backups                  → Attacker cannot reach or delete
                                     these backups from source account
 ```
 
-Even if an attacker compromises the source account and deletes all local backups, the immutable cross-account vault survives.
+Even if an attacker compromises the source account and deletes all local backups, the immutable cross-account vault survives. **Three ingredients** are essential to make this work:
+
+1. **Cross-account vault** — backups land in a *different* AWS account from the source
+2. **Vault Lock in Compliance mode** — backups in that vault can't be deleted, even by root
+3. **Restrictive IAM** in the backup account — only a tiny, audited set of principals can interact with the vault
+
+If any of the three is missing, ransomware can reach the backups.
+
+#### Mental model
+
+> *AWS Backup = **central manager** for AWS-native backups across many services. It schedules, retains, copies cross-region / cross-account, encrypts, and locks down — but it **calls** the underlying snapshot mechanism (EBS snapshots, RDS snapshots, etc.); it doesn't replace them. The killer features are **cross-account vaults + Vault Lock in Compliance mode** for ransomware defence, and **org-wide backup policies** for fleet-scale governance. Not all AWS services are supported (notably **ElastiCache, CloudWatch Logs, Lambda code**) — those need their own backup story.*
 
 ### Cross-Region Replication by Service (the data layer)
 
