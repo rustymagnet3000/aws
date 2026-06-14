@@ -282,6 +282,7 @@
   - [What DMS Does](#what-dms-does)
   - [Homogeneous vs Heterogeneous Migrations](#homogeneous-vs-heterogeneous-migrations)
   - [AWS Schema Conversion Tool (SCT)](#aws-schema-conversion-tool-sct)
+  - [Worked Example: On-prem Oracle → Amazon Aurora](#worked-example-on-prem-oracle--amazon-aurora)
   - [Replication Instance Sizing](#replication-instance-sizing)
   - [When DMS Is Not the Answer](#when-dms-is-not-the-answer)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers)
@@ -9368,6 +9369,105 @@ Source (Oracle PL/SQL)  ──→  SCT  ──→  Target (PostgreSQL PL/pgSQL)
 3. Cut over the application to the target
 
 **SCT also helps:** migrating data warehouses (Teradata, Netezza, Greenplum, Vertica) to **Redshift** — schema conversion is essential because warehouse DDL/SQL differs significantly.
+
+### Worked Example: On-prem Oracle → Amazon Aurora
+
+The single most-tested heterogeneous-migration scenario on the exam. The trap is thinking one tool is enough — **SCT and DMS together** is the answer.
+
+#### Why both tools are needed
+
+Oracle and Aurora are **different engines**. Aurora speaks PostgreSQL or MySQL dialects, not Oracle's SQL + PL/SQL. You have two separate problems → two separate tools.
+
+| | Oracle | Aurora (PostgreSQL flavour, the typical target) |
+| - | ------ | --------------------------------------------- |
+| SQL dialect | Oracle SQL + PL/SQL | PostgreSQL + PL/pgSQL |
+| Stored procs | PL/SQL | PL/pgSQL |
+| Data types | NUMBER, VARCHAR2, CLOB | NUMERIC, VARCHAR, TEXT |
+| Sequences / functions | Oracle syntax | PostgreSQL syntax |
+
+**SCT** translates the schema + code; **DMS** moves the data. Neither alone solves the whole problem.
+
+#### The end-to-end workflow
+
+```
+1. Discovery + assessment
+   └── SCT generates an "Assessment Report":
+       what's auto-convertible, what needs manual work,
+       estimated migration effort
+
+2. Schema conversion
+   └── SCT converts Oracle schema + PL/SQL → Aurora PostgreSQL DDL + PL/pgSQL
+   └── Apply the converted schema to the empty Aurora target
+
+3. Manual fix-up
+   └── Rewrite anything SCT couldn't auto-convert
+       (complex PL/SQL, Oracle-specific features without equivalents)
+
+4. Data migration with DMS
+   ├── Full load: DMS reads all existing rows from Oracle → writes to Aurora
+   └── CDC: DMS streams ongoing changes (INSERT / UPDATE / DELETE)
+       from Oracle's redo logs to Aurora → minimises cutover downtime
+
+5. Cutover
+   └── Quiesce writes on Oracle
+   └── Wait for CDC to catch up (seconds)
+   └── Switch the application's connection string to Aurora
+   └── Decommission Oracle when confident
+```
+
+#### Why Aurora PostgreSQL (not Aurora MySQL) for Oracle migration
+
+| | Aurora PostgreSQL | Aurora MySQL |
+| - | ----------------- | ------------- |
+| Syntax similarity to Oracle | ✅ Closer — PL/pgSQL resembles PL/SQL | ❌ More translation work |
+| Stored-procedure conversion | Easier | Harder |
+| Feature parity (sequences, window functions, CTEs) | Better | Worse |
+| AWS recommendation for Oracle migration | ✅ **Default choice** | Less common |
+
+If an exam question says "Oracle to Aurora" without specifying, **Aurora PostgreSQL** is the safer assumption.
+
+#### Wrong-answer traps for this exact scenario
+
+| Wrong answer | Why it's wrong |
+| ------------ | -------------- |
+| *"DMS alone"* | DMS moves data but won't translate the schema across SQL dialects. Aurora would have no tables to write into |
+| *"Take an RDS snapshot and restore as Aurora"* | RDS snapshots are **engine-specific** — you can't restore an Oracle snapshot as Aurora |
+| *"Use Oracle Data Pump (`expdp`/`impdp`)"* | Native Oracle tool — works for Oracle → Oracle (homogeneous). Aurora can't import an Oracle dump |
+| *"Use MGN (AWS Application Migration Service)"* | MGN migrates **whole VMs**, not databases. You'd end up running Oracle on EC2 in AWS, not Aurora |
+| *"Just create tables manually + DMS"* | Possible for tiny schemas but not the AWS-recommended approach. SCT does this automatically and catches the edge cases |
+| *"AWS Babelfish for Aurora PostgreSQL"* | Babelfish is a **SQL Server** compatibility layer for Aurora PostgreSQL — not for Oracle |
+
+#### Large-database variant — Snowball Edge bulk + DMS CDC catch-up
+
+If the Oracle dataset is TB-scale and bandwidth is the bottleneck:
+
+```
+Phase 1: Bulk transfer via Snowball Edge
+  └── Export Oracle to Snowball Edge appliance on-prem
+  └── AWS ships Snowball back, imports into S3
+  └── Bulk-load into Aurora from S3
+
+Phase 2: DMS CDC catch-up
+  └── DMS replicates changes that accumulated during transfer + transit
+  └── Cutover when CDC catches up
+```
+
+This **Snowball + DMS CDC** pattern is itself a common exam trigger for "initial dataset too large to stream over the network."
+
+#### Quick exam triggers for the Oracle → Aurora scenario
+
+| Phrasing | Answer |
+| -------- | ------ |
+| *"Migrate on-prem Oracle to Amazon Aurora"* | **SCT + DMS** (heterogeneous) |
+| *"Migrate on-prem Oracle to RDS for Oracle"* | **DMS alone** (homogeneous — same engine, no schema conversion) |
+| *"Convert Oracle PL/SQL to PostgreSQL"* | **SCT** |
+| *"Move the data with minimal downtime"* | **DMS with full load + CDC** |
+| *"Oracle DB too large to stream over the internet"* | **Snowball Edge for bulk + DMS CDC for catch-up** |
+| *"Migrate the whole Oracle server, not just the database"* | **MGN** (you'd get Oracle on EC2, not Aurora — usually NOT what's wanted) |
+
+#### Mental model
+
+> *Heterogeneous DB migration = **two tools, two jobs**. **SCT** converts the schema + stored procs (different SQL dialects); **DMS** moves the data (full load + CDC). Neither alone is enough. The single most common exam trap is picking just one — usually DMS — and forgetting that Aurora needs the schema translated first. The moment the source and target engines differ, SCT enters the picture.*
 
 ### Replication Instance Sizing
 
