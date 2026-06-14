@@ -330,6 +330,7 @@
   - [Route 53 DR Failover Patterns](#route-53-dr-failover-patterns)
   - [Multi-AZ vs Multi-Region — when each is enough](#multi-az-vs-multi-region--when-each-is-enough)
   - [DR Testing — the missing half of any plan](#dr-testing--the-missing-half-of-any-plan)
+  - [DR Gotchas and Common Traps](#dr-gotchas-and-common-traps)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-21)
   - [Exam Triggers](#exam-triggers-21)
   - [Mental Model](#mental-model-2)
@@ -10830,6 +10831,140 @@ A DR plan you've never tested is a DR plan that doesn't work. The exam sometimes
 | **Chaos engineering** | Inject failures during normal operation to validate ongoing resilience |
 
 Most regulated orgs are **required** to perform a DR test at least annually with documented results.
+
+### DR Gotchas and Common Traps
+
+Five service-specific traps that get tested constantly. Each has a "looks fine but actually breaks" quality.
+
+#### 1. Aurora Global Database — Managed Failover vs Unplanned Failover
+
+Two different operations with **different RPO**:
+
+| | **Managed Failover** | **Unplanned Failover** |
+| - | --------------------- | ------------------------ |
+| Triggered by | **You** — controlled, planned (DR drill, maintenance, planned region exit) | **You** — invoked **during a real disaster** when the primary region is unavailable |
+| Data loss | **Zero** — waits for replication to fully catch up before switching | **Possible** — whatever's in flight at the moment of disaster is lost (typical RPO < 1 second, but not guaranteed zero) |
+| Use for | Drills, planned migrations, gradual region exit | Actual disaster recovery |
+| Speed | ~1 minute | ~1 minute |
+
+**Exam trap:** *"how to fail over Aurora Global Database with zero data loss"* → **Managed failover**, only available when the primary region is reachable. If the primary is dead, you're using unplanned failover with whatever the replication lag was at the moment of failure.
+
+#### 2. S3 CRR does NOT replicate existing objects
+
+**S3 Cross-Region Replication only replicates objects created AFTER the replication rule is configured.** Existing objects in the source bucket stay where they are — invisible to CRR.
+
+```
+Day 1:  100 GB of objects exist in source bucket
+Day 2:  Enable Cross-Region Replication rule
+Day 3:  New objects (PUT today) → replicated ✅
+        Existing 100 GB from Day 1 → NOT replicated ❌
+```
+
+**The fix:** **S3 Batch Replication** — a one-shot job that replicates the existing-object backlog. Without it, your DR target is missing all historical data.
+
+**Other CRR prerequisites people forget:**
+
+- **Versioning must be enabled** on BOTH source and destination buckets
+- Source and destination must be in **different regions** (use Same-Region Replication / SRR for same-region)
+- IAM role must grant S3 permission to read source + write destination
+- Delete markers are NOT replicated by default (configurable)
+
+**Exam trap:** *"set up CRR, but the DR bucket still has fewer objects than source"* → enable **Batch Replication** to fill the historical gap.
+
+#### 3. DynamoDB Global Tables — Last-Writer-Wins Conflict Resolution
+
+Global Tables are **multi-master active-active** — every region can write. When two regions write the same item simultaneously, **the write with the later wall-clock timestamp wins**. The "loser" write is silently discarded.
+
+```
+Time     Region A             Region B
+─────    ────────             ────────
+T=0      PUT item X, value=10
+T=0.05                        PUT item X, value=20
+                                       ↓
+                              Both writes replicate
+                                       ↓
+                              Last-writer-wins: B's write (T=0.05) wins
+                              A's write (T=0) is overwritten
+```
+
+**Why this is a problem:**
+
+- **E-commerce inventory** — Region A subtracts 1 (5 → 4), Region B subtracts 1 simultaneously (5 → 4). Both think there are 4 left; the true answer is 3
+- **Leaderboards** — A user scores 100 in Region A, 50 in Region B at the same time. The earlier write loses; their best score may not be recorded
+- **Counters** — same problem; concurrent increments race
+
+**Mitigations:**
+
+- **Route writes to a single region** at a time (active-active for reads, active-passive for writes) — defeats half the point but is sometimes necessary
+- Use **conditional writes** (`ConditionExpression`) to detect conflicts at write time
+- Application-layer **conflict resolution** (e.g. CRDT-style data models)
+
+**Exam trap:** *"DynamoDB Global Tables guarantee no data loss on concurrent writes"* → **wrong**. Last-writer-wins discards the loser.
+
+#### 4. RDS Read Replica Promotion is One-Way
+
+Once you **promote a read replica to standalone** (during DR failover), it becomes a primary in its own right. **You cannot revert it back to a replica.**
+
+```
+Before:  us-east-1 primary  ──── async replication ────►  eu-west-1 read replica
+                                                          (read-only)
+
+Disaster, promote:
+         us-east-1 (down)                                  eu-west-1 NEW PRIMARY
+                                                          (writable, no upstream)
+
+After primary recovers — to failback, you have to:
+  1. Establish replication from eu-west-1 NEW PRIMARY → us-east-1 NEW REPLICA
+     (yes, the direction is reversed from before)
+  2. Wait for full sync
+  3. Plan a cutover from eu-west-1 → us-east-1
+  4. Quiesce eu-west-1, swing app
+  5. Promote us-east-1 to primary again
+  6. Optionally rebuild eu-west-1 as a fresh read replica
+```
+
+**The painful bit:** failback isn't a one-click operation. It's a fresh DR exercise in reverse, often taking days to weeks to plan.
+
+**Exam trap:** *"How do we get back to running primary in us-east-1 after the DR event?"* → **rebuild replication in reverse + reverse-cutover.** Not "just demote the eu-west-1 instance back to replica" (you can't).
+
+**Aurora Global Database vs RDS** on this point:
+
+- **Aurora Global Database** has a built-in **"managed failback"** option that handles the direction reversal for you. Much smoother
+- **RDS (non-Aurora) read replicas** require the manual rebuild described above
+
+#### 5. Aurora Backtrack is NOT DR
+
+**Aurora Backtrack** rewinds the Aurora cluster in-place to a recent point in time. Useful for:
+
+- *"We just ran a bad `DELETE FROM users;` — rewind 5 minutes"*
+- *"Schema migration broke things — rewind to before the migration"*
+- *"App deployed corrupt data — rewind"*
+
+**It does NOT protect against:**
+
+- Region failure (Backtrack stays in the same region)
+- Cluster deletion
+- Application logic errors that happened more than the retention window ago
+
+```
+Aurora Backtrack:                  Aurora Global Database:
+─────────────────                  ─────────────────────────
+us-east-1 cluster                  us-east-1 primary
+   │                                  │
+   │ Backtrack (in-place rewind)      │ Cross-region replication
+   │ within the same cluster          ▼
+   ▼                                  eu-west-1 secondary
+us-east-1 cluster                  
+(rewound state)                    On region failure: promote eu-west-1
+                                   ─ this IS DR
+
+If us-east-1 region fails:
+   Backtrack can't help — you have
+   no access to the cluster
+   ─ this is NOT DR
+```
+
+**Exam trap:** *"protect Aurora against accidental data deletion"* → **Backtrack** (in-region rewind). *"protect Aurora against region failure"* → **Aurora Global Database** (cross-region). They're complementary, not interchangeable — many teams use both.
 
 ### Common Anti-patterns (exam wrong answers)
 
