@@ -282,10 +282,34 @@
   - [What DMS Does](#what-dms-does)
   - [Homogeneous vs Heterogeneous Migrations](#homogeneous-vs-heterogeneous-migrations)
   - [AWS Schema Conversion Tool (SCT)](#aws-schema-conversion-tool-sct)
+  - [Worked Example: On-prem Oracle → Amazon Aurora](#worked-example-on-prem-oracle--amazon-aurora)
   - [Replication Instance Sizing](#replication-instance-sizing)
   - [When DMS Is Not the Answer](#when-dms-is-not-the-answer)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers)
   - [Exam Triggers](#exam-triggers)
+- [AWS Application Migration Service (MGN)](#aws-application-migration-service-mgn)
+  - [What MGN is NOT](#what-mgn-is-not)
+  - [How MGN actually works](#how-mgn-actually-works)
+  - [Core concepts](#core-concepts-7)
+  - [Numbered migration flow](#numbered-migration-flow)
+  - [Wave / Application organisation (for big migrations)](#wave--application-organisation-for-big-migrations)
+  - [MGN vs DRS — when each fits](#mgn-vs-drs--when-each-fits)
+  - [Application Discovery Service (the precursor to MGN)](#application-discovery-service-the-precursor-to-mgn)
+  - [Use cases](#use-cases)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-22)
+  - [Exam Triggers](#exam-triggers-22)
+  - [Mental model](#mental-model-3)
+- [AWS Migration Hub](#aws-migration-hub)
+  - [What Migration Hub is NOT](#what-migration-hub-is-not)
+  - [The three main components](#the-three-main-components)
+  - [How a migration project actually flows](#how-a-migration-project-actually-flows)
+  - [The 6 Rs framework (you'll see this on the exam)](#the-6-rs-framework-youll-see-this-on-the-exam)
+  - [Application Discovery Service deep dive](#application-discovery-service-deep-dive)
+  - [Refactor Spaces (the strangler-fig tool)](#refactor-spaces-the-strangler-fig-tool)
+  - [Use cases](#use-cases-1)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-23)
+  - [Exam Triggers](#exam-triggers-23)
+  - [Mental model](#mental-model-4)
 - [Route 53](#route-53)
   - [Authoritative vs Non-Authoritative DNS](#authoritative-vs-non-authoritative-dns)
   - [DNS Record Types](#dns-record-types)
@@ -294,6 +318,22 @@
   - [TTL (Time to Live)](#ttl-time-to-live)
   - [Route 53 Health Checks](#route-53-health-checks)
   - [Route 53 Resolver (Hybrid DNS)](#route-53-resolver-hybrid-dns)
+- [AWS Disaster Recovery](#aws-disaster-recovery)
+  - [What DR is NOT (the boundaries)](#what-dr-is-not-the-boundaries)
+  - [RTO and RPO — the two metrics every DR question asks about](#rto-and-rpo--the-two-metrics-every-dr-question-asks-about)
+  - [The Four DR Strategies (THE framework)](#the-four-dr-strategies-the-framework)
+  - [Decision matrix — picking a strategy](#decision-matrix--picking-a-strategy)
+  - [Keyword decoder for DR exam questions](#keyword-decoder-for-dr-exam-questions)
+  - [AWS Elastic Disaster Recovery (DRS) — formerly CloudEndure](#aws-elastic-disaster-recovery-drs--formerly-cloudendure)
+  - [AWS Backup — centralised backup orchestration](#aws-backup--centralised-backup-orchestration)
+  - [Cross-Region Replication by Service (the data layer)](#cross-region-replication-by-service-the-data-layer)
+  - [Route 53 DR Failover Patterns](#route-53-dr-failover-patterns)
+  - [Multi-AZ vs Multi-Region — when each is enough](#multi-az-vs-multi-region--when-each-is-enough)
+  - [DR Testing — the missing half of any plan](#dr-testing--the-missing-half-of-any-plan)
+  - [DR Gotchas and Common Traps](#dr-gotchas-and-common-traps)
+  - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-21)
+  - [Exam Triggers](#exam-triggers-21)
+  - [Mental Model](#mental-model-2)
 - [Elastic Beanstalk](#elastic-beanstalk)
 - [Solution Architecture Examples](#solution-architecture-examples)
   - [Classic Web App](#classic-web-app)
@@ -9331,6 +9371,105 @@ Source (Oracle PL/SQL)  ──→  SCT  ──→  Target (PostgreSQL PL/pgSQL)
 
 **SCT also helps:** migrating data warehouses (Teradata, Netezza, Greenplum, Vertica) to **Redshift** — schema conversion is essential because warehouse DDL/SQL differs significantly.
 
+### Worked Example: On-prem Oracle → Amazon Aurora
+
+The single most-tested heterogeneous-migration scenario on the exam. The trap is thinking one tool is enough — **SCT and DMS together** is the answer.
+
+#### Why both tools are needed
+
+Oracle and Aurora are **different engines**. Aurora speaks PostgreSQL or MySQL dialects, not Oracle's SQL + PL/SQL. You have two separate problems → two separate tools.
+
+| | Oracle | Aurora (PostgreSQL flavour, the typical target) |
+| - | ------ | --------------------------------------------- |
+| SQL dialect | Oracle SQL + PL/SQL | PostgreSQL + PL/pgSQL |
+| Stored procs | PL/SQL | PL/pgSQL |
+| Data types | NUMBER, VARCHAR2, CLOB | NUMERIC, VARCHAR, TEXT |
+| Sequences / functions | Oracle syntax | PostgreSQL syntax |
+
+**SCT** translates the schema + code; **DMS** moves the data. Neither alone solves the whole problem.
+
+#### The end-to-end workflow
+
+```
+1. Discovery + assessment
+   └── SCT generates an "Assessment Report":
+       what's auto-convertible, what needs manual work,
+       estimated migration effort
+
+2. Schema conversion
+   └── SCT converts Oracle schema + PL/SQL → Aurora PostgreSQL DDL + PL/pgSQL
+   └── Apply the converted schema to the empty Aurora target
+
+3. Manual fix-up
+   └── Rewrite anything SCT couldn't auto-convert
+       (complex PL/SQL, Oracle-specific features without equivalents)
+
+4. Data migration with DMS
+   ├── Full load: DMS reads all existing rows from Oracle → writes to Aurora
+   └── CDC: DMS streams ongoing changes (INSERT / UPDATE / DELETE)
+       from Oracle's redo logs to Aurora → minimises cutover downtime
+
+5. Cutover
+   └── Quiesce writes on Oracle
+   └── Wait for CDC to catch up (seconds)
+   └── Switch the application's connection string to Aurora
+   └── Decommission Oracle when confident
+```
+
+#### Why Aurora PostgreSQL (not Aurora MySQL) for Oracle migration
+
+| | Aurora PostgreSQL | Aurora MySQL |
+| - | ----------------- | ------------- |
+| Syntax similarity to Oracle | ✅ Closer — PL/pgSQL resembles PL/SQL | ❌ More translation work |
+| Stored-procedure conversion | Easier | Harder |
+| Feature parity (sequences, window functions, CTEs) | Better | Worse |
+| AWS recommendation for Oracle migration | ✅ **Default choice** | Less common |
+
+If an exam question says "Oracle to Aurora" without specifying, **Aurora PostgreSQL** is the safer assumption.
+
+#### Wrong-answer traps for this exact scenario
+
+| Wrong answer | Why it's wrong |
+| ------------ | -------------- |
+| *"DMS alone"* | DMS moves data but won't translate the schema across SQL dialects. Aurora would have no tables to write into |
+| *"Take an RDS snapshot and restore as Aurora"* | RDS snapshots are **engine-specific** — you can't restore an Oracle snapshot as Aurora |
+| *"Use Oracle Data Pump (`expdp`/`impdp`)"* | Native Oracle tool — works for Oracle → Oracle (homogeneous). Aurora can't import an Oracle dump |
+| *"Use MGN (AWS Application Migration Service)"* | MGN migrates **whole VMs**, not databases. You'd end up running Oracle on EC2 in AWS, not Aurora |
+| *"Just create tables manually + DMS"* | Possible for tiny schemas but not the AWS-recommended approach. SCT does this automatically and catches the edge cases |
+| *"AWS Babelfish for Aurora PostgreSQL"* | Babelfish is a **SQL Server** compatibility layer for Aurora PostgreSQL — not for Oracle |
+
+#### Large-database variant — Snowball Edge bulk + DMS CDC catch-up
+
+If the Oracle dataset is TB-scale and bandwidth is the bottleneck:
+
+```
+Phase 1: Bulk transfer via Snowball Edge
+  └── Export Oracle to Snowball Edge appliance on-prem
+  └── AWS ships Snowball back, imports into S3
+  └── Bulk-load into Aurora from S3
+
+Phase 2: DMS CDC catch-up
+  └── DMS replicates changes that accumulated during transfer + transit
+  └── Cutover when CDC catches up
+```
+
+This **Snowball + DMS CDC** pattern is itself a common exam trigger for "initial dataset too large to stream over the network."
+
+#### Quick exam triggers for the Oracle → Aurora scenario
+
+| Phrasing | Answer |
+| -------- | ------ |
+| *"Migrate on-prem Oracle to Amazon Aurora"* | **SCT + DMS** (heterogeneous) |
+| *"Migrate on-prem Oracle to RDS for Oracle"* | **DMS alone** (homogeneous — same engine, no schema conversion) |
+| *"Convert Oracle PL/SQL to PostgreSQL"* | **SCT** |
+| *"Move the data with minimal downtime"* | **DMS with full load + CDC** |
+| *"Oracle DB too large to stream over the internet"* | **Snowball Edge for bulk + DMS CDC for catch-up** |
+| *"Migrate the whole Oracle server, not just the database"* | **MGN** (you'd get Oracle on EC2, not Aurora — usually NOT what's wanted) |
+
+#### Mental model
+
+> *Heterogeneous DB migration = **two tools, two jobs**. **SCT** converts the schema + stored procs (different SQL dialects); **DMS** moves the data (full load + CDC). Neither alone is enough. The single most common exam trap is picking just one — usually DMS — and forgetting that Aurora needs the schema translated first. The moment the source and target engines differ, SCT enters the picture.*
+
 ### Replication Instance Sizing
 
 DMS performance depends on the replication instance size. Right-sizing matters:
@@ -9347,6 +9486,93 @@ Common confusions on the exam:
 - **Migrate Hadoop / S3 data lake content** → **AWS DataSync** or **Snowball** depending on volume, not DMS
 - **Migrate the OS + database on EC2** → MGN, then point DMS at the new instance if you want to move the DB engine afterward
 - **Continuous data integration between cloud systems forever** → DMS *can* do this but a streaming service (Kinesis, MSK) or change data capture pipeline is often a better long-term answer
+
+### DMS vs Native DR for RDS and ElastiCache
+
+This is a common trap: people pick DMS for *"DR for my RDS database"* when AWS's native features beat it on every dimension. **DMS is a migration / heterogeneous-replication tool, not a DR tool.** For same-engine cross-region DR, the native features win.
+
+#### RDS DR options compared
+
+| Option | RTO | RPO | Cross-region? | Cost | Best for |
+| ------ | --- | --- | -------------- | ---- | -------- |
+| **Multi-AZ deployment** | Seconds–~1 min | ~0 (synchronous) | ❌ **Same region** | $$ (2× single-AZ) | **HA, not DR** — surviving AZ failure |
+| **Cross-region read replica** | Minutes (manual promotion) | Seconds (async binlog) | ✅ | $$ (replica + transfer) | **Standard RDS DR** for non-Aurora |
+| **Automated snapshots + cross-region copy** | Hours (restore) | Hours (snapshot frequency) | ✅ | $ | Backup & Restore tier |
+| **AWS Backup with cross-region copy** | Hours | Hours | ✅ | $ | Centralised orchestration + Vault Lock for ransomware |
+| **DMS with CDC to another region** | Minutes | Seconds | ✅ | $$$ (replication instance) | **Edge case only** — see below |
+
+**Why cross-region read replica beats DMS for RDS DR:**
+
+| Dimension | RDS read replica | DMS |
+| --------- | ---------------- | --- |
+| Setup complexity | One click in the console | Configure source/target endpoints + replication instance + tasks |
+| Cost | Replica only | Replication instance ($$$) + replica costs |
+| Promotion | Built-in `promote-read-replica` API | Manual cutover + re-point app |
+| RPO | Native async (seconds) | Native CDC (seconds) — same |
+| Operational overhead | Minimal | Manage the replication instance, monitor task health |
+
+Read replica wins on every dimension *except* heterogeneous engine support — which DR scenarios don't usually need.
+
+#### Aurora DR — Global Database is in a class of its own
+
+| Option | RTO | RPO | Notes |
+| ------ | --- | --- | ----- |
+| **Aurora Global Database** | **~1 minute** (managed failover) | **<1 second** | Storage-level replication; 1 primary + up to 5 secondary regions |
+| **Aurora cross-region snapshot copy** | Hours | Hours | Backup tier |
+| **Aurora Backtrack** | Minutes (in-place rewind) | n/a | **Same-region** time travel — not DR |
+| **DMS CDC to another Aurora** | Minutes | Seconds | Strictly worse than Global Database for the same job |
+
+**Why Aurora Global Database beats DMS:**
+
+- Global Database uses **storage-level replication** (Aurora's secret sauce) — faster than DMS's logical CDC
+- **Managed failover** button promotes a secondary to primary
+- Cross-region **read scaling** as a bonus
+- DMS would replicate via binlog/WAL, slower and more management
+
+**Rule:** use DMS to *migrate into* Aurora from a different engine. Use Aurora Global Database for ongoing DR once you're in Aurora.
+
+#### ElastiCache DR — totally different problem
+
+Caches are usually treated as rebuildable from the source-of-truth DB. But Redis sometimes holds session state / leaderboards that need DR. DMS doesn't help here — **ElastiCache is not a DMS source or target**.
+
+**Redis DR options:**
+
+| Option | RTO | RPO | Notes |
+| ------ | --- | --- | ----- |
+| **Multi-AZ with automatic failover** | <1 min | ~0 (sync to replica) | **HA, not DR** — within a region |
+| **ElastiCache Global Datastore for Redis** | Minutes | <1 second (async) | **The DR answer for Redis** — 1 primary + up to 2 secondary regions |
+| **Manual snapshot → cross-region copy** | Hours | Hours | Backup tier; RDB export to S3 + copy |
+| **DMS** | ❌ Not supported | n/a | ElastiCache isn't a DMS source or target |
+
+**Memcached DR:** **none**. Memcached has no persistence, no replication, no cross-region. Treat as ephemeral; **re-warm the cache from the source-of-truth DB** after failover. Plan for the cache-miss spike that hits the DB during cutover.
+
+#### When DMS IS actually the right answer for DR
+
+Edge cases only. If you see these, DMS is in scope:
+
+| Edge case | Why DMS fits |
+| --------- | ------------ |
+| **DR target is a different engine** (heterogeneous) | E.g. on-prem Oracle → AWS RDS PostgreSQL as the DR target. DMS + SCT |
+| **Mid-migration DR posture** | While migrating on-prem → AWS via DMS, the AWS-side DB *is* your DR target automatically |
+| **Cross-account DR where read replicas can't span the boundary** | Read replicas usually stay within an account; DMS can replicate cross-account |
+| **CDC into a non-DB target as part of DR posture** | E.g. mirror DB changes to S3 / Kinesis for downstream replay during DR |
+
+For 90%+ of RDS / Aurora DR scenarios, native features win.
+
+#### Exam triggers (DMS vs DR options)
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"DR for Aurora MySQL across regions, ~1 min RTO, sub-second RPO"* | **Aurora Global Database** (not DMS) |
+| *"DR for RDS PostgreSQL across regions"* | **Cross-region read replica + manual promotion** (not DMS) |
+| *"DR for ElastiCache Redis across regions"* | **Global Datastore for Redis** (not DMS — ElastiCache isn't a DMS target) |
+| *"DR for ElastiCache Memcached"* | **None — re-warm from DB after failover** (Memcached has no persistence) |
+| *"Cheapest RDS DR — accept hours of data loss"* | **Cross-region snapshot copy** (Backup & Restore tier) |
+| *"Cross-account RDS replication where read replicas can't span accounts"* | **DMS** (one of the few edge cases where DMS beats native) |
+| *"Migrate Oracle on-prem to Aurora PostgreSQL with ongoing CDC until cutover"* | **DMS + SCT** (migration, not DR) |
+| *"Promote RDS read replica in DR region to standalone primary"* | **`promote-read-replica`** API |
+
+**The mental model:** *DMS is for heterogeneous migration and CDC. For same-engine cross-region DR, AWS's native features (Aurora Global Database / RDS cross-region read replicas / ElastiCache Global Datastore for Redis) are simpler, cheaper, and faster. The trap is picking DMS for "DR for our RDS database" when the right answer is the native feature.*
 
 ### Common Anti-patterns (exam wrong answers)
 
@@ -9368,6 +9594,318 @@ Common confusions on the exam:
 - *"convert database schema from one engine to another"* → **SCT**
 - *"initial load is too big to stream over the internet"* → **Snowball Edge** for bulk + **DMS** CDC for catch-up
 - *"migrate VMs, not just the database"* → **MGN** (AWS Application Migration Service), not DMS
+
+## AWS Application Migration Service (MGN)
+
+**Anchored against DRS — same underlying tech, different lifecycle.** MGN is the **one-time migration** tool: replicate on-prem VMs to AWS, cut over, decommission the source. DRS is the **ongoing DR** tool: replicate VMs to AWS indefinitely, drill regularly, fail over only on disaster. Both derive from the acquired CloudEndure product, but they're configured and billed differently because they solve different problems.
+
+MGN replaced the older **AWS Server Migration Service (SMS)** in 2022. If you see SMS on an old practice exam, treat it as "use MGN instead."
+
+### What MGN is NOT
+
+| Question | Service | Not MGN because... |
+| -------- | ------- | ------------------- |
+| *"Ongoing DR for VMs"* | **AWS Elastic Disaster Recovery (DRS)** | Same tech, but DRS is designed to run indefinitely with drills + failback. MGN is designed to be temporary |
+| *"Migrate just a database"* | **AWS Database Migration Service (DMS)** | MGN moves whole VMs; DMS moves database data with optional schema conversion |
+| *"Migrate file / object data"* | **AWS DataSync** or **Snow Family** | Storage-only migration, no VM involved |
+| *"Track and orchestrate a migration project across many services"* | **AWS Migration Hub** | Migration Hub is the umbrella console; MGN is one of the replication engines it tracks |
+| *"Discover what's running on-prem before migrating"* | **AWS Application Discovery Service** (part of Migration Hub) | Discovery comes before MGN |
+
+### How MGN actually works
+
+```
+On-prem (source)                          AWS account (target region)
+────────────────                          ───────────────────────────
+
+  Source server                            Staging area:
+  (Linux / Windows VM,                       - Small t-shirt EC2 instance
+   physical, or another cloud)               - Replicated EBS volumes
+        │                                    - Continuous block sync
+        │  AWS Replication                   - Pay per source server
+        │  Agent installed                     while replicating
+        ▼
+   Continuous block-level ──► HTTPS to MGN ──►  Staging volumes
+   replication                                  catch up to source
+
+   ── On test launch ──
+                                          Launch TEST instances in
+                                          isolated subnets → verify
+                                          → tear down
+
+   ── On cutover ──
+                                          Launch CUTOVER instances
+                                          (full prod-sized, in target VPC)
+                                          → swing DNS / app endpoints
+                                          → stop the source server
+                                          → MGN "finalised"; staging deleted
+```
+
+The shape mirrors DRS exactly — same agent, same staging area architecture. The difference is **what happens next**: MGN expects you to *cut over and decommission* the source; DRS expects you to *keep replicating indefinitely* and only fail over on disaster.
+
+### Core concepts
+
+| Concept | What it is |
+| ------- | ---------- |
+| **Replication Agent** | Installed on each source server; performs continuous block-level replication to AWS |
+| **Replication Settings** | Per-application config: which subnet to stage in, EBS volume types, bandwidth throttle, network bandwidth |
+| **Launch Template** | What the cutover EC2 instance looks like: instance type, VPC, subnet, security groups, IAM role, tags |
+| **Test launch** | Spin up the target instance in **test mode** (isolated networking) → validate the app works → tear down. Repeat as needed without disrupting source |
+| **Cutover launch** | Spin up the production-grade target instance + swing traffic + stop the source |
+| **Post-launch actions** | SSM Automation runbooks that run after launch (install agents, configure monitoring, run validation scripts) |
+| **Wave** | A logical grouping of source servers to migrate together (e.g. "Wave 3: payment-app servers") |
+| **Application** | Higher-level grouping (e.g. "Payment app" contains 5 source servers across multiple waves) |
+| **Source server lifecycle** | `Not ready` → `Initial sync` → `Healthy` (replicating) → `Tested` → `Cutover` → `Cutover complete` (source can now be decommissioned) → `Archived` |
+
+### Numbered migration flow
+
+```
+1. Plan: discover on-prem servers (Application Discovery Service or manual inventory)
+       ↓
+2. Install Replication Agent on each source server
+       ↓
+3. MGN replicates continuously to the staging area (initial sync + ongoing CDC)
+       ↓
+4. Configure Launch Templates (target VPC, instance type, SGs, IAM role)
+       ↓
+5. Test launch — spin up target instance in isolated subnet
+       ↓
+6. Validate the app works (login, run smoke tests, check integrations)
+       ↓
+7. Iterate on launch template / post-launch actions until tests pass
+       ↓
+8. Schedule cutover with stakeholders
+       ↓
+9. Cutover launch — spin up production-grade target + swing DNS / app config
+       ↓
+10. Stop the source server (don't delete yet — keep for rollback window)
+       ↓
+11. Mark cutover complete in MGN → MGN tears down the staging area
+       ↓
+12. After acceptance period, decommission source
+```
+
+### Wave / Application organisation (for big migrations)
+
+Most real migrations move dozens to thousands of servers. MGN supports this with:
+
+| Construct | Use |
+| --------- | --- |
+| **Application** | Group of source servers belonging to the same workload (e.g. "Order management" = 8 servers) |
+| **Wave** | Group of applications migrated together in a single weekend / window (e.g. "Wave 5: payment-related apps") |
+| **Tags** | Custom metadata for filtering / reporting |
+| **Migration Hub integration** | Surface progress at the program level across waves |
+
+This lets a programme manager track *"40% of servers migrated; current wave is 80% tested, cutover scheduled for Saturday"*.
+
+### MGN vs DRS — when each fits
+
+| Need | Use |
+| ---- | --- |
+| **Move VMs from on-prem to AWS, then decommission source** | **MGN** |
+| **Move VMs from another cloud to AWS, then decommission source** | **MGN** |
+| **Continuously protect VMs against disaster, ongoing posture** | **DRS** |
+| **Regular DR drills without affecting production** | **DRS** (built-in test recovery) |
+| **AWS-to-AWS cross-region DR for EC2 fleets** | **DRS** |
+| **Lift-and-shift to AWS as part of a data centre exit** | **MGN** |
+| **Mid-migration, DR-side benefit while migration is ongoing** | MGN provides this implicitly (the AWS-side staged state acts as a temporary DR copy) |
+
+**Mnemonic:** *MGN = "move once and forget the source." DRS = "keep replicating in case the source dies."*
+
+### Application Discovery Service (the precursor to MGN)
+
+Most large migrations start with **discovery** — knowing what to move. AWS provides:
+
+| Tool | What it does |
+| ---- | ------------ |
+| **Application Discovery Service — Agentless Collector** | A VMware appliance you deploy in your data centre; pulls VM inventory + performance metrics from vCenter |
+| **Application Discovery Service — Agent-Based** | Install an agent on each Linux/Windows server for richer per-host data (running processes, network deps) |
+| **Migration Hub Strategy Recommendations** | Analyses discovered data + recommends migration strategy per app (rehost / replatform / refactor / retire) |
+
+Discovery data feeds directly into MGN waves and the Migration Hub project dashboard.
+
+### Use cases
+
+| Scenario | Why MGN fits |
+| -------- | ------------ |
+| **Data centre exit** (move 100s–1000s of servers to AWS) | Canonical case; MGN was designed for this |
+| **Cross-cloud migration** (Azure / GCP / OCI → AWS) | Same agent works on VMs in other clouds |
+| **Legacy app migration** that can't be containerised | Lift-and-shift unchanged; refactor later if needed |
+| **Acquired company integration** | Migrate the acquired company's VMs into your AWS estate |
+| **VMware migration with the source going away** | Pair with VMware Cloud on AWS or migrate directly to EC2 |
+
+### Common Anti-patterns (exam wrong answers)
+
+- **Using MGN for ongoing DR** → MGN is for one-time migration. Use **DRS** for ongoing replication
+- **Using MGN to migrate just a database** → use **DMS** + SCT. MGN migrates the whole VM (overkill if you only need the DB on a different engine)
+- **Skipping the test launch** → cutover failures are painful. Test launches are non-disruptive and reveal issues early
+- **Migrating without discovery** → you'll miss dependencies; apps break post-cutover when they can't reach forgotten services
+- **One giant cutover instead of waves** → too risky; wave-based approach allows rollback and learning
+- **Using the deprecated Server Migration Service (SMS)** → SMS is end-of-life; AWS pushes everyone to MGN
+- **Forgetting post-launch actions** → cutover instances may be missing monitoring agents, config management, security tooling. Use post-launch SSM Automation
+
+### Exam Triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Migrate on-prem VMs to AWS and decommission source"* | **AWS Application Migration Service (MGN)** |
+| *"Lift-and-shift hundreds of servers to AWS in waves"* | **MGN with Wave / Application organisation** |
+| *"Test the migrated app without affecting production"* | **MGN test launch** (isolated subnets) |
+| *"Migrate VMs from Azure / GCP to AWS"* | **MGN** (works with non-AWS sources) |
+| *"Continuously protect VMs for DR posture"* | **DRS**, not MGN |
+| *"Track migration progress across many services and waves"* | **AWS Migration Hub** (see next section) |
+| *"Discover on-prem servers before migrating"* | **Application Discovery Service** (part of Migration Hub) |
+| *"Migrate a Windows file server — keep file shares working"* | **MGN** (lifts the whole server) |
+| *"Cutover the migrated app, then keep the source for 2 weeks as fallback"* | **MGN cutover** (then mark complete after acceptance period) |
+| *"Modernise an app — break monolith into microservices during migration"* | **AWS Migration Hub Refactor Spaces** (strangler-fig), not MGN |
+| *"Why does my AWS doc still mention Server Migration Service?"* | **SMS is deprecated** — use MGN |
+
+### Mental model
+
+> *MGN = **DRS's sibling for one-time migration.** Same agent, same staging area, same continuous replication — but the workflow ends with **cutover + decommission source**, not **drill + failback**. Use it for data centre exits, cross-cloud lift-and-shift, and legacy app migration. Pair with **Application Discovery Service** for "what do we have?" and **Migration Hub** for "how's the project going?" If the source needs to stay running forever and you want DR insurance, that's **DRS**, not MGN.*
+
+## AWS Migration Hub
+
+**Anchored as the migration project dashboard.** Migration Hub is the **central console + status tracker** for migrating to AWS — it doesn't move anything itself, it orchestrates and reports on the underlying replication services (MGN, DRS, DMS) and adds discovery + planning + refactor tooling on top.
+
+Think of it as Jira-for-migrations: the place a programme manager goes to see *"how many servers across how many waves, what's their status, what's blocked?"*
+
+### What Migration Hub is NOT
+
+| Question | Service | Not Migration Hub because... |
+| -------- | ------- | ----------------------------- |
+| *"Actually move VMs to AWS"* | **MGN** | MGN does the replication; Migration Hub tracks it |
+| *"Actually move databases"* | **DMS** | DMS does the replication; Migration Hub aggregates the status |
+| *"Discover what's running on-prem"* | **Application Discovery Service** | ADS is a *component* of Migration Hub, not the whole thing |
+| *"Break a monolith into microservices"* | **Migration Hub Refactor Spaces** (a Migration Hub component) | Refactor Spaces is the strangler-fig piece; the rest of Migration Hub is about lift-and-shift |
+| *"Bill all my migration costs in one place"* | **AWS Cost Explorer / Budgets** | Migration Hub tracks project status, not cost |
+
+### The three main components
+
+| Component | Purpose |
+| --------- | ------- |
+| **Migration Hub Discovery** | The "what do we have on-prem?" tool. Uses **Application Discovery Service** (agentless + agent-based) to inventory servers, dependencies, performance metrics |
+| **Migration Hub Strategy Recommendations** | Analyses discovered data + recommends migration strategy per app: **rehost** (lift-and-shift) / **replatform** (some changes) / **refactor** (rebuild cloud-native) / **retire** / **retain** |
+| **Migration Hub Refactor Spaces** | The strangler-fig migration tool — gradually replace pieces of a monolith with microservices while keeping the app running. Routes traffic between old + new |
+| **Migration Hub Orchestrator** | Workflow automation — codify migration steps as runbooks, run them across waves |
+
+Plus status tracking — Migration Hub pulls status from MGN, DRS, DMS, and shows a unified migration project view.
+
+### How a migration project actually flows
+
+```
+1. PLAN
+   └── Migration Hub Discovery
+       └── Application Discovery Service finds on-prem servers,
+           captures performance + dependency data
+       └── Strategy Recommendations suggest 6R (rehost / replatform /
+           refactor / repurchase / retire / retain) per app
+
+2. PREPARE
+   └── Organise discovered servers into Applications + Waves
+   └── Configure target AWS environment (VPCs, IAM, networking)
+   └── Choose tools per app:
+       - Rehost     → MGN
+       - Replatform → MGN + post-launch customisations
+       - Refactor   → Migration Hub Refactor Spaces (strangler-fig)
+       - Repurchase → manual (SaaS)
+       - Retire     → manual (decommission)
+       - Retain     → keep on-prem
+
+3. MIGRATE
+   └── For each wave:
+       - Replication via MGN / DRS / DMS
+       - Test launches
+       - Cutover
+   └── Migration Hub tracks status across all of this
+
+4. OPERATE
+   └── Source decommissioned
+   └── New AWS environment monitored, optimised
+   └── Migration Hub closes out the project
+```
+
+### The 6 Rs framework (you'll see this on the exam)
+
+AWS's framework for what to do with each app being migrated:
+
+| R | Meaning | When to use |
+| - | ------- | ----------- |
+| **Rehost** | Lift-and-shift — move VM as-is | Quick migration, no app changes; use **MGN** |
+| **Replatform** | Minor changes (e.g. move DB to RDS instead of self-managed) | Modest cloud benefits without rewriting |
+| **Refactor** (or Re-architect) | Rewrite for cloud-native (serverless / microservices) | Maximum cloud benefits; use **Refactor Spaces** for strangler-fig |
+| **Repurchase** | Replace with a SaaS alternative | Switch from self-hosted CRM to Salesforce, etc. |
+| **Retire** | Turn it off — nobody uses it | Discovery reveals unused servers |
+| **Retain** | Keep on-prem for now | Compliance / latency / not-worth-it apps |
+
+Some sources list a seventh: **Relocate** (move VMware workloads to VMware Cloud on AWS without conversion). Same idea — the framework is "the 6/7 Rs."
+
+### Application Discovery Service deep dive
+
+Two collection modes:
+
+| Mode | How it works | Use when |
+| ---- | ------------ | -------- |
+| **Agentless Collector** | OVA (virtual appliance) deployed in your VMware environment. Pulls VM inventory + performance from vCenter | VMware-heavy environments; you can't install agents on every server |
+| **Agent-Based** | Install the Discovery Agent on each Linux/Windows server | Richer data: running processes, network connections between hosts, dependency mapping |
+
+Data is encrypted in transit + at rest, retained as long as Migration Hub exists, and feeds into Strategy Recommendations and into MGN/DRS for actual migration.
+
+### Refactor Spaces (the strangler-fig tool)
+
+For when you're not lifting-and-shifting — you're rebuilding while keeping the original running:
+
+```
+Before refactor:
+  Users ──► Monolith on-prem
+
+During refactor (Refactor Spaces routes traffic):
+  Users ──► API Gateway (Refactor Spaces)
+              ├──► Microservice A on AWS  (new — strangler)
+              ├──► Microservice B on AWS  (new)
+              └──► Monolith on-prem        (everything else, until refactored)
+
+After refactor:
+  Users ──► API Gateway ──► Microservices on AWS
+                            (monolith decommissioned)
+```
+
+Refactor Spaces handles the routing layer so you can incrementally peel functionality off the monolith without a big-bang cutover. Useful for the **Refactor** R in the 6 Rs.
+
+### Use cases
+
+| Scenario | Why Migration Hub fits |
+| -------- | ----------------------- |
+| **Large enterprise migration** (100s–1000s of servers) | Discovery + planning + status tracking are essential at scale |
+| **Migration programme** with multiple teams using MGN / DMS / DRS | Single console aggregates status across services |
+| **Compliance audit** of migration progress | Migration Hub exports project status / audit trails |
+| **Modernising a monolith incrementally** | Refactor Spaces + the Refactor R from the 6 Rs framework |
+| **Discovering "what's running" in a data centre** before deciding what to do | Application Discovery Service |
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Use Migration Hub to move VMs"* → Migration Hub orchestrates; **MGN** moves
+- *"Migration Hub does database migration"* → no — that's **DMS**
+- *"Use Application Discovery Service after migration"* → discovery is for **before** — to know what to migrate
+- *"Refactor Spaces lifts-and-shifts a monolith to AWS"* → no — Refactor Spaces is for **incremental refactoring**, not lift-and-shift. Use MGN for lift-and-shift
+- *"Skip discovery for a small migration"* → can be fine for <10 servers; essential for larger
+- *"Skip the 6 Rs analysis"* → leads to lifting-and-shifting things that should be retired or repurchased
+
+### Exam Triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Central console / dashboard tracking all migration activity"* | **AWS Migration Hub** |
+| *"Discover servers + dependencies in a data centre before migrating"* | **Application Discovery Service** |
+| *"Recommend whether each app should be rehosted / refactored / retired"* | **Migration Hub Strategy Recommendations** + 6 Rs framework |
+| *"Incrementally refactor a monolith to microservices without a big-bang cutover"* | **Migration Hub Refactor Spaces** (strangler-fig pattern) |
+| *"Track migration progress across MGN, DMS, and DRS in one place"* | **AWS Migration Hub** |
+| *"Plan and orchestrate a multi-wave migration programme"* | **Migration Hub** with Application/Wave constructs |
+| *"VMware environment — agentless discovery"* | **Application Discovery Service Agentless Collector** |
+| *"Detailed per-host dependency mapping with running processes"* | **Application Discovery Service Agent-Based** |
+
+### Mental model
+
+> *Migration Hub = **the migration project dashboard.** It doesn't move anything itself — **MGN / DRS / DMS** do the actual work. Migration Hub adds **discovery** (Application Discovery Service to find what to move), **planning** (Strategy Recommendations + the 6 Rs framework), **tracking** (unified status across replication services), and **refactoring** (Refactor Spaces for the strangler-fig pattern). For small migrations (a handful of servers), you can skip Migration Hub and just use MGN directly. For enterprise programmes (100s+ servers across teams), Migration Hub is what stops it becoming chaos.*
 
 ## Route 53
 
@@ -9766,6 +10304,706 @@ EC2 instance → "what is legacy-app.corp.local?"
 - *"hybrid DNS resolution across VPN"* → Route 53 Resolver endpoints
 - *"stop sending traffic to an unhealthy instance via DNS"* → health check + any routing policy that supports it
 - *"check is healthy only if multiple services are healthy"* → Calculated health check
+
+## AWS Disaster Recovery
+
+Disaster Recovery (DR) is *"what happens when an entire region or service fails — how fast do we recover and how much data do we lose?"* The exam tests two metrics, four strategies, and a handful of AWS-native services that implement them.
+
+### What DR is NOT (the boundaries)
+
+| Confused with | Actually is |
+| ------------- | ----------- |
+| **High Availability (HA)** | HA = surviving component / AZ failures *automatically within a region* (Multi-AZ, Auto Scaling, multi-instance ALBs). DR = surviving *region-wide* failure with a documented failover process |
+| **Backup** | Backups are *necessary* but not sufficient — DR is the orchestrated *use* of backups + replication + DNS + automation to actually restore service |
+| **Chaos Engineering** | Chaos engineering *tests* resilience by injecting failures. DR is the *plan + capability* to recover from a real one |
+| **Multi-AZ deployment** | Multi-AZ is HA for AZ failure, not DR. A region-level outage takes down all your AZs |
+
+### RTO and RPO — the two metrics every DR question asks about
+
+The exam phrases scenarios around these. Get them straight and ~half the DR questions answer themselves.
+
+| Metric | What it measures | "How much can we tolerate?" |
+| ------ | ---------------- | --------------------------- |
+| **RTO (Recovery Time Objective)** | How long until service is **restored** after the disaster | **Downtime tolerance** — "how many minutes / hours can we be offline?" |
+| **RPO (Recovery Point Objective)** | How much **data loss** is acceptable | "How much recent data can we afford to lose?" Measured backwards from disaster moment |
+
+```
+Timeline:
+                    ╔════════════════╗
+  ──── normal ─────►║   DISASTER     ║──── recovery ────► service restored
+                    ╚════════════════╝
+       ◄────RPO────► (data loss window)        ◄────RTO────► (downtime window)
+       last good                                              fully operational
+       backup point                                           in DR region
+```
+
+**Reading exam questions:**
+
+- *"Tolerate 4 hours of data loss"* → RPO = 4 hours → Backup & Restore is enough
+- *"Service must be back within 5 minutes"* → RTO = 5 minutes → Warm Standby or better
+- *"Zero downtime, zero data loss"* → RTO ≈ 0, RPO ≈ 0 → Multi-Site Active-Active
+
+### The Four DR Strategies (THE framework)
+
+AWS's Well-Architected DR framework defines four tiers. Each trades cost for RTO/RPO.
+
+| Strategy | RTO | RPO | Cost | What's running in DR region |
+| -------- | --- | --- | ---- | --------------------------- |
+| **Backup & Restore** | Hours–days | Hours | $ (cheapest) | **Nothing** — just backups in S3 / cross-region snapshots |
+| **Pilot Light** | 10s of minutes | Minutes | $$ | **Minimal core only** — database replicated and live, app servers off, AMIs ready to launch |
+| **Warm Standby** | Minutes | Seconds | $$$ | **Scaled-down full environment** — everything running but undersized |
+| **Multi-Site Active-Active** | Near-zero | Near-zero | $$$$ (most expensive) | **Full environment in multiple regions**, all serving traffic simultaneously |
+
+The progression: **more pre-running infrastructure → faster recovery → higher cost**. Pick the cheapest tier that meets your business RTO/RPO.
+
+#### Worked example for each strategy
+
+##### 1. Backup & Restore (RTO hours–days, RPO hours, $)
+
+```
+Primary region (us-east-1)               DR region (eu-west-1)
+─────────────────────────                ─────────────────────
+EC2 + RDS + S3                           ← nothing running
+        │                                  AMIs copied cross-region (read-only)
+        ▼                                  RDS snapshots copied cross-region (read-only)
+   Daily snapshots →─── replicate ─────►  S3 CRR mirrors data
+   S3 → CRR replication
+
+On disaster:
+  1. Launch EC2 from the cross-region AMI
+  2. Restore RDS from the latest snapshot
+  3. Update Route 53 to point at the new ALB
+  4. Verify and accept the data lost since last snapshot
+```
+
+Use when: low business criticality, infrequently-changing data, cost matters most.
+
+##### 2. Pilot Light (RTO 10s of min, RPO minutes, $$)
+
+```
+Primary region                            DR region
+──────────────                            ─────────
+EC2 + RDS + ElastiCache                   RDS read replica (active, replicating)
+        │                                  ElastiCache cluster (off)
+        │                                  ASG with desired-count=0 (AMIs ready)
+        ▼                                  ALB pre-provisioned (DNS not active)
+   Continuous DB replication               S3 CRR mirrors data
+
+On disaster:
+  1. Promote RDS read replica to writer (~1-2 min)
+  2. Scale ASG from 0 → N (~5-10 min for instances + warm-up)
+  3. Update Route 53 to point at the DR ALB
+  4. Service back, with replication-lag data loss only
+```
+
+The DB is *always lit* (the "pilot light"), everything else is dark.
+
+##### 3. Warm Standby (RTO minutes, RPO seconds, $$$)
+
+```
+Primary region                            DR region
+──────────────                            ─────────
+EC2 fleet (full size) + RDS               EC2 fleet (1-2 instances, undersized)
+        │                                  RDS read replica (active)
+        │                                  ALB live (already in Route 53 with low weight)
+        ▼                                  ElastiCache running (smaller)
+   Real-time DB replication
+
+On disaster:
+  1. Scale up DR fleet to production capacity (~minutes)
+  2. Promote DB
+  3. Route 53 shifts 100% traffic to DR (seconds)
+  4. Service back with near-real-time data
+```
+
+DR region is *always serving some traffic* — confirmed working at all times.
+
+##### 4. Multi-Site Active-Active (RTO near-zero, RPO near-zero, $$$$)
+
+```
+Primary region                            DR region
+──────────────                            ─────────
+EC2 + DynamoDB Global Table               EC2 + DynamoDB Global Table
+       │ ◄──── bidirectional ─────────►   │
+       ▼      replication                 ▼
+Route 53 latency-based or weighted routing — both regions serving live traffic
+ALB / app tier scaled for full prod load in EACH region
+Aurora Global Database with managed failover OR DynamoDB Global Tables
+
+On disaster:
+  1. Route 53 health check detects unhealthy region (seconds)
+  2. Routes 100% traffic to surviving region (already at full capacity)
+  3. No promotion needed for DynamoDB Global Tables
+  4. Aurora Global: takeover ~1 minute via "managed failover"
+```
+
+Most expensive, near-zero data loss, near-zero downtime. Only worth it for revenue-critical workloads.
+
+### Decision matrix — picking a strategy
+
+```
+Is RTO measured in days/hours?
+  └── YES → Backup & Restore
+  └── NO → Is RTO measured in 10s of minutes and RPO in minutes?
+            └── YES → Pilot Light
+            └── NO → Is RTO < 5 min and RPO ~ seconds?
+                      └── YES → Warm Standby
+                      └── NO → Multi-Site Active-Active (RTO ~ 0, RPO ~ 0)
+```
+
+The cheapest tier that hits your business-defined RTO/RPO wins. Going beyond what the business needs is wasted cost.
+
+### Keyword decoder for DR exam questions
+
+Exam questions rarely give you RTO/RPO as numbers — they describe **what's running in the DR region** with phrases that map to specific strategies. Decoding the phrase is more reliable than guessing from the RTO/RPO alone, because Backup & Restore and Pilot Light both have *"longer RTO"* — the only thing that separates them is **whether anything is pre-provisioned**.
+
+| Phrasing in question | Maps to |
+| -------------------- | ------- |
+| *"Nothing pre-provisioned in DR region"* / *"Restore from backup"* / *"Just backups copied cross-region"* / *"Cheapest option"* | **Backup & Restore** |
+| *"Only the critical infrastructure up and running"* / *"Minimal / critical / core running"* / *"Database replicating, app off"* / *"AMIs ready, launch on disaster"* | **Pilot Light** |
+| *"Scaled-down full environment always running"* / *"Smaller copy of production in DR region"* / *"Reduced capacity but ready"* | **Warm Standby** |
+| *"Full environment in multiple regions serving traffic"* / *"Active-active"* / *"Near-zero RTO/RPO"* / *"No noticeable downtime"* | **Multi-Site Active-Active** |
+
+#### The disambiguation ladder
+
+Ask in this order to pick the right strategy from question wording:
+
+```
+1. "Is ANYTHING running in the DR region pre-disaster?"
+     └── NO  → Backup & Restore
+     └── YES → continue ↓
+
+2. "Is it just the database / minimum core?"
+     └── YES → Pilot Light
+     └── NO  → continue ↓
+
+3. "Is it a scaled-down full environment?"
+     └── YES → Warm Standby
+     └── NO, it's full-sized across multiple regions → Multi-Site Active-Active
+```
+
+The very first question disambiguates **Backup & Restore** from **Pilot Light** — the most common trap. Both have long-ish RTOs and feel similar, but only Pilot Light has anything running pre-disaster.
+
+#### Why the "pilot light" metaphor matters
+
+Literal interpretation: the small flame in an old gas boiler that lets the main burner light up instantly. The **database is the pilot light**; the app tier *ignites from it* when needed. So "only the critical infrastructure up and running" — the DB is on, app tier off — = **Pilot Light** every time.
+
+Contrast with Backup & Restore: the DR region is **completely dark**, the database has to be **restored from a snapshot** during the disaster. That restore time is usually the slowest part of recovery, which is why Pilot Light (skipping it) cuts RTO from hours to minutes.
+
+### AWS Elastic Disaster Recovery (DRS) — formerly CloudEndure
+
+A managed DR service that replicates **entire VMs** continuously to AWS, then orchestrates failover into EC2 instances when triggered. Originally an acquired product (CloudEndure), now natively AWS (rebranded in 2022).
+
+#### How DRS actually works
+
+```
+Source machine (anywhere)               AWS account (target region)
+─────────────────────────               ───────────────────────────
+
+  Linux/Windows VM or                    Staging area:
+  physical server                          - Small t-shirt EC2 instance
+        │                                   (the "replication server")
+        │  AWS Replication                 - Replicated EBS volumes
+        │  Agent installed                   matching source disks
+        │                                  - Continuous block sync
+        │                                  - ~$20/month per source
+        ▼
+   Block-level changes ──────► sent over HTTPS (TLS) ──►  Staging area
+   (continuous, async)         to AWS DRS endpoint        receives blocks,
+                                                          applies to EBS
+
+   ── On disaster ──
+                                          1. DRS provisions REAL EC2 instances
+                                             from the staged EBS volumes
+                                          2. Attaches to your chosen VPC/subnet
+                                          3. Boots (typically 5–20 minutes)
+                                          4. You update DNS / Route 53 / NLB
+                                          5. Service back
+```
+
+The genius: most of the time you pay for a **tiny staging area** (small EBS + a t-shirt replication server per source). Real EC2 only spins up during drills or actual failover.
+
+#### Key capabilities
+
+- **Continuous block-level replication** of source machines (on-prem, other clouds, or AWS-to-AWS) → low-cost staging area in AWS
+- **Sub-second RPO** because replication is continuous
+- **Minutes RTO** — automated launch of EC2 from the replicated state
+- **Drill / failback support** — non-disruptive test failovers; failback after failure
+- **Cost model** — pay for the staging area (small EBS + tiny T-instance per source machine) + EC2 only during actual failover or drill
+
+#### Cost breakdown
+
+| Item | Cost |
+| ---- | ---- |
+| **Per source server in staging** | ~$0.028/hour ≈ **~$20/month/server** |
+| **Staging EBS volumes** | Standard EBS pricing (small — just enough for replicated data) |
+| **Replication network traffic** | Standard data transfer if cross-region/account |
+| **Recovery EC2 instances** | Standard EC2 pricing — **only when running** (drills or actual failover) |
+
+This is the cost win vs running a Warm Standby — your DR region is essentially "dark" until you need it, paying only ~$20/server/month for the staged state.
+
+#### Numbered failover flow
+
+```
+1. Disaster declared (region down, ransomware, accidental deletion)
+       ↓
+2. Initiate recovery in DRS console / API
+   → "Launch recovery instances" with the latest point-in-time
+       ↓
+3. DRS provisions EC2 instances from the staged EBS volumes
+   → uses launch templates (VPC, subnets, SGs, IAM role) pre-configured
+       ↓
+4. Instances boot — typically 5–20 minutes for OS + app startup
+       ↓
+5. Application-level checks pass (custom validation)
+       ↓
+6. DNS cutover (Route 53 health check failover, or manual)
+       ↓
+7. Service back. Users see DR region.
+   → RPO = ~sub-second (continuous replication caught the last writes)
+   → RTO = minutes (boot + DNS + validation)
+```
+
+#### Drill (non-disruptive test) flow
+
+The killer feature for compliance — test DR without affecting prod:
+
+```
+1. Initiate "Launch test recovery instances"
+       ↓
+2. DRS launches recovery EC2 instances in an ISOLATED subnet
+   → No DNS attached, no public routing
+       ↓
+3. Verify the instances boot, the app works, you can reach the DB, etc.
+       ↓
+4. Tear down test instances (DRS makes this one click)
+       ↓
+5. Document the test pass for your compliance auditor
+```
+
+Most regulated industries require annual DR drills. DRS makes them cheap and safe.
+
+#### Failback flow (after primary recovers)
+
+```
+1. Primary site restored
+       ↓
+2. Initiate "Reverse replication" in DRS
+   → DRS now replicates FROM the AWS recovery instances BACK
+     to your original source
+       ↓
+3. Source catches up to current state
+       ↓
+4. Cutover: shut down AWS recovery instances, point traffic at restored source
+       ↓
+5. Resume normal forward replication (source → AWS staging)
+```
+
+#### DRS vs MGN — constantly confused
+
+| | **DRS** (Elastic Disaster Recovery) | **MGN** (Application Migration Service) |
+| - | ------------------------------------ | ----------------------------------------- |
+| Purpose | **Ongoing DR** — continuous replication + failover drills + actual failover | **One-time migration** — lift-and-shift VMs into AWS, then cut over and decommission source |
+| Lifecycle | Designed for **months/years** of ongoing replication | Designed to be **temporary** until migration cutover |
+| Same underlying tech? | Yes — both derive from CloudEndure | Yes |
+| Drill / test recovery | ✅ Core feature | ⚠️ Available but less emphasised |
+| Failback | ✅ Built-in | Not the main use case |
+| Cost emphasis | Optimised for long-term cheap standby | Optimised for migration completion |
+
+**Rule:** *"continuously protect a workload against future disaster"* → **DRS**. *"move this workload to AWS once and shut down the source"* → **MGN**.
+
+#### Use cases (where DRS shines)
+
+| Scenario | Why DRS fits |
+| -------- | ------------ |
+| **On-prem VMs need DR into AWS without re-architecting** | The canonical case. Install agent, configure target VPC, done |
+| **Other-cloud (Azure/GCP) workloads need a DR target on AWS** | Same model — agent on the source VM |
+| **AWS cross-region DR for EC2 workloads** | Alternative to AMI copy + restore-from-snapshot scripts. Continuous instead of point-in-time |
+| **AWS cross-account DR** for blast-radius isolation | Replicate from a prod account to an isolated DR account |
+| **Compliance-mandated DR for legacy apps** | FedRAMP / financial regs often demand documented DR; DRS provides the audit trail |
+| **Apps that can't be made cloud-native** | When you can't refactor to use Aurora Global / DynamoDB Global Tables, DRS gives DR at the VM level |
+
+#### What DRS is NOT good for
+
+| Don't use DRS for | Use instead |
+| ----------------- | ----------- |
+| **Cloud-native serverless apps** (Lambda + DynamoDB + API Gateway) | Multi-region serverless patterns + DynamoDB Global Tables |
+| **Database-level DR for managed AWS DBs** (RDS, Aurora, DynamoDB) | Their native cross-region features (Aurora Global, Global Tables, RDS read replicas) |
+| **Container-orchestrated workloads** (EKS, ECS) | App-layer multi-region deployment + ECR cross-region replication |
+| **S3 data DR** | S3 Cross-Region Replication |
+| **One-time migration to AWS** | AWS Application Migration Service (MGN) |
+
+DRS works at the **VM block-level** — for AWS-native services with their own DR primitives, those are better.
+
+#### Limitations and gotchas
+
+| Gotcha | Detail |
+| ------ | ------ |
+| **Agent must be installable** | Source needs Linux or Windows that supports the AWS Replication Agent. Some appliances / locked-down OS images can't take agents |
+| **Block-level, not application-aware** | Snapshots are crash-consistent, not application-consistent. For DBs, plan for restore-time recovery (replay WAL etc.) |
+| **Networking pre-configured** | You define launch templates upfront — VPC, subnet, SGs, IAM role. If you wing this during a disaster, it costs RTO minutes |
+| **Cross-region data transfer cost** | Continuous replication generates ongoing bandwidth. Less of an issue for low-churn workloads |
+| **No replication of EFS / S3 / RDS direct** | Those need their own cross-region mechanisms; DRS replicates the *VM*, not those services |
+| **Licensing for replicated workloads** | If you're replicating a Windows VM with a BYOL license, ensure your licensing covers DR mode |
+| **EC2-to-EC2 DR with DRS** | Less common than on-prem-to-AWS — many AWS-to-AWS DRs use native patterns (Aurora Global, DynamoDB Global Tables) instead |
+
+#### Exam triggers (DRS-specific)
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Continuously replicate on-prem VMs to AWS for DR, sub-second RPO"* | **AWS Elastic Disaster Recovery (DRS)** |
+| *"DR for VMware workloads with minimal disruption"* | **DRS** (install agent on the VM) |
+| *"DR drills without affecting production"* | **DRS test recovery instances** (isolated, tear-down after) |
+| *"Failback to on-prem after the disaster passes"* | **DRS reverse replication** |
+| *"One-time migration of on-prem VMs to AWS"* | **AWS Application Migration Service (MGN)** — not DRS |
+| *"Cross-region DR for EC2 workloads with continuous replication"* | **DRS AWS-to-AWS** mode |
+| *"Cross-account DR for blast-radius isolation"* | **DRS with target in a separate AWS account** |
+| *"DR for serverless / Lambda / DynamoDB"* | **NOT DRS** — use native multi-region patterns |
+| *"DR for an RDS database"* | **NOT DRS** — use Aurora Global / RDS cross-region read replicas |
+| *"Cost-effective DR — pay almost nothing until disaster strikes"* | **DRS** ($20/server/month staging vs full warm standby) |
+
+#### Mental model
+
+> *DRS = **"continuous VM-level replication into a near-free staging area on AWS, with one-click failover into real EC2."** The big win vs Warm Standby is cost — you're not paying for full prod-sized EC2 to sit idle; just ~$20/server/month for the staged blocks. The big win vs Backup & Restore is RPO — sub-second instead of hours. It's the right tool for **VM-based lift-and-shift DR**; for cloud-native workloads use the AWS service's own cross-region features (Aurora Global, DynamoDB Global Tables, S3 CRR).*
+
+### AWS Backup — centralised backup orchestration
+
+The umbrella service for **backups across many AWS services** with policy-based scheduling, cross-region copy, cross-account copy, and immutability. It's a **manager**, not a new backup engine — it calls the underlying snapshot mechanisms (EBS snapshots, RDS snapshots, etc.) under the hood.
+
+#### What AWS Backup is NOT
+
+| Misconception | Reality |
+| ------------- | ------- |
+| *"Replaces the underlying snapshot mechanism"* | No — calls EBS snapshots, RDS snapshots, etc. under the hood. It's a manager, not a new backup engine |
+| *"Manages every type of data on AWS"* | No — only specific services (see supported list below) |
+| *"Includes app-level / cross-instance consistency by default"* | Most backups are crash-consistent. For consistent DB backups, the underlying service's snapshot is application-aware (e.g. RDS knows the engine and quiesces correctly) |
+| *"Replaces DRS for VM DR"* | No — DRS is continuous replication for VMs. AWS Backup is point-in-time snapshots |
+| *"Manages CloudWatch Logs / CloudTrail logs"* | No — log data uses its own retention / S3 export, not AWS Backup |
+
+#### What AWS Backup supports
+
+| Service | Backup type |
+| ------- | ----------- |
+| **EBS** | EBS snapshots |
+| **EFS** | EFS backups |
+| **FSx** (Windows / Lustre / NetApp ONTAP / OpenZFS) | FSx backups |
+| **RDS / Aurora** | Snapshots (with optional PITR for Aurora) |
+| **DynamoDB** | On-demand + continuous backups (PITR) |
+| **S3** | Bucket-level backups (newer; covers versioned objects) |
+| **Storage Gateway** | Volume snapshots |
+| **EC2** | Image + snapshot (whole-instance, including instance metadata) |
+| **Redshift** | Snapshots |
+| **Neptune, DocumentDB, Timestream** | Snapshots |
+| **VMware on-prem** (via **AWS Backup Gateway** virtual appliance) | VM-level backups into AWS |
+| **SAP HANA on EC2** | Application-aware backups |
+
+#### What it does NOT support
+
+| Not supported | Use instead |
+| ------------- | ----------- |
+| **ElastiCache (Redis or Memcached)** | Native ElastiCache snapshots → manually export to S3; Memcached has no DR |
+| **CloudWatch Logs / CloudTrail logs** | Native log retention / export to S3 + Glacier |
+| **Lambda function code** | SAM / CDK / IaC for code; AWS Backup isn't for code artefacts |
+| **CodeCommit repositories** | Git is its own backup story |
+| **OpenSearch** | Native OpenSearch snapshots to S3 |
+
+#### Headline features the exam tests
+
+| Feature | What it does |
+| ------- | ------------ |
+| **Backup plans** | Schedule + retention + lifecycle in a single policy. Apply via **tag selectors** so any resource with a matching tag is auto-backed-up |
+| **Backup vaults** | Where backups land. Per-vault **KMS key** + IAM access policy |
+| **Cross-region copy** | Plans can copy backups to another region automatically (for DR) |
+| **Cross-account copy** | Copy to a vault in a *separate* security/log-archive account — survives a compromised source account |
+| **Vault Lock** | Make a vault **immutable (WORM)** — backups can't be deleted, not even by AWS root user. The ransomware defence. Two modes (see below) |
+| **Vault Lock — Governance mode** | Admins with specific IAM permissions **can** override / change retention. Useful when you want most users locked out but admins can fix mistakes |
+| **Vault Lock — Compliance mode** | **Truly immutable. Irreversible.** Even the root user can't delete or shorten retention. Required for regulated workloads (SEC 17a-4, FINRA). **Set with care — cannot be undone** |
+| **Backup Audit Manager** | Pre-built reports for backup compliance — resource coverage, plan adherence, audit logs. Maps to SOC2 / HIPAA / PCI controls |
+| **Point-in-Time Recovery (PITR)** | For Aurora, DynamoDB, RDS — restore to any second within the retention window (not just to the snapshot times) |
+| **Org-wide backup policies** | Set backup policy at the **AWS Organisations** level → applied to all member accounts via Service Control Policy-style enforcement |
+| **Tag-based resource selection** | Backup plan can target *"any resource with tag `Backup=daily`"* — no need to enumerate resources individually |
+| **Lifecycle to cold storage** | Backups can transition to **cold-storage tier** after N days (cheaper, slower restore) |
+| **On-demand backups** | Trigger an immediate backup outside the schedule (e.g. pre-deployment) |
+
+#### Vault Lock — Compliance vs Governance (the critical distinction)
+
+| | **Governance mode** | **Compliance mode** |
+| - | ------------------- | -------------------- |
+| Can be unlocked / changed? | ✅ Yes, by IAM-permitted admins | ❌ **No — irreversible** |
+| Can shorten retention? | ✅ Yes (with permission) | ❌ No, even by root |
+| Use for | Internal policy enforcement, ransomware protection with admin escape valve | Regulatory mandates (SEC 17a-4, FINRA, GxP) where law requires immutability |
+| Trap | Easy to revert; doesn't satisfy strict regulators | **Permanent — there is no "undo"**. Set the retention window carefully |
+
+**Exam trap:** *"financial services regulation requires immutable backups for 7 years"* → **Compliance mode** (Governance isn't strict enough). *"prevent accidental deletion but allow admin overrides"* → **Governance mode**.
+
+#### The org-wide ransomware pattern (heavily tested)
+
+```
+Source account                  Central backup account (locked down)
+──────────────                  ────────────────────────────────────
+EBS / RDS / DynamoDB     ───►   Backup vault (KMS-encrypted)
+   ↑                              + Vault Lock (Compliance mode)
+   Attacker compromises           + Cross-region copy
+   source account; deletes        + Restrictive IAM access
+   local backups                  → Attacker cannot reach or delete
+                                    these backups from source account
+```
+
+Even if an attacker compromises the source account and deletes all local backups, the immutable cross-account vault survives. **Three ingredients** are essential to make this work:
+
+1. **Cross-account vault** — backups land in a *different* AWS account from the source
+2. **Vault Lock in Compliance mode** — backups in that vault can't be deleted, even by root
+3. **Restrictive IAM** in the backup account — only a tiny, audited set of principals can interact with the vault
+
+If any of the three is missing, ransomware can reach the backups.
+
+#### Mental model
+
+> *AWS Backup = **central manager** for AWS-native backups across many services. It schedules, retains, copies cross-region / cross-account, encrypts, and locks down — but it **calls** the underlying snapshot mechanism (EBS snapshots, RDS snapshots, etc.); it doesn't replace them. The killer features are **cross-account vaults + Vault Lock in Compliance mode** for ransomware defence, and **org-wide backup policies** for fleet-scale governance. Not all AWS services are supported (notably **ElastiCache, CloudWatch Logs, Lambda code**) — those need their own backup story.*
+
+### Cross-Region Replication by Service (the data layer)
+
+The replication mechanism each service offers — which is what backs each DR strategy.
+
+| Service | Cross-region option | RPO | Notes |
+| ------- | ------------------- | --- | ----- |
+| **S3** | **Cross-Region Replication (CRR)** | Seconds–minutes | Async; per-bucket rule + per-prefix filter; requires versioning on both buckets |
+| **S3 Multi-Region Access Points** | N/A — routing only | n/a | Active-active S3 endpoints across regions; pairs with CRR for full multi-region S3 |
+| **DynamoDB** | **Global Tables** | <1 second (typical) | Multi-master active-active replication; conflict resolution via last-writer-wins |
+| **Aurora** | **Aurora Global Database** | <1 second | One primary region, up to 5 read replicas in other regions; failover ~1 minute via "managed failover" |
+| **RDS** (non-Aurora) | **Cross-region read replicas** | Minutes (binlog-based) | Promote replica to writer on failover; manual promotion |
+| **EBS** | **Snapshot copy** (cross-region) | Hours–days | Snapshot-frequency-bound; AMIs built on EBS snapshots can also be copied |
+| **AMI** | **Copy AMI** to another region | Hours | Required for launching from pre-baked images in DR region |
+| **EFS** | **Replication** | Minutes | Built-in cross-region replication |
+| **FSx for Windows / Lustre / NetApp** | Backup + cross-region copy via AWS Backup | Hours | No direct continuous replication |
+| **Redshift** | **Cross-region snapshot copy** | Hours | Plus snapshot retention up to 35 days |
+| **Route 53** | Inherently global | n/a | Already replicated across AWS edge globally |
+| **CloudFront** | Inherently global | n/a | Edge service; not a regional concern |
+| **KMS keys** | **Multi-region keys** | n/a — replicated, not async | Required for encrypted snapshots/objects to work in DR region |
+
+**The KMS gotcha:** if your S3 / EBS / RDS data is encrypted with a **single-region KMS key**, cross-region replication fails on the decrypt side. Use **multi-region KMS keys** or grant cross-region permissions explicitly.
+
+### Route 53 DR Failover Patterns
+
+DNS is the conductor. Three Route 53 routing policies map to DR strategies:
+
+| Routing policy | Use for DR | How |
+| -------------- | ---------- | --- |
+| **Failover** | **Active-passive** (Backup-Restore / Pilot Light / Warm Standby) | Primary record + secondary record + health check. Secondary kicks in only when primary fails |
+| **Latency-based** | **Active-active** (Multi-Site) | Routes users to lowest-latency healthy region. On region failure, automatically routes to next-best |
+| **Weighted** | **Gradual cutover or canary DR** | Send 1% / 10% / 100% to DR region. Manual progression |
+| **Multi-value answer** | Lightweight DR | Returns multiple healthy IPs; client picks one. Not as deterministic as Failover |
+
+**The health check choice:**
+
+- **Endpoint health checks** — Route 53 pings your endpoint
+- **CloudWatch alarm health checks** — fail if a CloudWatch alarm fires (useful for composite signals)
+- **Calculated health checks** — combine multiple child health checks
+
+**TTL strategy for DR:** lower TTLs = faster client-side cutover during failover (~60 seconds typical). Higher TTLs = lower DNS query cost but slower failover. Most DR setups use 60-second TTLs.
+
+### Multi-AZ vs Multi-Region — when each is enough
+
+The exam loves making people pick.
+
+| Failure mode you're protecting against | Use |
+| --------------------------------------- | --- |
+| **Single instance / EBS volume failure** | Auto Scaling + EBS snapshots (no DR needed) |
+| **AZ-level outage** (entire AZ goes down) | **Multi-AZ** — RDS Multi-AZ, ALB with multi-AZ targets, ASGs spanning AZs |
+| **Region-level outage** (extremely rare but real) | **Multi-Region DR** — one of the four strategies above |
+| **AWS-wide outage / global control-plane issue** | Multi-cloud (rare; only the largest orgs do this) |
+| **Compliance demands cross-region resilience** | Multi-Region DR (often required by financial regulators) |
+| **Application bug / config error** | Backups + roll-back; no DR needed if same code in DR region |
+| **Ransomware / accidental deletion** | **AWS Backup with Vault Lock** in a separate account |
+
+**Region failures are rare** (~once every few years per region, usually for a few hours of degradation, not total). Multi-Region DR is **expensive insurance** — most workloads can live with Multi-AZ + good backups.
+
+### DR Testing — the missing half of any plan
+
+A DR plan you've never tested is a DR plan that doesn't work. The exam sometimes tests on this implicitly.
+
+| Testing approach | What it does |
+| ---------------- | ------------ |
+| **Tabletop exercises** | Walk through the runbook on paper, no actual failover |
+| **Component testing** | Test parts in isolation — promote a read replica, restore a snapshot |
+| **Game days** | Scheduled, controlled, end-to-end failover drill (often in a non-prod environment) |
+| **DRS test recovery instances** | Spin up DR EC2 instances in isolation, validate, then tear down. Non-disruptive |
+| **Chaos engineering** | Inject failures during normal operation to validate ongoing resilience |
+
+Most regulated orgs are **required** to perform a DR test at least annually with documented results.
+
+### DR Gotchas and Common Traps
+
+Five service-specific traps that get tested constantly. Each has a "looks fine but actually breaks" quality.
+
+#### 1. Aurora Global Database — Managed Failover vs Unplanned Failover
+
+Two different operations with **different RPO**:
+
+| | **Managed Failover** | **Unplanned Failover** |
+| - | --------------------- | ------------------------ |
+| Triggered by | **You** — controlled, planned (DR drill, maintenance, planned region exit) | **You** — invoked **during a real disaster** when the primary region is unavailable |
+| Data loss | **Zero** — waits for replication to fully catch up before switching | **Possible** — whatever's in flight at the moment of disaster is lost (typical RPO < 1 second, but not guaranteed zero) |
+| Use for | Drills, planned migrations, gradual region exit | Actual disaster recovery |
+| Speed | ~1 minute | ~1 minute |
+
+**Exam trap:** *"how to fail over Aurora Global Database with zero data loss"* → **Managed failover**, only available when the primary region is reachable. If the primary is dead, you're using unplanned failover with whatever the replication lag was at the moment of failure.
+
+#### 2. S3 CRR does NOT replicate existing objects
+
+**S3 Cross-Region Replication only replicates objects created AFTER the replication rule is configured.** Existing objects in the source bucket stay where they are — invisible to CRR.
+
+```
+Day 1:  100 GB of objects exist in source bucket
+Day 2:  Enable Cross-Region Replication rule
+Day 3:  New objects (PUT today) → replicated ✅
+        Existing 100 GB from Day 1 → NOT replicated ❌
+```
+
+**The fix:** **S3 Batch Replication** — a one-shot job that replicates the existing-object backlog. Without it, your DR target is missing all historical data.
+
+**Other CRR prerequisites people forget:**
+
+- **Versioning must be enabled** on BOTH source and destination buckets
+- Source and destination must be in **different regions** (use Same-Region Replication / SRR for same-region)
+- IAM role must grant S3 permission to read source + write destination
+- Delete markers are NOT replicated by default (configurable)
+
+**Exam trap:** *"set up CRR, but the DR bucket still has fewer objects than source"* → enable **Batch Replication** to fill the historical gap.
+
+#### 3. DynamoDB Global Tables — Last-Writer-Wins Conflict Resolution
+
+Global Tables are **multi-master active-active** — every region can write. When two regions write the same item simultaneously, **the write with the later wall-clock timestamp wins**. The "loser" write is silently discarded.
+
+```
+Time     Region A             Region B
+─────    ────────             ────────
+T=0      PUT item X, value=10
+T=0.05                        PUT item X, value=20
+                                       ↓
+                              Both writes replicate
+                                       ↓
+                              Last-writer-wins: B's write (T=0.05) wins
+                              A's write (T=0) is overwritten
+```
+
+**Why this is a problem:**
+
+- **E-commerce inventory** — Region A subtracts 1 (5 → 4), Region B subtracts 1 simultaneously (5 → 4). Both think there are 4 left; the true answer is 3
+- **Leaderboards** — A user scores 100 in Region A, 50 in Region B at the same time. The earlier write loses; their best score may not be recorded
+- **Counters** — same problem; concurrent increments race
+
+**Mitigations:**
+
+- **Route writes to a single region** at a time (active-active for reads, active-passive for writes) — defeats half the point but is sometimes necessary
+- Use **conditional writes** (`ConditionExpression`) to detect conflicts at write time
+- Application-layer **conflict resolution** (e.g. CRDT-style data models)
+
+**Exam trap:** *"DynamoDB Global Tables guarantee no data loss on concurrent writes"* → **wrong**. Last-writer-wins discards the loser.
+
+#### 4. RDS Read Replica Promotion is One-Way
+
+Once you **promote a read replica to standalone** (during DR failover), it becomes a primary in its own right. **You cannot revert it back to a replica.**
+
+```
+Before:  us-east-1 primary  ──── async replication ────►  eu-west-1 read replica
+                                                          (read-only)
+
+Disaster, promote:
+         us-east-1 (down)                                  eu-west-1 NEW PRIMARY
+                                                          (writable, no upstream)
+
+After primary recovers — to failback, you have to:
+  1. Establish replication from eu-west-1 NEW PRIMARY → us-east-1 NEW REPLICA
+     (yes, the direction is reversed from before)
+  2. Wait for full sync
+  3. Plan a cutover from eu-west-1 → us-east-1
+  4. Quiesce eu-west-1, swing app
+  5. Promote us-east-1 to primary again
+  6. Optionally rebuild eu-west-1 as a fresh read replica
+```
+
+**The painful bit:** failback isn't a one-click operation. It's a fresh DR exercise in reverse, often taking days to weeks to plan.
+
+**Exam trap:** *"How do we get back to running primary in us-east-1 after the DR event?"* → **rebuild replication in reverse + reverse-cutover.** Not "just demote the eu-west-1 instance back to replica" (you can't).
+
+**Aurora Global Database vs RDS** on this point:
+
+- **Aurora Global Database** has a built-in **"managed failback"** option that handles the direction reversal for you. Much smoother
+- **RDS (non-Aurora) read replicas** require the manual rebuild described above
+
+#### 5. Aurora Backtrack is NOT DR
+
+**Aurora Backtrack** rewinds the Aurora cluster in-place to a recent point in time. Useful for:
+
+- *"We just ran a bad `DELETE FROM users;` — rewind 5 minutes"*
+- *"Schema migration broke things — rewind to before the migration"*
+- *"App deployed corrupt data — rewind"*
+
+**It does NOT protect against:**
+
+- Region failure (Backtrack stays in the same region)
+- Cluster deletion
+- Application logic errors that happened more than the retention window ago
+
+```
+Aurora Backtrack:                  Aurora Global Database:
+─────────────────                  ─────────────────────────
+us-east-1 cluster                  us-east-1 primary
+   │                                  │
+   │ Backtrack (in-place rewind)      │ Cross-region replication
+   │ within the same cluster          ▼
+   ▼                                  eu-west-1 secondary
+us-east-1 cluster                  
+(rewound state)                    On region failure: promote eu-west-1
+                                   ─ this IS DR
+
+If us-east-1 region fails:
+   Backtrack can't help — you have
+   no access to the cluster
+   ─ this is NOT DR
+```
+
+**Exam trap:** *"protect Aurora against accidental data deletion"* → **Backtrack** (in-region rewind). *"protect Aurora against region failure"* → **Aurora Global Database** (cross-region). They're complementary, not interchangeable — many teams use both.
+
+### Common Anti-patterns (exam wrong answers)
+
+- *"Multi-AZ RDS solves DR"* → wrong. **Multi-AZ is HA, not DR.** A region failure takes all AZs down
+- *"Daily backups give us RPO of zero"* → wrong. RPO = max acceptable data loss, and daily backups mean up to 24h loss
+- *"Pilot Light means the DR region is fully running"* → wrong. Pilot Light = **DB only**; app is **off** until needed
+- *"Replicating only the database is enough"* → no — you also need AMIs / containers / config / secrets / network setup in the DR region
+- *"Multi-Site Active-Active for everything"* → wasteful; pick the cheapest tier that meets the business RTO/RPO
+- *"Single-region KMS key for cross-region EBS snapshots"* → fails on decrypt in DR region. Use **multi-region KMS keys**
+- *"We don't need to test our DR plan — the docs are good"* → untested DR plans fail. Schedule game days
+- *"Route 53 failover works without health checks"* → no — failover routing **requires** health checks to know when to switch
+- *"Backups in the same account = ransomware-safe"* → no. Use **AWS Backup Vault Lock** + **cross-account vault** in a separate security account
+- *"AWS Elastic DR for a cloud-native serverless app"* → wrong tool. DRS is for **VM-based** workloads. Use Aurora Global / DynamoDB Global Tables / serverless-native patterns instead
+
+### Exam Triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"RTO measured in days, RPO measured in hours, lowest cost"* | **Backup & Restore** |
+| *"RTO of ~15 minutes, RPO of a few minutes, cost-conscious"* | **Pilot Light** |
+| *"RTO of a few minutes, RPO of seconds, willing to pay more"* | **Warm Standby** |
+| *"Near-zero RTO and RPO, mission-critical"* | **Multi-Site Active-Active** with DynamoDB Global Tables / Aurora Global |
+| *"DR for on-prem VMs to AWS continuously"* | **AWS Elastic Disaster Recovery (DRS)** |
+| *"Centralised backup policy across many AWS services + cross-region + cross-account"* | **AWS Backup** with backup plans + Vault Lock |
+| *"Protect backups from ransomware / malicious deletion"* | **AWS Backup Vault Lock** + **cross-account vault** |
+| *"<1 second cross-region database RPO"* | **Aurora Global Database** or **DynamoDB Global Tables** |
+| *"Auto-failover DNS based on region health"* | **Route 53 Failover routing + health checks** |
+| *"Lowest-latency routing across active-active regions"* | **Route 53 latency-based routing** |
+| *"Multi-region S3 replication"* | **S3 Cross-Region Replication (CRR)** with versioning enabled |
+| *"Region went down — Multi-AZ saved us"* | **Trap.** Multi-AZ is HA, not DR. Region failure needs Multi-Region |
+| *"DR test without affecting production"* | **DRS test recovery instances** or game day in isolated environment |
+| *"Encrypted snapshot won't decrypt in DR region"* | Use **multi-region KMS keys** |
+| *"Promote RDS read replica to standalone primary"* | Manual failover for cross-region RDS read replicas |
+| *"Aurora cross-region with managed failover"* | **Aurora Global Database** (1 primary + up to 5 secondaries) |
+| *"DynamoDB active-active multi-master"* | **DynamoDB Global Tables** |
+
+### Mental Model
+
+> *DR boils down to two questions and four strategies. **Two questions:** what's your RTO (downtime tolerance) and RPO (data loss tolerance)? **Four strategies:** Backup-Restore (cheapest, hours/days), Pilot Light (DB always on, app off, ~minutes), Warm Standby (scaled-down full env, ~minutes/seconds), Active-Active (full prod in 2+ regions, near-zero). Pick the cheapest tier that hits your business RTO/RPO. **AWS Backup** orchestrates the backups; **AWS Elastic Disaster Recovery (DRS)** orchestrates lift-and-shift VM replication; **Route 53** orchestrates DNS-level failover; **Aurora Global / DynamoDB Global Tables / S3 CRR** are the cross-region replication primitives. Multi-AZ ≠ DR (it's HA). An untested DR plan is a DR plan that doesn't work.*
 
 ## Elastic Beanstalk
 
