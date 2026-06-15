@@ -24,6 +24,7 @@
   - [Security Groups](#security-groups)
   - [NACLs (Network ACLs)](#nacls-network-acls)
   - [Security Groups vs NACLs](#security-groups-vs-nacls)
+  - [Blocking IPs — Which Layer When](#blocking-ips--which-layer-when)
   - [VPC Endpoints](#vpc-endpoints)
   - [ENI-backed vs Public Endpoint Services](#eni-backed-vs-public-endpoint-services)
   - [VPC Peering](#vpc-peering)
@@ -1473,6 +1474,98 @@ NACLs aren't just "block malicious IPs." Real use cases:
 **The exam shortcut:** SG is the default tool. NACL is for when you specifically need a **deny** (e.g. block a malicious IP range) or a subnet-wide rule that's independent of per-instance config.
 
 **Quick mental model:** *Security Group is a stateful per-instance firewall (think `iptables` on the host). NACL is a stateless per-subnet ACL (think router ACL). They stack: traffic must pass both. SGs do the heavy lifting; NACLs handle blanket bans and defence in depth.*
+
+### Blocking IPs — Which Layer When
+
+A cross-cutting decision that the exam asks in many disguises. AWS lets you block IPs at multiple layers — picking the **right one** depends on what you're protecting and at what scale.
+
+#### The layers ranked by typical usefulness for IP blocking
+
+| Layer | Can block IPs? | When it's the right answer |
+| ----- | -------------- | --------------------------- |
+| **AWS WAF** (Web ACL with IP set rule) | ✅ **The canonical answer for L7 internet-facing apps** | Anything fronted by **CloudFront / ALB / API Gateway / AppSync / App Runner / Cognito** |
+| **AWS Network Firewall** | ✅ Yes (L3-L7, stateless + Suricata stateful) | **VPC-wide** inspection, **east-west** between VPCs, **egress** filtering |
+| **NACLs** | ✅ Yes (L4, stateless, supports deny) | **Subnet-level** blanket blocks, defence in depth, **but only ~20 rules per direction** |
+| **VPC route table blackhole** | ✅ Coarse — drops to entire CIDRs | Whole regions / large CIDR ranges (often with TGW segmentation) |
+| **AWS Firewall Manager** | Doesn't block — **orchestrates** WAF / Network Firewall / SGs across the org | Org-wide consistent IP blocking |
+| **ALB listener rule + fixed response** | ⚠️ Technically yes, almost never the right answer | Last-resort if WAF can't be added |
+| **CloudFront geo-restriction** | Partial — country-level only | Geo blocking *only*; pair with WAF for IP-level |
+| **Security Groups** | ❌ **No — allow-only, no deny rules** | **Never** the answer for "block this IP" |
+
+#### Why each layer wins (when it wins)
+
+| Tool | Headline strength |
+| ---- | ----------------- |
+| **WAF** | 10,000 IPs per IP set; **Amazon IP Reputation List** managed threat intel; rate-based blocking ("block after 2000 req/5min"); geo blocking by country; full request logs to S3/CloudWatch; updates take effect in ~minute; rich L7 inspection (URI, headers, body, SQLi/XSS) |
+| **Network Firewall** | L3-L7 — works for non-HTTP traffic; Suricata IDS/IPS rules + community rule sets; egress filtering (block VPC reaching external IPs); east-west between VPCs |
+| **NACL** | Subnet-level enforcement that's independent of per-instance config; deny-rule capability (SGs can't); useful for compliance "show me subnet-level controls" |
+| **Route table blackhole** | Drops traffic at the routing layer before any firewall sees it; cheap and absolute for whole-CIDR blocks |
+| **Firewall Manager** | Apply the same IP block list to every WAF / NF / SG across 200 accounts in one place |
+
+#### The decision matrix
+
+| Scenario | Answer |
+| -------- | ------ |
+| *"Block specific IPs from reaching our public web app"* | **WAF** (on CloudFront or ALB) |
+| *"Block known-bad IPs automatically from threat intel"* | **WAF Managed Rules — Amazon IP Reputation List** |
+| *"Rate-limit abusive IPs (block after 2000 req/5min)"* | **WAF rate-based rule** |
+| *"Block by country"* | **WAF Geo-match rule** (not CloudFront geo-restriction alone — WAF is richer) |
+| *"Block at the subnet level for defence in depth, ≤20 IPs"* | **NACL deny rules** |
+| *"Block 500+ malicious IPs"* | **WAF IP set** (NACL caps at ~20 rules; WAF supports 10,000 IPs per set) |
+| *"Block IPs across many VPCs east-west and egress"* | **AWS Network Firewall** |
+| *"Block IPs consistently across 50 AWS accounts"* | **AWS Firewall Manager** (orchestrates WAF / NF / SG centrally) |
+| *"Drop traffic to entire regions / CIDRs at the routing layer"* | **VPC route table blackhole** |
+| *"Block IP using Security Group"* | ❌ **TRAP — SGs are allow-only, no deny rules.** Use NACL or WAF |
+| *"Block IPs on an ALB without WAF in place"* | ALB listener rule with fixed response (clunky — get WAF approved) |
+
+#### The defence-in-depth pattern (regulated workloads)
+
+```
+Internet
+   │
+   ▼
+CloudFront                ← WAF Global (IP block + Bot Control + geo + rate limit)
+   │                        Catches most bad IPs at the edge — cheapest to drop
+   ▼
+ALB                       ← WAF Regional (different IP set if needed)
+   │                        Catches anything that bypasses CloudFront
+   ▼
+Private subnet            ← NACL deny rules for known-bad CIDRs
+   │                        Belt-and-braces subnet-level block
+   ▼
+EC2 / ECS                 ← Security Groups (allow-list trusted sources only)
+                            Positive allow-list at the resource
+```
+
+Each layer catches different things:
+
+- **WAF at CloudFront** — most malicious requests, dropped at the edge (lowest cost)
+- **WAF at ALB** — anything bypassing CloudFront (DNS history attacks, direct ALB DNS)
+- **NACL** — subnet-level blanket; useful for compliance evidence
+- **Security Group** — positive allow-list, only good sources reach instances
+
+#### Common exam traps
+
+| Wrong answer | Why |
+| ------------ | --- |
+| *"Use Security Group to block an attacker's IP"* | **SGs are allow-only — no deny rules.** Use NACL or WAF |
+| *"Use NACL to block 500 attacker IPs"* | **20-rule limit** (soft, up to 40). Use **WAF IP set** (10,000 IPs) |
+| *"Use ALB listener rule for IP blocking at scale"* | Technically possible, unusable at scale. WAF attached to ALB is purpose-built |
+| *"Use WAF to block VPC-wide / east-west traffic"* | WAF is L7 HTTP only and attaches to specific resources. Use **Network Firewall** for VPC-wide |
+| *"CloudFront geo-restriction blocks specific IPs"* | Geo-restriction is **country-level only**. For IPs use **WAF** |
+| *"Network Firewall is just a more powerful Security Group"* | They live at different layers. SG = ENI-attached L4 stateful. Network Firewall = subnet-routed L3-L7 stateful + Suricata |
+
+#### Mental model
+
+> *Blocking IPs in AWS has a clear hierarchy:*
+>
+> *- **WAF** for anything internet-facing (the 80% answer) — 10,000 IPs per set, managed threat-intel, rate-based, geo, full logs.*
+> *- **NACL** for subnet-level blanket blocks (≤20 rules — useless for large lists).*
+> *- **Network Firewall** for VPC-wide / east-west / egress.*
+> *- **Security Groups CANNOT block IPs** — allow-only.*
+> *- **ALB by itself** isn't designed for this — always pair with WAF.*
+>
+> *If you see "block IP" in a question, jump to WAF unless the scenario explicitly rules out an internet-facing entry point.*
 
 ### VPC Endpoints
 
