@@ -46,6 +46,7 @@
   - [VPC Exam Triggers](#vpc-exam-triggers)
 - [EFS](#efs)
 - [Scaling and ELB](#scaling-and-elb)
+  - [Highly Available EC2 — The Canonical Pattern](#highly-available-ec2--the-canonical-pattern)
   - [Elastic Load Balancer (ELB)](#elastic-load-balancer-elb)
   - [SSL/TLS and Load Balancers](#ssltls-and-load-balancers)
   - [Connection Draining](#connection-draining)
@@ -3415,6 +3416,130 @@ The keyword pattern: "shared" + "dynamically loaded" + "Linux" → **EFS**.
 - **Horizontal scaling** — add more instances. No ceiling, no downtime. This is what AWS is built for.
 
 **High Availability is a consequence of Horizontal Scaling.** When you spread multiple instances across AZs, losing one AZ doesn't take down your app — the others keep serving traffic. Vertical scaling can't give you this; a single bigger instance is still a single point of failure.
+
+### Highly Available EC2 — The Canonical Pattern
+
+Five ingredients. Get all five right and you have an HA EC2 deployment. The subsequent subsections cover each building block in detail; this is the "putting it together" recipe.
+
+```
+                Users
+                  │
+                  ▼
+          Route 53 (DNS)
+                  │
+                  ▼
+       ┌──── Application Load Balancer ────┐
+       │      (multi-AZ, automatic)        │
+       │                                   │
+       ▼                                   ▼
+   ┌─────────────────┐             ┌─────────────────┐
+   │ Subnet AZ-1a    │             │ Subnet AZ-1b    │
+   │                 │             │                 │
+   │  EC2  EC2  EC2  │             │  EC2  EC2  EC2  │
+   │  (in ASG)       │             │  (in ASG)       │
+   └─────────────────┘             └─────────────────┘
+            ▲                                ▲
+            └─────── Auto Scaling Group ─────┘
+                     - desired N across AZs
+                     - replaces unhealthy
+                     - scales on metric
+                          │
+                          ▼
+                   Stateful backend
+                   (RDS Multi-AZ /
+                    ElastiCache /
+                    DynamoDB /
+                    EFS /
+                    S3)
+```
+
+#### The five ingredients
+
+| Ingredient | What it does |
+| ---------- | ------------ |
+| **1. Subnets in ≥ 2 AZs** | Foundation — without this, you can't survive an AZ failure |
+| **2. Auto Scaling Group spanning those AZs** | Maintains desired instance count; **replaces unhealthy instances automatically** (self-healing); scales on demand |
+| **3. Application Load Balancer (or NLB)** | Distributes traffic across instances; **stops sending to unhealthy ones**; provides a stable DNS endpoint that survives instance churn |
+| **4. Health checks (EC2 + ELB)** | EC2 status checks = "is the instance running?" / ELB target group checks = "is the app responding?" — ASG uses these to decide what to replace |
+| **5. Stateless instances + externalised state** | Instances are **cattle, not pets** — disposable. State lives elsewhere (RDS, ElastiCache, DynamoDB, S3, EFS) so any instance can serve any request |
+
+#### Self-healing mechanics
+
+When an instance fails:
+
+```
+1. EC2 status check fails (hardware) OR ELB target check fails (app)
+       ↓
+2. ALB stops routing traffic to it (within ~30 seconds of consecutive failures)
+       ↓
+3. ASG marks the instance unhealthy
+       ↓
+4. ASG terminates the bad instance
+       ↓
+5. ASG launches a replacement in another (or the same) AZ to restore desired count
+       ↓
+6. New instance passes health checks → ALB starts routing to it
+```
+
+**No human in the loop.** The whole sequence completes in minutes.
+
+#### What "stateless" actually requires
+
+For instances to be truly interchangeable, state must live elsewhere:
+
+| State type | Where to put it |
+| ---------- | --------------- |
+| **User sessions** | **ElastiCache / DynamoDB** (not in-instance memory) |
+| **Application data** | **RDS / Aurora / DynamoDB** |
+| **Uploaded files** | **S3** (not local EBS) |
+| **Shared files across instances** | **EFS** (multi-AZ; not EBS — EBS is single-AZ) |
+| **Logs / metrics** | **CloudWatch / S3** |
+| **Cache** | **ElastiCache** |
+| **Secrets / config** | **Secrets Manager / Parameter Store** (not baked into AMIs) |
+
+If anything important is stored locally on an instance, **HA fails the moment that instance dies**.
+
+#### Stateful EC2 (when you can't go stateless)
+
+Sometimes legacy apps need shared local state. Options, ranked:
+
+| Workaround | Notes |
+| ---------- | ----- |
+| **EFS** | NFS shared across all instances in all AZs. The "standard" stateful-shared-files answer |
+| **FSx for Windows / Lustre / NetApp** | Windows / HPC / NetApp-feature workloads |
+| **RDS Multi-AZ** | If the state is a database (which it usually is) |
+| **EBS Multi-Attach** (io1/io2 only) | Niche — only works within an AZ + specific apps that handle concurrent access |
+
+#### HA vs DR — keep them straight
+
+| | **HA (this section)** | **DR** |
+| - | --------------------- | ------- |
+| Protects against | AZ failure | **Region** failure |
+| Mechanism | Multi-AZ ASG + ALB + RDS Multi-AZ | Cross-region replication + Route 53 failover |
+| Cost | Modest (one extra AZ's instances) | Significant (full DR posture) |
+| Mandatory for production | ✅ Yes | Depends on RTO/RPO requirements |
+| Coverage | Daily resilience | Disaster scenarios |
+
+Multi-AZ is HA. **Multi-AZ is NOT DR.** A region-wide outage takes all your AZs with it.
+
+#### Common exam triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"EC2 instance needs to survive an AZ failure"* | **ASG across multiple AZs + ALB** (not single instance + EIP failover) |
+| *"Automatically replace failed instances"* | **ASG with health checks** — desired-count maintenance |
+| *"Distribute traffic across instances"* | **ALB / NLB** with target group |
+| *"Shared file storage across multiple instances"* | **EFS** (NFS, multi-AZ) — **not EBS** (single-AZ, single-instance default) |
+| *"Session persistence across instance failures"* | **DynamoDB / ElastiCache for sessions** — not in-memory |
+| *"Automatically recover a single EC2 instance from underlying hardware failure"* | **CloudWatch alarm + EC2 auto-recovery** (single-AZ, single-instance HA — narrower than ASG) |
+| *"Survive a region failure"* | NOT this section — **Disaster Recovery** with cross-region patterns |
+| *"Want exactly 3 instances always running, replace immediately if any fail"* | **ASG with `min=desired=max=3`** + health checks |
+| *"Need to pre-warm capacity for a known traffic spike"* | **ASG scheduled scaling action** (raise `desired` ahead of time) |
+| *"Capacity guarantee for critical instances"* | **On-Demand Capacity Reservations** or **Reserved Instances** |
+
+#### Mental model
+
+> *Highly available EC2 = **ASG spanning multiple AZs behind an ALB, with stateless instances and externalised state**. The ASG self-heals; the ALB removes unhealthy instances from rotation; multi-AZ subnets survive AZ failure. State (sessions, files, DB) lives in shared multi-AZ services (RDS Multi-AZ, ElastiCache, DynamoDB, S3, EFS) — never on the instance itself. **Multi-AZ is HA, not DR** — region failures need cross-region patterns.*
 
 ### Elastic Load Balancer (ELB)
 
