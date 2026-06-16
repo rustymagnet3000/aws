@@ -337,6 +337,14 @@
   - [Exam Triggers](#exam-triggers-21)
   - [Mental Model](#mental-model-2)
 - [Elastic Beanstalk](#elastic-beanstalk)
+- [AWS CloudFormation](#aws-cloudformation)
+  - [Concept mapping (CF → Terraform)](#concept-mapping-cf--terraform)
+  - [What CloudFormation does that Terraform doesn't (or does better)](#what-cloudformation-does-that-terraform-doesnt-or-does-better)
+  - [What Terraform does that CloudFormation doesn't (or does better)](#what-terraform-does-that-cloudformation-doesnt-or-does-better)
+  - [Exam-relevant CloudFormation specifics](#exam-relevant-cloudformation-specifics)
+  - [CloudFormation vs Terraform — decision matrix](#cloudformation-vs-terraform--decision-matrix)
+  - [Exam triggers](#exam-triggers-22)
+  - [Mental model](#mental-model-5)
 - [Solution Architecture Examples](#solution-architecture-examples)
   - [Classic Web App](#classic-web-app)
   - [Stateful Web App → Stateless Evolution](#stateful-web-app--stateless-evolution)
@@ -11445,6 +11453,186 @@ Under the hood it creates real AWS resources (EC2, ALB, ASG, etc.) that you can 
 - **Latest runtimes** — platform versions can lag behind the latest Node.js, Python, etc.
 
 **Exam shortcut:** "developer", "simple deployment", "minimal infrastructure" → **Beanstalk**. "Microservices", "complex architecture", "fine-grained control" → **ECS/Fargate** or plain EC2.
+
+## AWS CloudFormation
+
+**Anchored against Terraform.** CloudFormation is AWS's native IaC service. If you know Terraform, you already know 80% of CloudFormation — it's the same idea (declarative templates → reconciled state) restricted to AWS resources. This section focuses on **what's different from Terraform** rather than re-teaching IaC concepts.
+
+### Concept mapping (CF → Terraform)
+
+| CloudFormation | Terraform equivalent |
+| -------------- | --------------------- |
+| **Template** (YAML or JSON) | `.tf` files (HCL) |
+| **Stack** | A workspace + its state file |
+| **Resources** | `resource` blocks |
+| **Parameters** | `variable` blocks |
+| **Outputs** | `output` blocks |
+| **Mappings** | `locals` lookup maps |
+| **Conditions** | `count = condition ? 1 : 0` / `for_each` patterns |
+| **Intrinsic Functions** (`!Ref`, `!GetAtt`, `!Sub`, `!Join`) | Native HCL expressions (richer) |
+| **Pseudo-parameters** (`AWS::Region`, `AWS::AccountId`) | `data.aws_region.current.name`, `data.aws_caller_identity.current.account_id` |
+| **Change Set** | `terraform plan` |
+| **Stack Update** | `terraform apply` |
+| **Drift Detection** | `terraform plan` (shows drift) — but CF is native per-resource |
+| **DependsOn** | `depends_on` |
+| **DeletionPolicy / UpdateReplacePolicy** | `lifecycle { prevent_destroy = true }` |
+| **Nested Stacks** | Modules (looser equivalent) |
+| **Cross-Stack References** (`Export` + `!ImportValue`) | Module outputs / remote state |
+| **StackSets** | Custom orchestration (workspaces, scripts) — no direct equivalent |
+| **CloudFormation Registry** (custom resource types) | Custom providers |
+| **Macros** | No real Terraform equivalent (template pre-processors) |
+| **Helper scripts** (cfn-init / cfn-signal / cfn-hup) | No equivalent — provisioners come close but are discouraged |
+| **SAM** (`Transform: AWS::Serverless-2016-10-31`) | Just the AWS provider's serverless resources |
+| **CDK** (TypeScript/Python → CF) | CDKTF (CDK for Terraform) — much less common |
+
+### What CloudFormation does that Terraform doesn't (or does better)
+
+| Feature | Why it matters |
+| ------- | -------------- |
+| **Automatic rollback on failure** | If a stack update fails partway, CF reverses everything. Terraform leaves you with a half-applied mess + a tainted state file |
+| **State managed by AWS** | No S3 backend + DynamoDB lock setup. The stack IS the state |
+| **Native drift detection per resource** | CF can flag *which specific resource attributes* drifted. Terraform shows you the whole plan diff |
+| **StackSets** | Deploy the same template to **many accounts + regions** in one go. Terraform requires custom orchestration (Terragrunt, CI scripts) |
+| **DeletionPolicy: Retain / Snapshot** | Per-resource policy that survives stack deletion. Terraform's `prevent_destroy` blocks deletion instead of preserving the resource |
+| **Helper scripts for EC2 bootstrap** (`cfn-init`, `cfn-signal`, `cfn-hup`) | EC2 user data that reports back to the stack for true wait-for-readiness. Terraform user data is fire-and-forget |
+| **CloudFormation Hooks (proactive validation)** | Block resource creation in CF / Terraform / CDK BEFORE deployment if it violates policy. Like SCPs but at deployment time |
+| **Native integration with Service Catalog + Control Tower + AWS Backup, etc.** | These AWS services *speak* CloudFormation — no glue code |
+
+### What Terraform does that CloudFormation doesn't (or does better)
+
+| Feature | Why it matters |
+| ------- | -------------- |
+| **Multi-cloud** | CF is AWS-only. Terraform speaks AWS + Azure + GCP + Cloudflare + GitHub + … |
+| **Rich expression language (HCL)** | Loops, conditionals, complex transformations. CF's intrinsic functions are awkward by comparison |
+| **Module ecosystem** | Terraform Registry has thousands of community modules. CF Registry is mostly AWS-published |
+| **Better tooling for diffs** | `terraform plan` is generally more readable than CF Change Sets |
+| **Workspace flexibility** | Multiple environments via workspaces / Terragrunt; CF stacks are 1:1 with environments |
+| **Faster iteration** | Plan + apply cycle is faster than CF stack updates (CF can take minutes for trivial changes) |
+
+### Exam-relevant CloudFormation specifics
+
+#### Stack lifecycle and rollback
+
+```
+CREATE_IN_PROGRESS → CREATE_COMPLETE        (happy path)
+                  ↘ CREATE_FAILED → ROLLBACK_IN_PROGRESS → ROLLBACK_COMPLETE
+                                                          ↘ ROLLBACK_FAILED (manual cleanup)
+
+UPDATE_IN_PROGRESS → UPDATE_COMPLETE
+                   ↘ UPDATE_FAILED → UPDATE_ROLLBACK_IN_PROGRESS → UPDATE_ROLLBACK_COMPLETE
+```
+
+**Automatic rollback** is the headline behaviour CF gets and Terraform doesn't. Exam framing: *"if any resource fails during stack creation, what happens?"* → CF rolls back **all** changes by default (can be disabled, rarely a good idea).
+
+#### Change Sets — preview before apply
+
+```bash
+aws cloudformation create-change-set ...    # generates the diff
+aws cloudformation describe-change-set ...  # shows what would change
+aws cloudformation execute-change-set ...   # applies it
+```
+
+Equivalent of `terraform plan → terraform apply`. Critical for production — always review before executing.
+
+#### StackSets — multi-account multi-region (the headline CF feature)
+
+The thing CF does that Terraform really can't match natively:
+
+```
+Single template → StackSet → deploys to:
+                              - Account A in us-east-1
+                              - Account A in eu-west-1
+                              - Account B in us-east-1
+                              - … any combination of accounts × regions
+```
+
+Two permission models:
+
+| Model | When |
+| ----- | ---- |
+| **Self-managed permissions** | Each target account has a role you specify; admin account assumes it |
+| **Service-managed permissions** | Uses AWS Organizations to deploy automatically to all accounts in an OU; trusted access enabled |
+
+Heavily tested in multi-account / Control Tower / Organizations questions.
+
+#### Drift Detection
+
+CF can detect when a resource has been **modified outside of CloudFormation** (someone made a manual change in the console). Per-resource detection; not automatic — you trigger it. Output: list of drifted resources + which properties differ.
+
+Terraform's `terraform plan` does similar but operates on the whole state at once.
+
+#### DeletionPolicy and UpdateReplacePolicy
+
+Per-resource policies that control what happens on stack deletion or resource replacement:
+
+| Policy value | What it does |
+| ------------ | ------------ |
+| **Delete** (default) | Resource is destroyed with the stack |
+| **Retain** | Resource survives stack deletion (orphaned, you manage it manually) |
+| **Snapshot** | Snapshot is taken before deletion (EBS, RDS, ElastiCache, Redshift, Neptune) |
+
+`UpdateReplacePolicy` is the same but for in-place replacements during updates. Exam favourite for *"protect the DB during stack deletion"* → `DeletionPolicy: Retain` (or `Snapshot`).
+
+#### Helper scripts (EC2 bootstrap with signalling)
+
+Unique to CloudFormation, no Terraform equivalent:
+
+| Helper | Purpose |
+| ------ | ------- |
+| **`cfn-init`** | Runs in EC2 user data; reads `AWS::CloudFormation::Init` metadata from the template and configures the instance (packages, files, services) |
+| **`cfn-signal`** | Reports back to CF "I'm ready" or "I failed" — lets `WaitCondition` or `CreationPolicy` actually wait for instance readiness |
+| **`cfn-hup`** | Daemon that polls for template metadata changes and re-runs `cfn-init` |
+
+Exam triggers: *"wait until the EC2 instance is fully configured before marking the stack as complete"* → `cfn-signal` + `CreationPolicy: ResourceSignal`.
+
+#### SAM (Serverless Application Model) and CDK
+
+| | SAM | CDK |
+| - | --- | --- |
+| What | CF extension via `Transform: AWS::Serverless-2016-10-31`; shorthand for Lambda + API Gateway + DynamoDB patterns | TypeScript / Python / Java / Go SDK that **synthesises CloudFormation templates** |
+| Output | CloudFormation template | CloudFormation template |
+| Use for | Lightweight serverless apps | Anything where you want real programming-language abstractions over IaC |
+| Relationship | CF + sugar | CF + code generator |
+
+Both ultimately produce CF templates and deploy via CF stacks. They're not separate IaC systems.
+
+### CloudFormation vs Terraform — decision matrix
+
+| Scenario | Choose |
+| -------- | ------ |
+| **Multi-cloud or hybrid** | **Terraform** (CF is AWS-only) |
+| **AWS-only, want native state + rollback** | **CloudFormation** |
+| **Deploying to many AWS accounts via Organizations** | **CloudFormation StackSets** |
+| **Want rich expressions, modules, ecosystem** | **Terraform** |
+| **Want EC2 bootstrap to signal back when ready** | **CloudFormation** (`cfn-signal`) |
+| **AWS service explicitly speaks CF** (Service Catalog, Control Tower CfCT, AWS Backup, Migration Hub) | **CloudFormation** (the path of least resistance) |
+| **Writing infra in TypeScript / Python** | **CDK** (synthesises CF) or CDKTF (synthesises Terraform) |
+| **Existing Terraform shop with AWS workloads** | **Terraform** (don't fork the toolchain) |
+| **Lightweight serverless app deployment** | **SAM** (CF extension) |
+
+Most large orgs end up with **both**: Terraform for the bulk of infrastructure, CF for the AWS-specific bits that integrate natively (Service Catalog products, StackSets across accounts, Control Tower customisations).
+
+### Exam triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"AWS-native IaC"* | **CloudFormation** |
+| *"Deploy same template to 50 accounts and 3 regions"* | **CloudFormation StackSets** |
+| *"Service-managed permissions for StackSets across Organizations"* | **AWS Organizations + Trusted Access** for CloudFormation |
+| *"Preview changes before applying"* | **Change Set** (CF's `terraform plan`) |
+| *"Resource should survive stack deletion"* | **DeletionPolicy: Retain** (or `Snapshot` for DBs) |
+| *"Detect manual changes outside CF"* | **Drift Detection** |
+| *"Bootstrap EC2 and signal back when ready"* | **`cfn-init` + `cfn-signal` + `CreationPolicy: ResourceSignal`** |
+| *"Auto-rollback if stack fails"* | **Default behaviour** — CF rolls back on failure (don't disable unless you know why) |
+| *"Synthesise CF templates from TypeScript/Python"* | **AWS CDK** |
+| *"Shorthand for serverless app templates"* | **AWS SAM** (CF transform) |
+| *"Block non-compliant resource creation BEFORE deployment"* | **CloudFormation Hooks** (proactive controls) |
+| *"Reusable infrastructure pattern within one template"* | **Nested Stacks** |
+| *"Reference outputs between stacks"* | **Export + `!ImportValue`** (cross-stack references) |
+
+### Mental model
+
+> *CloudFormation = **"Terraform but AWS-only, with state managed by AWS, automatic rollback on failure, and native StackSets for multi-account deployment."** If you know Terraform, the concepts map 1:1 (template = .tf, stack = state + workspace, resources, parameters, outputs, conditions, intrinsic functions ≈ HCL expressions). **What CF wins on:** automatic rollback, StackSets, native AWS-service integrations, helper scripts for EC2 readiness signalling, DeletionPolicy: Retain/Snapshot. **What Terraform wins on:** multi-cloud, HCL expressiveness, module ecosystem, faster iteration. Most orgs use both. **SAM** and **CDK** both produce CF templates — they're not alternatives to CF, they're authoring layers on top of it.*
 
 ## Solution Architecture Examples
 
