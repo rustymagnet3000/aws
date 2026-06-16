@@ -24,6 +24,7 @@
   - [Security Groups](#security-groups)
   - [NACLs (Network ACLs)](#nacls-network-acls)
   - [Security Groups vs NACLs](#security-groups-vs-nacls)
+  - [Blocking IPs — Which Layer When](#blocking-ips--which-layer-when)
   - [VPC Endpoints](#vpc-endpoints)
   - [ENI-backed vs Public Endpoint Services](#eni-backed-vs-public-endpoint-services)
   - [VPC Peering](#vpc-peering)
@@ -45,6 +46,7 @@
   - [VPC Exam Triggers](#vpc-exam-triggers)
 - [EFS](#efs)
 - [Scaling and ELB](#scaling-and-elb)
+  - [Highly Available EC2 — The Canonical Pattern](#highly-available-ec2--the-canonical-pattern)
   - [Elastic Load Balancer (ELB)](#elastic-load-balancer-elb)
   - [SSL/TLS and Load Balancers](#ssltls-and-load-balancers)
   - [Connection Draining](#connection-draining)
@@ -557,16 +559,188 @@ Three types for controlling how instances are physically placed:
 | Spread | Each on distinct hardware (racks) | 7 per AZ | Small HA pairs, critical isolated instances |
 | Partition | Groups of instances per rack/partition | 7 partitions/AZ, 100s of instances | Kafka, Cassandra, Hadoop (rack-aware apps) |
 
-**Cluster** — lowest latency, up to 10 Gbps between instances, but correlated failure risk.
+**Cluster** — lowest latency, highest inter-instance bandwidth (up to 400 Gbps with EFA on modern HPC instances), but correlated failure risk.
 
 **Spread** — maximizes isolation; hard limit of 7 instances per AZ per group.
 
 **Partition** — instances can see their partition ID, enabling rack-aware data placement.
 
 **Key rules:**
+
 - Can't merge groups or move running instances in — must stop → modify → start
 - Cluster groups must be in a single AZ; Spread/Partition can span AZs
 - Cluster performs best with uniform instance types
+
+#### Cluster Placement Group — The Full Purpose
+
+Cluster Placement Group exists to give a specific set of guarantees that nothing else provides. *"Low latency"* is just one facet; the headline guarantees are:
+
+| Guarantee | What it means |
+| --------- | ------------- |
+| **Physical proximity** | All instances placed on the **same underlying network** — minimum switches between any pair |
+| **Lowest inter-instance latency** | Sub-millisecond, often single-digit microseconds |
+| **Highest inter-instance throughput** | **Up to 400 Gbps** with EFA on modern HPC instances |
+| **No oversubscription** | Bandwidth between instances is committed, not shared with other tenants |
+| **Predictable performance** | No noisy-neighbour variability — critical for tightly-coupled HPC where one slow node holds up the whole job |
+
+**Trade-offs (the cost of those guarantees):**
+
+| Trade-off | Detail |
+| --------- | ------ |
+| **Correlated failure** | All instances share fault domains — if the rack fails, **everything in the group fails together**. Anti-DR by design |
+| **Single AZ only** | Can't span AZs — defeats the purpose of physical proximity |
+| **Capacity allocation gotcha** | **Launch all instances together at the same time**. Adding instances later can fail with "insufficient capacity" because AWS may have re-allocated the rack |
+| **Uniform instance types perform best** | Mixing instance families breaks bandwidth/latency guarantees |
+| **Not for HA workloads** | This is the *opposite* of HA — you've put everything in one basket |
+
+#### Cluster Placement Group + EFA — The HPC Stack
+
+The two go together. Either one alone leaves performance on the table:
+
+```
+Cluster Placement Group   →  the PHYSICAL layer
+                            (instances physically close on the network)
+              +
+EFA (Elastic Fabric        →  the SOFTWARE layer
+Adapter)                     (OS-bypass via libfabric — sub-microsecond
+                              MPI / NCCL collective communication)
+```
+
+- **Cluster Placement Group without EFA** → physically close, but every packet still goes through the kernel network stack
+- **EFA without Cluster Placement Group** → OS-bypass works, but packets may still hop through multiple racks/spines
+
+**Together** → minimum hops + zero kernel overhead = the lowest latency AWS can offer.
+
+#### ENI vs ENA vs EFA — getting the framing right
+
+A common source of confusion. These aren't three parallel choices — **ENI is the base; ENA is the acceleration tech; EFA is a specialised ENI**.
+
+```
+ENI = Elastic Network Interface
+      The AWS network construct that attaches to an EC2 instance.
+      Every EC2 has at least one. This is the BASE.
+       │
+       ├── Standard ENI
+       │     Just a regular network interface — TCP/IP through the kernel
+       │
+       ├── ENI with Enhanced Networking (ENA driver + SR-IOV)
+       │     Same construct, hardware-accelerated path via the ENA driver.
+       │     Default on basically every modern instance type.
+       │     Not a "different ENI" — the ENI just uses ENA tech.
+       │
+       └── EFA (Elastic Fabric Adapter)
+             A SPECIAL TYPE OF ENI that includes:
+               - ENA capabilities (so it acts as a normal ENI for TCP/IP)
+               - PLUS OS-bypass / libfabric interface for HPC
+             You attach an EFA in place of (or alongside) a standard ENI.
+```
+
+**Key point:** an EFA *is* an ENI — just a specialised one with extra OS-bypass capabilities. AWS docs call it *"an Elastic Network Adapter (ENA) with added capabilities"* or *"an ENI attached to an EC2 instance with EFA functionality."*
+
+The cleanest framing:
+
+| Network attachment | What you get |
+| ------------------ | ------------ |
+| **Standard ENI** | Base network interface |
+| **ENI with ENA / Enhanced Networking** | Same ENI, hardware-accelerated path — default for modern instance types |
+| **EFA (a specialised ENI)** | ENA-equivalent networking **plus** OS-bypass via libfabric for HPC / MPI / NCCL |
+
+**Common exam trap:** answer choices like *"ENI / ENA / EFA"* aren't really parallel options. ENA isn't a comparable alternative to ENI — it's a driver/tech that makes ENIs faster. The actually-different choice is **EFA**, because it adds OS-bypass that nothing else has.
+
+**EFA requirements:**
+
+- A **supported instance type** (compute-optimized like `c5n.18xlarge`, `c6gn`, `hpc6a`, `p5`, `p4d` — generally the "n" suffix or HPC/GPU families)
+- **Linux** (Windows not supported)
+- The **AWS EFA driver + libfabric** installed in the AMI
+- Best paired with a **Cluster Placement Group** for full benefit
+
+#### Is EFA's kernel bypass a security risk?
+
+Common security-engineer pushback when first seeing EFA: *"kernel bypass sounds like security bypass."* The honest answer: **it's a different security model, not a clear-cut new risk** — because of what *is* and *isn't* actually being bypassed.
+
+##### What "kernel bypass" really skips
+
+```
+Traditional network path:
+  App ─► syscall ─► kernel TCP/IP stack ─► kernel driver ─► NIC ─► wire
+
+EFA path:
+  App ─► libfabric (userspace) ─► (kernel sets this up once at startup) ─► NIC ─► wire
+                                   ↑
+                                   After setup, the app talks directly
+                                   to the NIC via memory-mapped I/O
+```
+
+The kernel is still in the loop **at setup time** — it allocates protected memory regions, configures the EFA device, enforces per-process isolation. After that, the data plane skips the kernel for performance. So it's not "the kernel is gone"; it's "the kernel **sets up safety**, then steps out of the **fast path**."
+
+##### What's STILL enforced (security controls EFA does NOT bypass)
+
+| Control | Still works for EFA? | Why |
+| ------- | --------------------- | --- |
+| **Hypervisor isolation (Nitro)** | ✅ Yes | EFA can't break out of the VM; one tenant's EFA can't see another's |
+| **Security Groups** | ✅ Yes | EFA is still an ENI — SG rules apply at the ENI level |
+| **NACLs** | ✅ Yes | Subnet-level filtering applies regardless of how packets get to the NIC |
+| **VPC routing rules** | ✅ Yes | Packets only reach destinations VPC routing permits |
+| **EFA scope is intra-VPC** | ✅ Yes | EFA traffic doesn't leave the VPC by design — it's for inter-instance HPC communication |
+| **Per-process memory isolation** | ✅ Yes | Each process gets its own protected EFA resources |
+| **VPC Flow Logs** | ✅ Partially | Flow Logs still see EFA traffic at the ENI level (less detail than TCP, but flows visible) |
+| **IAM** | ✅ Yes | Gates control-plane access (who can launch instances, attach EFA, etc.) |
+
+The **cloud-layer security perimeter stays fully intact**. EFA isn't a hole in the AWS shared-responsibility model.
+
+##### What IS bypassed (the actual trade-offs)
+
+| Control | Bypassed for EFA? | What you lose |
+| ------- | ------------------ | -------------- |
+| **Host-based firewall** (iptables / nftables / Windows Firewall) | ✅ Yes | OS-level rules don't see EFA traffic — kernel netfilter isn't in the path |
+| **Host IDS / IPS** (Snort / Suricata / Falco via netfilter) | ✅ Mostly | Won't see EFA packets via standard kernel hooks |
+| **eBPF programs on the network path** | ✅ Yes | eBPF hooks the kernel network stack which EFA skips |
+| **OS-level packet capture** (`tcpdump`, etc.) | ✅ Mostly | EFA traffic doesn't reach `pcap` the normal way |
+| **TLS / encryption by default** | ⚠️ Not enabled by default | libfabric supports encrypted overlays, but plain MPI / NCCL is unencrypted — you trust the VPC fabric |
+
+So at the **host-OS layer**, several traditional monitoring / filtering points are blind to EFA traffic. That's the genuine security trade-off.
+
+##### Why HPC people accept this
+
+| Reason | Detail |
+| ------ | ------ |
+| **EFA workloads are intra-cluster** | Traffic stays between trusted nodes in a Cluster Placement Group. No untrusted-network surface |
+| **Cluster is behind VPC isolation** | Private subnets, no internet path, dedicated VPC. Boundary is the cluster, not the host |
+| **Trusted processes** | MPI / NCCL apps are operator-deployed, not user-controlled — different threat model from web apps |
+| **Same model RDMA / InfiniBand has used for 20+ years** | On-prem HPC has run kernel-bypass interconnects forever. Well-understood, not novel |
+| **Cloud controls are the meaningful perimeter** | SG / NACL / VPC routing handle "who can reach this cluster"; intra-cluster netfilter isn't worth the perf cost |
+
+##### When EFA's model WOULD be a problem
+
+You'd only worry about EFA's bypass if:
+
+- You ran **untrusted workloads** in the same cluster (multi-tenant HPC with mutually-distrusting tenants — rare; usually solved by per-tenant clusters)
+- You **relied on host iptables / host IDS** as your primary security boundary (and didn't trust the VPC layer)
+- You needed **encrypted traffic** without configuring libfabric's encryption extensions
+
+If any of these apply, you wouldn't be using EFA. EFA assumes a **trusted-cluster threat model** — that's why it's restricted to specific instance types and typically deployed in a Cluster Placement Group.
+
+##### Mental model
+
+> *"Kernel bypass" sounds like "security bypass" but it's not. The kernel still **sets up** EFA's protected memory regions; it just doesn't sit in the **data path** of every packet. Cloud-layer controls (SG / NACL / hypervisor / VPC routing) all still apply. What you lose is **host-OS-level visibility** — iptables, host IDS, packet capture. For HPC's trusted-cluster threat model this is acceptable; for internet-facing or multi-tenant scenarios you'd never use EFA in the first place. The same model has run on-prem HPC clusters with InfiniBand / RoCE for 20+ years.*
+
+#### Mental model
+
+> *Cluster Placement Group = the **physical** layer of HPC networking (minimum hops). EFA = the **software** layer (kernel bypass). Pair them for tightly-coupled HPC / MPI / distributed-ML; either alone is suboptimal. **ENI** is the base network construct every EC2 has; **ENA** is just the acceleration tech most ENIs use by default; **EFA** is a specialised ENI with the OS-bypass interface that makes HPC actually work. Cluster Placement Group is the **opposite of HA** — accept correlated failure for performance.*
+
+#### Exam triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Maximise network performance between EC2 instances for HPC"* | **Cluster Placement Group + EFA** |
+| *"Lowest possible latency between EC2 instances"* | **Cluster Placement Group** (physical proximity) + **EFA** (kernel bypass) |
+| *"MPI / NCCL distributed-training workloads"* | **EFA** in a Cluster Placement Group |
+| *"Instances should be on distinct racks for HA"* | **Spread Placement Group** (max 7 per AZ) |
+| *"Kafka / Cassandra / Hadoop (rack-aware apps)"* | **Partition Placement Group** |
+| *"Survive an AZ failure with placement-group instances"* | Placement groups don't help — they're single-AZ. Need ASG across AZs |
+| *"EFA on Windows"* | **Linux only** — EFA isn't supported on Windows |
+| *"Standard EC2 high throughput, not HPC"* | **Enhanced Networking (ENA)** — already default; no EFA needed |
+| *"Why did my new instance launch fail to join an existing Cluster Placement Group?"* | **Capacity allocation** — launch all instances together at the same time; AWS may have re-allocated the rack |
 
 ### ENIs in ECS
 
@@ -1473,6 +1647,98 @@ NACLs aren't just "block malicious IPs." Real use cases:
 **The exam shortcut:** SG is the default tool. NACL is for when you specifically need a **deny** (e.g. block a malicious IP range) or a subnet-wide rule that's independent of per-instance config.
 
 **Quick mental model:** *Security Group is a stateful per-instance firewall (think `iptables` on the host). NACL is a stateless per-subnet ACL (think router ACL). They stack: traffic must pass both. SGs do the heavy lifting; NACLs handle blanket bans and defence in depth.*
+
+### Blocking IPs — Which Layer When
+
+A cross-cutting decision that the exam asks in many disguises. AWS lets you block IPs at multiple layers — picking the **right one** depends on what you're protecting and at what scale.
+
+#### The layers ranked by typical usefulness for IP blocking
+
+| Layer | Can block IPs? | When it's the right answer |
+| ----- | -------------- | --------------------------- |
+| **AWS WAF** (Web ACL with IP set rule) | ✅ **The canonical answer for L7 internet-facing apps** | Anything fronted by **CloudFront / ALB / API Gateway / AppSync / App Runner / Cognito** |
+| **AWS Network Firewall** | ✅ Yes (L3-L7, stateless + Suricata stateful) | **VPC-wide** inspection, **east-west** between VPCs, **egress** filtering |
+| **NACLs** | ✅ Yes (L4, stateless, supports deny) | **Subnet-level** blanket blocks, defence in depth, **but only ~20 rules per direction** |
+| **VPC route table blackhole** | ✅ Coarse — drops to entire CIDRs | Whole regions / large CIDR ranges (often with TGW segmentation) |
+| **AWS Firewall Manager** | Doesn't block — **orchestrates** WAF / Network Firewall / SGs across the org | Org-wide consistent IP blocking |
+| **ALB listener rule + fixed response** | ⚠️ Technically yes, almost never the right answer | Last-resort if WAF can't be added |
+| **CloudFront geo-restriction** | Partial — country-level only | Geo blocking *only*; pair with WAF for IP-level |
+| **Security Groups** | ❌ **No — allow-only, no deny rules** | **Never** the answer for "block this IP" |
+
+#### Why each layer wins (when it wins)
+
+| Tool | Headline strength |
+| ---- | ----------------- |
+| **WAF** | 10,000 IPs per IP set; **Amazon IP Reputation List** managed threat intel; rate-based blocking ("block after 2000 req/5min"); geo blocking by country; full request logs to S3/CloudWatch; updates take effect in ~minute; rich L7 inspection (URI, headers, body, SQLi/XSS) |
+| **Network Firewall** | L3-L7 — works for non-HTTP traffic; Suricata IDS/IPS rules + community rule sets; egress filtering (block VPC reaching external IPs); east-west between VPCs |
+| **NACL** | Subnet-level enforcement that's independent of per-instance config; deny-rule capability (SGs can't); useful for compliance "show me subnet-level controls" |
+| **Route table blackhole** | Drops traffic at the routing layer before any firewall sees it; cheap and absolute for whole-CIDR blocks |
+| **Firewall Manager** | Apply the same IP block list to every WAF / NF / SG across 200 accounts in one place |
+
+#### The decision matrix
+
+| Scenario | Answer |
+| -------- | ------ |
+| *"Block specific IPs from reaching our public web app"* | **WAF** (on CloudFront or ALB) |
+| *"Block known-bad IPs automatically from threat intel"* | **WAF Managed Rules — Amazon IP Reputation List** |
+| *"Rate-limit abusive IPs (block after 2000 req/5min)"* | **WAF rate-based rule** |
+| *"Block by country"* | **WAF Geo-match rule** (not CloudFront geo-restriction alone — WAF is richer) |
+| *"Block at the subnet level for defence in depth, ≤20 IPs"* | **NACL deny rules** |
+| *"Block 500+ malicious IPs"* | **WAF IP set** (NACL caps at ~20 rules; WAF supports 10,000 IPs per set) |
+| *"Block IPs across many VPCs east-west and egress"* | **AWS Network Firewall** |
+| *"Block IPs consistently across 50 AWS accounts"* | **AWS Firewall Manager** (orchestrates WAF / NF / SG centrally) |
+| *"Drop traffic to entire regions / CIDRs at the routing layer"* | **VPC route table blackhole** |
+| *"Block IP using Security Group"* | ❌ **TRAP — SGs are allow-only, no deny rules.** Use NACL or WAF |
+| *"Block IPs on an ALB without WAF in place"* | ALB listener rule with fixed response (clunky — get WAF approved) |
+
+#### The defence-in-depth pattern (regulated workloads)
+
+```
+Internet
+   │
+   ▼
+CloudFront                ← WAF Global (IP block + Bot Control + geo + rate limit)
+   │                        Catches most bad IPs at the edge — cheapest to drop
+   ▼
+ALB                       ← WAF Regional (different IP set if needed)
+   │                        Catches anything that bypasses CloudFront
+   ▼
+Private subnet            ← NACL deny rules for known-bad CIDRs
+   │                        Belt-and-braces subnet-level block
+   ▼
+EC2 / ECS                 ← Security Groups (allow-list trusted sources only)
+                            Positive allow-list at the resource
+```
+
+Each layer catches different things:
+
+- **WAF at CloudFront** — most malicious requests, dropped at the edge (lowest cost)
+- **WAF at ALB** — anything bypassing CloudFront (DNS history attacks, direct ALB DNS)
+- **NACL** — subnet-level blanket; useful for compliance evidence
+- **Security Group** — positive allow-list, only good sources reach instances
+
+#### Common exam traps
+
+| Wrong answer | Why |
+| ------------ | --- |
+| *"Use Security Group to block an attacker's IP"* | **SGs are allow-only — no deny rules.** Use NACL or WAF |
+| *"Use NACL to block 500 attacker IPs"* | **20-rule limit** (soft, up to 40). Use **WAF IP set** (10,000 IPs) |
+| *"Use ALB listener rule for IP blocking at scale"* | Technically possible, unusable at scale. WAF attached to ALB is purpose-built |
+| *"Use WAF to block VPC-wide / east-west traffic"* | WAF is L7 HTTP only and attaches to specific resources. Use **Network Firewall** for VPC-wide |
+| *"CloudFront geo-restriction blocks specific IPs"* | Geo-restriction is **country-level only**. For IPs use **WAF** |
+| *"Network Firewall is just a more powerful Security Group"* | They live at different layers. SG = ENI-attached L4 stateful. Network Firewall = subnet-routed L3-L7 stateful + Suricata |
+
+#### Mental model
+
+> *Blocking IPs in AWS has a clear hierarchy:*
+>
+> *- **WAF** for anything internet-facing (the 80% answer) — 10,000 IPs per set, managed threat-intel, rate-based, geo, full logs.*
+> *- **NACL** for subnet-level blanket blocks (≤20 rules — useless for large lists).*
+> *- **Network Firewall** for VPC-wide / east-west / egress.*
+> *- **Security Groups CANNOT block IPs** — allow-only.*
+> *- **ALB by itself** isn't designed for this — always pair with WAF.*
+>
+> *If you see "block IP" in a question, jump to WAF unless the scenario explicitly rules out an internet-facing entry point.*
 
 ### VPC Endpoints
 
@@ -3322,6 +3588,130 @@ The keyword pattern: "shared" + "dynamically loaded" + "Linux" → **EFS**.
 - **Horizontal scaling** — add more instances. No ceiling, no downtime. This is what AWS is built for.
 
 **High Availability is a consequence of Horizontal Scaling.** When you spread multiple instances across AZs, losing one AZ doesn't take down your app — the others keep serving traffic. Vertical scaling can't give you this; a single bigger instance is still a single point of failure.
+
+### Highly Available EC2 — The Canonical Pattern
+
+Five ingredients. Get all five right and you have an HA EC2 deployment. The subsequent subsections cover each building block in detail; this is the "putting it together" recipe.
+
+```
+                Users
+                  │
+                  ▼
+          Route 53 (DNS)
+                  │
+                  ▼
+       ┌──── Application Load Balancer ────┐
+       │      (multi-AZ, automatic)        │
+       │                                   │
+       ▼                                   ▼
+   ┌─────────────────┐             ┌─────────────────┐
+   │ Subnet AZ-1a    │             │ Subnet AZ-1b    │
+   │                 │             │                 │
+   │  EC2  EC2  EC2  │             │  EC2  EC2  EC2  │
+   │  (in ASG)       │             │  (in ASG)       │
+   └─────────────────┘             └─────────────────┘
+            ▲                                ▲
+            └─────── Auto Scaling Group ─────┘
+                     - desired N across AZs
+                     - replaces unhealthy
+                     - scales on metric
+                          │
+                          ▼
+                   Stateful backend
+                   (RDS Multi-AZ /
+                    ElastiCache /
+                    DynamoDB /
+                    EFS /
+                    S3)
+```
+
+#### The five ingredients
+
+| Ingredient | What it does |
+| ---------- | ------------ |
+| **1. Subnets in ≥ 2 AZs** | Foundation — without this, you can't survive an AZ failure |
+| **2. Auto Scaling Group spanning those AZs** | Maintains desired instance count; **replaces unhealthy instances automatically** (self-healing); scales on demand |
+| **3. Application Load Balancer (or NLB)** | Distributes traffic across instances; **stops sending to unhealthy ones**; provides a stable DNS endpoint that survives instance churn |
+| **4. Health checks (EC2 + ELB)** | EC2 status checks = "is the instance running?" / ELB target group checks = "is the app responding?" — ASG uses these to decide what to replace |
+| **5. Stateless instances + externalised state** | Instances are **cattle, not pets** — disposable. State lives elsewhere (RDS, ElastiCache, DynamoDB, S3, EFS) so any instance can serve any request |
+
+#### Self-healing mechanics
+
+When an instance fails:
+
+```
+1. EC2 status check fails (hardware) OR ELB target check fails (app)
+       ↓
+2. ALB stops routing traffic to it (within ~30 seconds of consecutive failures)
+       ↓
+3. ASG marks the instance unhealthy
+       ↓
+4. ASG terminates the bad instance
+       ↓
+5. ASG launches a replacement in another (or the same) AZ to restore desired count
+       ↓
+6. New instance passes health checks → ALB starts routing to it
+```
+
+**No human in the loop.** The whole sequence completes in minutes.
+
+#### What "stateless" actually requires
+
+For instances to be truly interchangeable, state must live elsewhere:
+
+| State type | Where to put it |
+| ---------- | --------------- |
+| **User sessions** | **ElastiCache / DynamoDB** (not in-instance memory) |
+| **Application data** | **RDS / Aurora / DynamoDB** |
+| **Uploaded files** | **S3** (not local EBS) |
+| **Shared files across instances** | **EFS** (multi-AZ; not EBS — EBS is single-AZ) |
+| **Logs / metrics** | **CloudWatch / S3** |
+| **Cache** | **ElastiCache** |
+| **Secrets / config** | **Secrets Manager / Parameter Store** (not baked into AMIs) |
+
+If anything important is stored locally on an instance, **HA fails the moment that instance dies**.
+
+#### Stateful EC2 (when you can't go stateless)
+
+Sometimes legacy apps need shared local state. Options, ranked:
+
+| Workaround | Notes |
+| ---------- | ----- |
+| **EFS** | NFS shared across all instances in all AZs. The "standard" stateful-shared-files answer |
+| **FSx for Windows / Lustre / NetApp** | Windows / HPC / NetApp-feature workloads |
+| **RDS Multi-AZ** | If the state is a database (which it usually is) |
+| **EBS Multi-Attach** (io1/io2 only) | Niche — only works within an AZ + specific apps that handle concurrent access |
+
+#### HA vs DR — keep them straight
+
+| | **HA (this section)** | **DR** |
+| - | --------------------- | ------- |
+| Protects against | AZ failure | **Region** failure |
+| Mechanism | Multi-AZ ASG + ALB + RDS Multi-AZ | Cross-region replication + Route 53 failover |
+| Cost | Modest (one extra AZ's instances) | Significant (full DR posture) |
+| Mandatory for production | ✅ Yes | Depends on RTO/RPO requirements |
+| Coverage | Daily resilience | Disaster scenarios |
+
+Multi-AZ is HA. **Multi-AZ is NOT DR.** A region-wide outage takes all your AZs with it.
+
+#### Common exam triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"EC2 instance needs to survive an AZ failure"* | **ASG across multiple AZs + ALB** (not single instance + EIP failover) |
+| *"Automatically replace failed instances"* | **ASG with health checks** — desired-count maintenance |
+| *"Distribute traffic across instances"* | **ALB / NLB** with target group |
+| *"Shared file storage across multiple instances"* | **EFS** (NFS, multi-AZ) — **not EBS** (single-AZ, single-instance default) |
+| *"Session persistence across instance failures"* | **DynamoDB / ElastiCache for sessions** — not in-memory |
+| *"Automatically recover a single EC2 instance from underlying hardware failure"* | **CloudWatch alarm + EC2 auto-recovery** (single-AZ, single-instance HA — narrower than ASG) |
+| *"Survive a region failure"* | NOT this section — **Disaster Recovery** with cross-region patterns |
+| *"Want exactly 3 instances always running, replace immediately if any fail"* | **ASG with `min=desired=max=3`** + health checks |
+| *"Need to pre-warm capacity for a known traffic spike"* | **ASG scheduled scaling action** (raise `desired` ahead of time) |
+| *"Capacity guarantee for critical instances"* | **On-Demand Capacity Reservations** or **Reserved Instances** |
+
+#### Mental model
+
+> *Highly available EC2 = **ASG spanning multiple AZs behind an ALB, with stateless instances and externalised state**. The ASG self-heals; the ALB removes unhealthy instances from rotation; multi-AZ subnets survive AZ failure. State (sessions, files, DB) lives in shared multi-AZ services (RDS Multi-AZ, ElastiCache, DynamoDB, S3, EFS) — never on the instance itself. **Multi-AZ is HA, not DR** — region failures need cross-region patterns.*
 
 ### Elastic Load Balancer (ELB)
 
@@ -11543,6 +11933,108 @@ Other examples that follow the same pattern:
 - **E-commerce** — seller uploads product images → resize for mobile/desktop/thumbnail → update catalog → listing goes live
 - **Insurance claim** — customer uploads damage photos → fraud detection model → queue for adjuster review → notify the adjuster
 - **Video platform** — raw video uploaded → transcode to multiple resolutions → notify uploader when ready
+
+#### S3 Events + DLQ Patterns
+
+**S3 itself has no DLQ.** S3 event notifications are fire-and-forget from S3's side — S3 retries for a limited window if the destination is temporarily unavailable, then **silently drops the event**. DLQ handling happens entirely on the **receiving service**.
+
+#### DLQ mechanism per destination
+
+| Destination | DLQ mechanism | How it works |
+| ----------- | ------------- | ------------ |
+| **SQS queue** | **Redrive policy → DLQ queue** | Configured on the SQS queue. After `maxReceiveCount` consumer-side failures, message moves to DLQ. Catches *consumer* failures, not S3-side |
+| **SNS topic** | **Subscription-level DLQ** (an SQS queue) | Per-subscription DLQ for messages SNS couldn't deliver to that subscriber after retry. Configured on the *subscription*, not the topic |
+| **Lambda function** | **Lambda Destinations** (newer, preferred) or **Lambda DLQ** (older) | Async invocation → Lambda retries (default 2). On final failure, Destinations route to SQS / SNS / EventBridge / Lambda. Older DLQ is SQS / SNS only |
+| **EventBridge** | **Per-rule-target DLQ** (an SQS queue) | Each EventBridge rule target can have its own DLQ. Target invocation fails after retries → event lands in that target's DLQ |
+
+#### The four fan-out patterns + their DLQ topology
+
+##### Pattern 1 — S3 → SQS → Consumer (simplest)
+
+```
+S3 ─► SQS Queue ─► Consumer (e.g. Lambda)
+                ↓ (after maxReceiveCount fails)
+                SQS DLQ
+```
+
+DLQ catches consumer-side failures.
+
+##### Pattern 2 — S3 → SNS → fan-out (multiple consumers)
+
+```
+                              ┌─► SQS Queue A ─► Consumer A
+                              │       ↓
+                              │     SQS DLQ A
+S3 ─► SNS Topic ──────────────┤
+                              │
+                              ├─► SQS Queue B ─► Consumer B
+                              │       ↓
+                              │     SQS DLQ B
+                              │
+                              └─► SNS subscription DLQ (if SNS delivery itself fails)
+```
+
+Each consumer gets its own SQS + DLQ. SNS subscription DLQ catches the rare SNS-side delivery failure.
+
+##### Pattern 3 — S3 → Lambda (direct)
+
+```
+S3 ─► Lambda ─► Lambda Destinations on failure ─► SQS / SNS / EventBridge / Lambda
+                          (or older Lambda DLQ → SQS / SNS)
+```
+
+Lambda async retries twice by default before going to Destinations / DLQ.
+
+##### Pattern 4 — S3 → EventBridge (modern preferred)
+
+```
+S3 ─► EventBridge ─► Rule ─► Target (Lambda / SQS / Step Functions / etc.)
+                              ↓ (after retries)
+                              EventBridge Target DLQ (SQS)
+```
+
+EventBridge adds rich routing, Archive + Replay, and target DLQs — all missing from S3 native notifications.
+
+#### The "one destination per event type" gotcha
+
+S3's **native event notifications** have a key constraint that drives the fan-out pattern:
+
+- For a given event type (e.g. `s3:ObjectCreated:*`), you can configure **only ONE destination** (SQS / SNS / Lambda / EventBridge)
+- To fan out to multiple services, use **SNS** as the destination → multiple SQS subscribers behind it
+- Or send to **EventBridge** → multiple rules → multiple targets
+
+This is the reason the SNS + SQS fan-out pattern shows up so often with S3 — it's a workaround for the one-destination limit.
+
+#### Modern preferred pattern: S3 → EventBridge
+
+S3 has a per-bucket option to **send events to EventBridge instead of (or alongside) native notifications**:
+
+| Capability | S3 native events | S3 → EventBridge |
+| ---------- | ---------------- | ---------------- |
+| Fan-out to many targets | One destination per event type (needs SNS for fan-out) | **Native** — multiple rules, multiple targets per rule |
+| Content-based filtering | Prefix / suffix only | **Full JSON pattern matching** |
+| Archive + Replay | ❌ | ✅ (rewind failed events) |
+| Per-target DLQ | Depends on destination service | ✅ Built into the rule target |
+| Schema discovery | ❌ | ✅ |
+| Cost | Free | Slight per-event cost |
+
+For new architectures, **S3 → EventBridge → wherever** is the more flexible answer.
+
+#### Common exam triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Handle failed S3 event processing"* | **DLQ on the target service** (SQS redrive / SNS subscription DLQ / Lambda Destinations / EventBridge target DLQ) |
+| *"S3 event going to Lambda but the function keeps failing"* | **Lambda Destinations** (or older Lambda DLQ) to send failed events to SQS / EventBridge |
+| *"S3 events fan out to multiple services + each retried independently"* | **S3 → SNS → multiple SQS queues, each with its own DLQ** |
+| *"S3 events with content-based filtering + replay"* | **S3 → EventBridge** with rules + archive + per-target DLQ |
+| *"S3 event was lost — destination was temporarily down"* | S3 retries are limited; **no S3-side DLQ**. Ensure target durability and use **EventBridge Archive** for replay |
+| *"Why can't I configure both SQS and Lambda for the same S3 event type?"* | **One destination per event type** in native S3 events — use SNS or EventBridge for fan-out |
+| *"Modern way to handle S3 events with replay + content filtering"* | **S3 → EventBridge** |
+
+#### Mental model
+
+> *S3 doesn't have its own DLQ. **The DLQ always lives on the receiving service** — SQS redrive, SNS subscription DLQ, Lambda Destinations, or EventBridge target DLQ. If the S3 destination is unreachable when the event fires, S3 retries briefly then **silently drops the event** — no S3-side recovery. For modern designs, **S3 → EventBridge** is preferred because it adds content filtering, archive + replay, and per-target DLQs all in one place.*
 
 ### S3 Requester Pays
 
