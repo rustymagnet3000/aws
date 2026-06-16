@@ -11777,7 +11777,7 @@ Other examples that follow the same pattern:
 
 #### The four fan-out patterns + their DLQ topology
 
-**Pattern 1 — S3 → SQS → Consumer (simplest)**
+##### Pattern 1 — S3 → SQS → Consumer (simplest)
 
 ```
 S3 ─► SQS Queue ─► Consumer (e.g. Lambda)
@@ -11787,7 +11787,7 @@ S3 ─► SQS Queue ─► Consumer (e.g. Lambda)
 
 DLQ catches consumer-side failures.
 
-**Pattern 2 — S3 → SNS → fan-out (multiple consumers)**
+##### Pattern 2 — S3 → SNS → fan-out (multiple consumers)
 
 ```
                               ┌─► SQS Queue A ─► Consumer A
@@ -11804,7 +11804,7 @@ S3 ─► SNS Topic ──────────────┤
 
 Each consumer gets its own SQS + DLQ. SNS subscription DLQ catches the rare SNS-side delivery failure.
 
-**Pattern 3 — S3 → Lambda (direct)**
+##### Pattern 3 — S3 → Lambda (direct)
 
 ```
 S3 ─► Lambda ─► Lambda Destinations on failure ─► SQS / SNS / EventBridge / Lambda
@@ -11813,7 +11813,7 @@ S3 ─► Lambda ─► Lambda Destinations on failure ─► SQS / SNS / EventB
 
 Lambda async retries twice by default before going to Destinations / DLQ.
 
-**Pattern 4 — S3 → EventBridge (modern preferred)**
+##### Pattern 4 — S3 → EventBridge (modern preferred)
 
 ```
 S3 ─► EventBridge ─► Rule ─► Target (Lambda / SQS / Step Functions / etc.)
