@@ -654,6 +654,76 @@ The cleanest framing:
 - The **AWS EFA driver + libfabric** installed in the AMI
 - Best paired with a **Cluster Placement Group** for full benefit
 
+#### Is EFA's kernel bypass a security risk?
+
+Common security-engineer pushback when first seeing EFA: *"kernel bypass sounds like security bypass."* The honest answer: **it's a different security model, not a clear-cut new risk** — because of what *is* and *isn't* actually being bypassed.
+
+##### What "kernel bypass" really skips
+
+```
+Traditional network path:
+  App ─► syscall ─► kernel TCP/IP stack ─► kernel driver ─► NIC ─► wire
+
+EFA path:
+  App ─► libfabric (userspace) ─► (kernel sets this up once at startup) ─► NIC ─► wire
+                                   ↑
+                                   After setup, the app talks directly
+                                   to the NIC via memory-mapped I/O
+```
+
+The kernel is still in the loop **at setup time** — it allocates protected memory regions, configures the EFA device, enforces per-process isolation. After that, the data plane skips the kernel for performance. So it's not "the kernel is gone"; it's "the kernel **sets up safety**, then steps out of the **fast path**."
+
+##### What's STILL enforced (security controls EFA does NOT bypass)
+
+| Control | Still works for EFA? | Why |
+| ------- | --------------------- | --- |
+| **Hypervisor isolation (Nitro)** | ✅ Yes | EFA can't break out of the VM; one tenant's EFA can't see another's |
+| **Security Groups** | ✅ Yes | EFA is still an ENI — SG rules apply at the ENI level |
+| **NACLs** | ✅ Yes | Subnet-level filtering applies regardless of how packets get to the NIC |
+| **VPC routing rules** | ✅ Yes | Packets only reach destinations VPC routing permits |
+| **EFA scope is intra-VPC** | ✅ Yes | EFA traffic doesn't leave the VPC by design — it's for inter-instance HPC communication |
+| **Per-process memory isolation** | ✅ Yes | Each process gets its own protected EFA resources |
+| **VPC Flow Logs** | ✅ Partially | Flow Logs still see EFA traffic at the ENI level (less detail than TCP, but flows visible) |
+| **IAM** | ✅ Yes | Gates control-plane access (who can launch instances, attach EFA, etc.) |
+
+The **cloud-layer security perimeter stays fully intact**. EFA isn't a hole in the AWS shared-responsibility model.
+
+##### What IS bypassed (the actual trade-offs)
+
+| Control | Bypassed for EFA? | What you lose |
+| ------- | ------------------ | -------------- |
+| **Host-based firewall** (iptables / nftables / Windows Firewall) | ✅ Yes | OS-level rules don't see EFA traffic — kernel netfilter isn't in the path |
+| **Host IDS / IPS** (Snort / Suricata / Falco via netfilter) | ✅ Mostly | Won't see EFA packets via standard kernel hooks |
+| **eBPF programs on the network path** | ✅ Yes | eBPF hooks the kernel network stack which EFA skips |
+| **OS-level packet capture** (`tcpdump`, etc.) | ✅ Mostly | EFA traffic doesn't reach `pcap` the normal way |
+| **TLS / encryption by default** | ⚠️ Not enabled by default | libfabric supports encrypted overlays, but plain MPI / NCCL is unencrypted — you trust the VPC fabric |
+
+So at the **host-OS layer**, several traditional monitoring / filtering points are blind to EFA traffic. That's the genuine security trade-off.
+
+##### Why HPC people accept this
+
+| Reason | Detail |
+| ------ | ------ |
+| **EFA workloads are intra-cluster** | Traffic stays between trusted nodes in a Cluster Placement Group. No untrusted-network surface |
+| **Cluster is behind VPC isolation** | Private subnets, no internet path, dedicated VPC. Boundary is the cluster, not the host |
+| **Trusted processes** | MPI / NCCL apps are operator-deployed, not user-controlled — different threat model from web apps |
+| **Same model RDMA / InfiniBand has used for 20+ years** | On-prem HPC has run kernel-bypass interconnects forever. Well-understood, not novel |
+| **Cloud controls are the meaningful perimeter** | SG / NACL / VPC routing handle "who can reach this cluster"; intra-cluster netfilter isn't worth the perf cost |
+
+##### When EFA's model WOULD be a problem
+
+You'd only worry about EFA's bypass if:
+
+- You ran **untrusted workloads** in the same cluster (multi-tenant HPC with mutually-distrusting tenants — rare; usually solved by per-tenant clusters)
+- You **relied on host iptables / host IDS** as your primary security boundary (and didn't trust the VPC layer)
+- You needed **encrypted traffic** without configuring libfabric's encryption extensions
+
+If any of these apply, you wouldn't be using EFA. EFA assumes a **trusted-cluster threat model** — that's why it's restricted to specific instance types and typically deployed in a Cluster Placement Group.
+
+##### Mental model
+
+> *"Kernel bypass" sounds like "security bypass" but it's not. The kernel still **sets up** EFA's protected memory regions; it just doesn't sit in the **data path** of every packet. Cloud-layer controls (SG / NACL / hypervisor / VPC routing) all still apply. What you lose is **host-OS-level visibility** — iptables, host IDS, packet capture. For HPC's trusted-cluster threat model this is acceptable; for internet-facing or multi-tenant scenarios you'd never use EFA in the first place. The same model has run on-prem HPC clusters with InfiniBand / RoCE for 20+ years.*
+
 #### Mental model
 
 > *Cluster Placement Group = the **physical** layer of HPC networking (minimum hops). EFA = the **software** layer (kernel bypass). Pair them for tightly-coupled HPC / MPI / distributed-ML; either alone is suboptimal. **ENI** is the base network construct every EC2 has; **ENA** is just the acceleration tech most ENIs use by default; **EFA** is a specialised ENI with the OS-bypass interface that makes HPC actually work. Cluster Placement Group is the **opposite of HA** — accept correlated failure for performance.*
