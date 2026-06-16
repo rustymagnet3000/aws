@@ -11534,26 +11534,142 @@ aws cloudformation execute-change-set ...   # applies it
 
 Equivalent of `terraform plan → terraform apply`. Critical for production — always review before executing.
 
-#### StackSets — multi-account multi-region (the headline CF feature)
+#### StackSets — multi-account multi-region deployment (the headline CF feature)
 
-The thing CF does that Terraform really can't match natively:
+The thing CF does that Terraform really can't match natively: **deploy one template to many accounts × many regions in a single operation.** Without StackSets you'd run `aws cloudformation deploy` 150 times in a loop.
+
+##### The mental model
 
 ```
-Single template → StackSet → deploys to:
-                              - Account A in us-east-1
-                              - Account A in eu-west-1
-                              - Account B in us-east-1
-                              - … any combination of accounts × regions
+Single CF Template (e.g. "deploy CloudWatch agent IAM role")
+       │
+       ▼
+Single StackSet (the "blueprint" — lives in admin account)
+       │
+       │ creates "stack instances" — one per target
+       ▼
+   ┌────────────┬────────────┬────────────┐
+   ▼            ▼            ▼            ▼
+Account A    Account A    Account B    Account B
+us-east-1    eu-west-1    us-east-1    eu-west-1
+(stack)      (stack)      (stack)      (stack)
 ```
 
-Two permission models:
+Each (account × region) gets its own actual CloudFormation **stack** (called a "stack instance"). The **StackSet** is the parent blueprint that manages all of them.
 
-| Model | When |
-| ----- | ---- |
-| **Self-managed permissions** | Each target account has a role you specify; admin account assumes it |
-| **Service-managed permissions** | Uses AWS Organizations to deploy automatically to all accounts in an OU; trusted access enabled |
+##### Core terminology
 
-Heavily tested in multi-account / Control Tower / Organizations questions.
+| Concept | What it is |
+| ------- | ---------- |
+| **StackSet** | The blueprint — lives in the admin (or delegated) account |
+| **Stack instance** | An individual stack created in a target account/region |
+| **Stack operation** | A single "deploy / update / delete" action that fans out to all stack instances |
+| **Target accounts** | A list of specific account IDs, OR an **OU** (with service-managed permissions) |
+| **Target regions** | List of regions to deploy to |
+| **Permission model** | Self-managed (you set up IAM roles) or service-managed (Organizations handles it) |
+
+##### The two permission models (constant exam question)
+
+| | **Self-managed permissions** | **Service-managed permissions** |
+| - | ----------------------------- | -------------------------------- |
+| Setup | Create `AWSCloudFormationStackSetAdministrationRole` in admin + `AWSCloudFormationStackSetExecutionRole` in **each** target account that trusts the admin | Enable **trusted access** for CloudFormation in AWS Organizations — AWS creates the roles |
+| Target by | **Specific account IDs** | **AWS Organizations OUs** |
+| Auto-deploy to new accounts joining an OU | ❌ No — manual update | ✅ **Yes** — stacks auto-deploy when accounts join the OU |
+| Auto-remove on accounts leaving OU | ❌ | ✅ Configurable |
+| Cross-organisation deployment | ✅ Yes (any account combination) | ❌ Tied to your Organization |
+| Setup effort | High (per-account IAM roles) | Low (one trusted-access toggle) |
+| Modern default? | Legacy / when no Organizations | ✅ **Recommended** — what Control Tower uses |
+
+**Exam decision:** *"deploy to all accounts in Organizations with auto-deploy to new accounts"* → **service-managed**. *"deploy to a specific list of accounts not all in the same Organization"* → **self-managed**.
+
+##### Deployment safety knobs
+
+When fanning out to dozens of accounts, things go wrong in some. StackSets has built-in safety controls — set them explicitly:
+
+| Control | What it does |
+| ------- | ------------ |
+| **Max concurrent accounts** | "Deploy to no more than 5 accounts at a time." Limits blast radius |
+| **Failure tolerance** | "Stop the operation if more than N accounts fail." **Default is 0 — one failure halts the whole rollout.** Always set this explicitly |
+| **Region order** | Deploy region-by-region (e.g. dev first, then prod). Staged rollout |
+| **Retain stacks on delete** | Removing a stack instance from a StackSet keeps the underlying stack — useful for handoffs |
+
+##### How a deployment actually flows
+
+```
+1. Create StackSet in the admin / delegated account
+   → Template uploaded
+   → Permission model chosen (service-managed)
+   → Targets: "OU: Production" + regions ["us-east-1", "eu-west-1"]
+       ↓
+2. CF calculates the target set:
+   → 30 accounts in Production OU × 2 regions = 60 stack instances
+       ↓
+3. Set deployment options:
+   → Max concurrent: 5 accounts
+   → Failure tolerance: 3 accounts
+   → Region order: us-east-1 first, then eu-west-1
+       ↓
+4. CF deploys (us-east-1 first):
+   → 5 accounts in parallel → 30 accounts × ~5 min ≈ 30 min for us-east-1
+   → If <4 fail, proceed to eu-west-1
+   → If >3 fail, halt operation (manual intervention)
+       ↓
+5. Operation complete:
+   → 60 stack instances exist
+   → Each is a normal CF stack in its target account/region
+       ↓
+6. New account joins Production OU later:
+   → Service-managed + auto-deployment ON → StackSet auto-deploys
+   → Self-managed → manual addition required
+```
+
+##### Common use cases (heavily tested)
+
+| Use case | What you deploy via StackSets |
+| -------- | ----------------------------- |
+| **Baseline IAM roles in every account** | Cross-account admin roles, security audit roles |
+| **CloudWatch agent IAM permissions** | Same monitoring policy everywhere |
+| **CloudTrail / Config / GuardDuty enablement** | Security baseline (Control Tower uses StackSets for this) |
+| **VPC baselines** | Default VPC tags, Flow Logs, baseline NACL |
+| **Config Conformance Packs** | Standardised compliance rule sets |
+| **Service Catalog products** | Vended products replicated to all accounts |
+| **Backup plans** | Org-wide AWS Backup configurations |
+
+**Control Tower uses StackSets under the hood** to deploy its guardrails to every member account. Most "Control Tower deploys X everywhere" questions are implicitly StackSets questions.
+
+##### What StackSets is NOT
+
+| Confused with | Actually is |
+| ------------- | ----------- |
+| **Nested Stacks** | Stack-within-a-stack in **one** account. StackSets = same stack across **many** accounts/regions |
+| **Cross-Stack References** (Export / `!ImportValue`) | Share outputs between stacks within ONE account/region. StackSets fans out to many |
+| **AWS Service Catalog** | Service Catalog is a vended-products UI layer. StackSets is the deployment mechanism (Service Catalog uses CF under the hood) |
+| **AWS Organizations alone** | Organizations is the structure (accounts, OUs, SCPs). StackSets uses Organizations for targeting in service-managed mode but is the deployment engine |
+
+##### Common gotchas
+
+| Gotcha | Detail |
+| ------ | ------ |
+| **Failure tolerance defaults to 0** | One failure halts the whole rollout. Always set explicitly |
+| **Permission model can't be changed after creation** | Pick service-managed if you have Organizations — switching later means recreating |
+| **Updates can be slow at scale** | 100 accounts × 3 regions = 300 instances; rate-limited |
+| **Stack instances are independent stacks** | A target-account admin can modify them manually — drift detection catches this but only when you run it |
+| **The admin account itself is NOT a target by default** | Add it explicitly if needed |
+| **Auto-deployment must be enabled** | Service-managed StackSets don't auto-deploy to new OU members unless you enable it |
+
+##### Exam triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Deploy same baseline IAM role to all 50 accounts in Organization"* | **StackSets + service-managed permissions** targeting the root OU |
+| *"Auto-deploy a stack to new accounts joining an OU"* | **Service-managed StackSets** with auto-deployment enabled |
+| *"Deploy to specific accounts NOT all in same Organization"* | **Self-managed permissions** (manual IAM roles per target) |
+| *"Limit blast radius during multi-account deployment"* | **Max concurrent + failure tolerance + region order** |
+| *"Halt deployment if too many accounts fail"* | **Failure tolerance** on the stack operation |
+| *"How does Control Tower deploy guardrails to all accounts?"* | **CloudFormation StackSets with service-managed permissions** |
+| *"Deploy across multiple regions in one go"* | **StackSets** (set target regions list) |
+| *"Detect manual changes across stack instances in 100 accounts"* | **StackSet drift detection** runs across all instances |
+| *"Why didn't my StackSet deploy to the new account that joined the OU?"* | **Auto-deployment must be enabled** in service-managed mode |
 
 #### Drift Detection
 
