@@ -559,16 +559,118 @@ Three types for controlling how instances are physically placed:
 | Spread | Each on distinct hardware (racks) | 7 per AZ | Small HA pairs, critical isolated instances |
 | Partition | Groups of instances per rack/partition | 7 partitions/AZ, 100s of instances | Kafka, Cassandra, Hadoop (rack-aware apps) |
 
-**Cluster** — lowest latency, up to 10 Gbps between instances, but correlated failure risk.
+**Cluster** — lowest latency, highest inter-instance bandwidth (up to 400 Gbps with EFA on modern HPC instances), but correlated failure risk.
 
 **Spread** — maximizes isolation; hard limit of 7 instances per AZ per group.
 
 **Partition** — instances can see their partition ID, enabling rack-aware data placement.
 
 **Key rules:**
+
 - Can't merge groups or move running instances in — must stop → modify → start
 - Cluster groups must be in a single AZ; Spread/Partition can span AZs
 - Cluster performs best with uniform instance types
+
+#### Cluster Placement Group — The Full Purpose
+
+Cluster Placement Group exists to give a specific set of guarantees that nothing else provides. *"Low latency"* is just one facet; the headline guarantees are:
+
+| Guarantee | What it means |
+| --------- | ------------- |
+| **Physical proximity** | All instances placed on the **same underlying network** — minimum switches between any pair |
+| **Lowest inter-instance latency** | Sub-millisecond, often single-digit microseconds |
+| **Highest inter-instance throughput** | **Up to 400 Gbps** with EFA on modern HPC instances |
+| **No oversubscription** | Bandwidth between instances is committed, not shared with other tenants |
+| **Predictable performance** | No noisy-neighbour variability — critical for tightly-coupled HPC where one slow node holds up the whole job |
+
+**Trade-offs (the cost of those guarantees):**
+
+| Trade-off | Detail |
+| --------- | ------ |
+| **Correlated failure** | All instances share fault domains — if the rack fails, **everything in the group fails together**. Anti-DR by design |
+| **Single AZ only** | Can't span AZs — defeats the purpose of physical proximity |
+| **Capacity allocation gotcha** | **Launch all instances together at the same time**. Adding instances later can fail with "insufficient capacity" because AWS may have re-allocated the rack |
+| **Uniform instance types perform best** | Mixing instance families breaks bandwidth/latency guarantees |
+| **Not for HA workloads** | This is the *opposite* of HA — you've put everything in one basket |
+
+#### Cluster Placement Group + EFA — The HPC Stack
+
+The two go together. Either one alone leaves performance on the table:
+
+```
+Cluster Placement Group   →  the PHYSICAL layer
+                            (instances physically close on the network)
+              +
+EFA (Elastic Fabric        →  the SOFTWARE layer
+Adapter)                     (OS-bypass via libfabric — sub-microsecond
+                              MPI / NCCL collective communication)
+```
+
+- **Cluster Placement Group without EFA** → physically close, but every packet still goes through the kernel network stack
+- **EFA without Cluster Placement Group** → OS-bypass works, but packets may still hop through multiple racks/spines
+
+**Together** → minimum hops + zero kernel overhead = the lowest latency AWS can offer.
+
+#### ENI vs ENA vs EFA — getting the framing right
+
+A common source of confusion. These aren't three parallel choices — **ENI is the base; ENA is the acceleration tech; EFA is a specialised ENI**.
+
+```
+ENI = Elastic Network Interface
+      The AWS network construct that attaches to an EC2 instance.
+      Every EC2 has at least one. This is the BASE.
+       │
+       ├── Standard ENI
+       │     Just a regular network interface — TCP/IP through the kernel
+       │
+       ├── ENI with Enhanced Networking (ENA driver + SR-IOV)
+       │     Same construct, hardware-accelerated path via the ENA driver.
+       │     Default on basically every modern instance type.
+       │     Not a "different ENI" — the ENI just uses ENA tech.
+       │
+       └── EFA (Elastic Fabric Adapter)
+             A SPECIAL TYPE OF ENI that includes:
+               - ENA capabilities (so it acts as a normal ENI for TCP/IP)
+               - PLUS OS-bypass / libfabric interface for HPC
+             You attach an EFA in place of (or alongside) a standard ENI.
+```
+
+**Key point:** an EFA *is* an ENI — just a specialised one with extra OS-bypass capabilities. AWS docs call it *"an Elastic Network Adapter (ENA) with added capabilities"* or *"an ENI attached to an EC2 instance with EFA functionality."*
+
+The cleanest framing:
+
+| Network attachment | What you get |
+| ------------------ | ------------ |
+| **Standard ENI** | Base network interface |
+| **ENI with ENA / Enhanced Networking** | Same ENI, hardware-accelerated path — default for modern instance types |
+| **EFA (a specialised ENI)** | ENA-equivalent networking **plus** OS-bypass via libfabric for HPC / MPI / NCCL |
+
+**Common exam trap:** answer choices like *"ENI / ENA / EFA"* aren't really parallel options. ENA isn't a comparable alternative to ENI — it's a driver/tech that makes ENIs faster. The actually-different choice is **EFA**, because it adds OS-bypass that nothing else has.
+
+**EFA requirements:**
+
+- A **supported instance type** (compute-optimized like `c5n.18xlarge`, `c6gn`, `hpc6a`, `p5`, `p4d` — generally the "n" suffix or HPC/GPU families)
+- **Linux** (Windows not supported)
+- The **AWS EFA driver + libfabric** installed in the AMI
+- Best paired with a **Cluster Placement Group** for full benefit
+
+#### Mental model
+
+> *Cluster Placement Group = the **physical** layer of HPC networking (minimum hops). EFA = the **software** layer (kernel bypass). Pair them for tightly-coupled HPC / MPI / distributed-ML; either alone is suboptimal. **ENI** is the base network construct every EC2 has; **ENA** is just the acceleration tech most ENIs use by default; **EFA** is a specialised ENI with the OS-bypass interface that makes HPC actually work. Cluster Placement Group is the **opposite of HA** — accept correlated failure for performance.*
+
+#### Exam triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Maximise network performance between EC2 instances for HPC"* | **Cluster Placement Group + EFA** |
+| *"Lowest possible latency between EC2 instances"* | **Cluster Placement Group** (physical proximity) + **EFA** (kernel bypass) |
+| *"MPI / NCCL distributed-training workloads"* | **EFA** in a Cluster Placement Group |
+| *"Instances should be on distinct racks for HA"* | **Spread Placement Group** (max 7 per AZ) |
+| *"Kafka / Cassandra / Hadoop (rack-aware apps)"* | **Partition Placement Group** |
+| *"Survive an AZ failure with placement-group instances"* | Placement groups don't help — they're single-AZ. Need ASG across AZs |
+| *"EFA on Windows"* | **Linux only** — EFA isn't supported on Windows |
+| *"Standard EC2 high throughput, not HPC"* | **Enhanced Networking (ENA)** — already default; no EFA needed |
+| *"Why did my new instance launch fail to join an existing Cluster Placement Group?"* | **Capacity allocation** — launch all instances together at the same time; AWS may have re-allocated the rack |
 
 ### ENIs in ECS
 
