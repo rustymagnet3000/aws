@@ -11762,6 +11762,108 @@ Other examples that follow the same pattern:
 - **Insurance claim** — customer uploads damage photos → fraud detection model → queue for adjuster review → notify the adjuster
 - **Video platform** — raw video uploaded → transcode to multiple resolutions → notify uploader when ready
 
+#### S3 Events + DLQ Patterns
+
+**S3 itself has no DLQ.** S3 event notifications are fire-and-forget from S3's side — S3 retries for a limited window if the destination is temporarily unavailable, then **silently drops the event**. DLQ handling happens entirely on the **receiving service**.
+
+#### DLQ mechanism per destination
+
+| Destination | DLQ mechanism | How it works |
+| ----------- | ------------- | ------------ |
+| **SQS queue** | **Redrive policy → DLQ queue** | Configured on the SQS queue. After `maxReceiveCount` consumer-side failures, message moves to DLQ. Catches *consumer* failures, not S3-side |
+| **SNS topic** | **Subscription-level DLQ** (an SQS queue) | Per-subscription DLQ for messages SNS couldn't deliver to that subscriber after retry. Configured on the *subscription*, not the topic |
+| **Lambda function** | **Lambda Destinations** (newer, preferred) or **Lambda DLQ** (older) | Async invocation → Lambda retries (default 2). On final failure, Destinations route to SQS / SNS / EventBridge / Lambda. Older DLQ is SQS / SNS only |
+| **EventBridge** | **Per-rule-target DLQ** (an SQS queue) | Each EventBridge rule target can have its own DLQ. Target invocation fails after retries → event lands in that target's DLQ |
+
+#### The four fan-out patterns + their DLQ topology
+
+**Pattern 1 — S3 → SQS → Consumer (simplest)**
+
+```
+S3 ─► SQS Queue ─► Consumer (e.g. Lambda)
+                ↓ (after maxReceiveCount fails)
+                SQS DLQ
+```
+
+DLQ catches consumer-side failures.
+
+**Pattern 2 — S3 → SNS → fan-out (multiple consumers)**
+
+```
+                              ┌─► SQS Queue A ─► Consumer A
+                              │       ↓
+                              │     SQS DLQ A
+S3 ─► SNS Topic ──────────────┤
+                              │
+                              ├─► SQS Queue B ─► Consumer B
+                              │       ↓
+                              │     SQS DLQ B
+                              │
+                              └─► SNS subscription DLQ (if SNS delivery itself fails)
+```
+
+Each consumer gets its own SQS + DLQ. SNS subscription DLQ catches the rare SNS-side delivery failure.
+
+**Pattern 3 — S3 → Lambda (direct)**
+
+```
+S3 ─► Lambda ─► Lambda Destinations on failure ─► SQS / SNS / EventBridge / Lambda
+                          (or older Lambda DLQ → SQS / SNS)
+```
+
+Lambda async retries twice by default before going to Destinations / DLQ.
+
+**Pattern 4 — S3 → EventBridge (modern preferred)**
+
+```
+S3 ─► EventBridge ─► Rule ─► Target (Lambda / SQS / Step Functions / etc.)
+                              ↓ (after retries)
+                              EventBridge Target DLQ (SQS)
+```
+
+EventBridge adds rich routing, Archive + Replay, and target DLQs — all missing from S3 native notifications.
+
+#### The "one destination per event type" gotcha
+
+S3's **native event notifications** have a key constraint that drives the fan-out pattern:
+
+- For a given event type (e.g. `s3:ObjectCreated:*`), you can configure **only ONE destination** (SQS / SNS / Lambda / EventBridge)
+- To fan out to multiple services, use **SNS** as the destination → multiple SQS subscribers behind it
+- Or send to **EventBridge** → multiple rules → multiple targets
+
+This is the reason the SNS + SQS fan-out pattern shows up so often with S3 — it's a workaround for the one-destination limit.
+
+#### Modern preferred pattern: S3 → EventBridge
+
+S3 has a per-bucket option to **send events to EventBridge instead of (or alongside) native notifications**:
+
+| Capability | S3 native events | S3 → EventBridge |
+| ---------- | ---------------- | ---------------- |
+| Fan-out to many targets | One destination per event type (needs SNS for fan-out) | **Native** — multiple rules, multiple targets per rule |
+| Content-based filtering | Prefix / suffix only | **Full JSON pattern matching** |
+| Archive + Replay | ❌ | ✅ (rewind failed events) |
+| Per-target DLQ | Depends on destination service | ✅ Built into the rule target |
+| Schema discovery | ❌ | ✅ |
+| Cost | Free | Slight per-event cost |
+
+For new architectures, **S3 → EventBridge → wherever** is the more flexible answer.
+
+#### Common exam triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Handle failed S3 event processing"* | **DLQ on the target service** (SQS redrive / SNS subscription DLQ / Lambda Destinations / EventBridge target DLQ) |
+| *"S3 event going to Lambda but the function keeps failing"* | **Lambda Destinations** (or older Lambda DLQ) to send failed events to SQS / EventBridge |
+| *"S3 events fan out to multiple services + each retried independently"* | **S3 → SNS → multiple SQS queues, each with its own DLQ** |
+| *"S3 events with content-based filtering + replay"* | **S3 → EventBridge** with rules + archive + per-target DLQ |
+| *"S3 event was lost — destination was temporarily down"* | S3 retries are limited; **no S3-side DLQ**. Ensure target durability and use **EventBridge Archive** for replay |
+| *"Why can't I configure both SQS and Lambda for the same S3 event type?"* | **One destination per event type** in native S3 events — use SNS or EventBridge for fan-out |
+| *"Modern way to handle S3 events with replay + content filtering"* | **S3 → EventBridge** |
+
+#### Mental model
+
+> *S3 doesn't have its own DLQ. **The DLQ always lives on the receiving service** — SQS redrive, SNS subscription DLQ, Lambda Destinations, or EventBridge target DLQ. If the S3 destination is unreachable when the event fires, S3 retries briefly then **silently drops the event** — no S3-side recovery. For modern designs, **S3 → EventBridge** is preferred because it adds content filtering, archive + replay, and per-target DLQs all in one place.*
+
 ### S3 Requester Pays
 
 Normally the bucket owner pays for storage **and** data transfer (downloads). With Requester Pays, the person downloading pays the transfer costs instead.
