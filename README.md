@@ -14218,6 +14218,18 @@ AWS's **programmatic email-sending API**. Anchor: *SendGrid / Mailgun / Postmark
 
 > *SES = the cheap, programmatic email-sending API for anything running on AWS that needs to send transactional or marketing email. Sandbox-by-default (verify identities and request production access), domain verification + DKIM for deliverability, bounce/complaint handling mandatory. Pinpoint and Cognito both use it under the hood. NOT SNS (pub/sub), NOT WorkMail (inboxes), NOT Pinpoint (multi-channel campaigns).*
 
+#### Pinpoint — the one-line distinction
+
+**Amazon Pinpoint** is the customer engagement / marketing layer that sits *on top of* SES (and the SMS/push infra). It adds **segments, campaigns, journeys, A/B testing, and analytics** — things SES doesn't do. Low-frequency on SAA-C03, but the distinction matters:
+
+| Phrasing | Pick |
+| -------- | ---- |
+| *"Marketing campaign to a user segment, multi-channel, A/B test, multi-step journey"* | **Pinpoint** |
+| *"Send a transactional / one-off email from app code"* | **SES** |
+| *"System notification to ops team / pub-sub fanout"* | **SNS** |
+
+Pinpoint uses SES under the hood for email — it's not a competitor, it's the orchestrator layer above.
+
 ## Amazon Redshift
 
 AWS's **data warehouse** — designed for running analytics queries across massive datasets (petabytes). Not a transactional database like RDS — it's for **OLAP** (Online Analytical Processing), not OLTP.
