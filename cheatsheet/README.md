@@ -518,6 +518,11 @@ aws elasticache describe-cache-clusters --max-items 5
 
 # list topics
 aws elasticache describe-cache-clusters --cache-cluster-id ${CLUSTER_ID}
+
+# list replication groups (cluster-mode / Multi-AZ Redis) as a table
+aws elasticache describe-replication-groups --region eu-west-1 \
+  --query 'ReplicationGroups[*].{id:ReplicationGroupId,status:Status,nodes:NumNodeGroups,desc:Description}' \
+  --output table 2>&1 | head -30
 ```
 
 ## Cloudwatch
