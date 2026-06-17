@@ -395,6 +395,7 @@
   - [How MSK and Flink Fit Together](#how-msk-and-flink-fit-together)
   - [Kafka vs SNS vs Redis pub/sub](#kafka-vs-sns-vs-redis-pubsub)
   - [Amazon EventBridge](#amazon-eventbridge)
+  - [Amazon SES (Simple Email Service)](#amazon-ses-simple-email-service)
 - [Amazon Redshift](#amazon-redshift)
   - [When People Reach for Redshift](#when-people-reach-for-redshift)
   - [OLTP vs OLAP](#oltp-vs-olap)
@@ -14159,6 +14160,63 @@ Exam phrasing: *"schedule a one-time invocation of a Lambda 3 hours from now"* �
 - *"the service formerly known as CloudWatch Events"* → **EventBridge**
 
 **The 80/20:** *EventBridge = content-routed event bus = CloudWatch Events rebrand + custom + partner buses + Archive/Replay + Pipes + Scheduler + Schema Registry. Pick EventBridge over SNS when you need content-based filtering, SaaS sources, or replay. Pick SNS when you need simple, fastest fan-out. The exam tests the rebrand trap ("CloudWatch Events" → EventBridge), the SaaS-source angle, Archive+Replay uniqueness, and Pipes for "no Lambda glue".*
+
+### Amazon SES (Simple Email Service)
+
+AWS's **programmatic email-sending API**. Anchor: *SendGrid / Mailgun / Postmark / Mailchimp Transactional — except AWS-native and dirt cheap* (~$0.10 per 1,000 emails sent from EC2). It's a sending service, not an inbox product.
+
+#### Who actually uses it
+
+| Caller | Why |
+| ------ | --- |
+| **Your app on EC2 / ECS / EKS / Lambda** | The 90% case — send transactional email (signup confirmation, password reset, order confirmation, receipt, alert) via SES API/SMTP |
+| **Amazon Cognito** | When you customise sender for User Pool emails (verification, password reset, MFA), Cognito uses **SES under the hood** — must verify the sender identity in SES first |
+| **AWS Pinpoint** | Pinpoint (multi-channel customer engagement: email + SMS + push) uses **SES under the hood** for its email channel |
+| **CI/CD or batch jobs** | Nightly job sending reports, alerts, monthly billing — Lambda + SES |
+| **Receive-side automation** | SES can also **receive** email (MX → SES → S3 / Lambda / SNS). Use cases: bounce-processing inbox, support@ triage, ingest replies into a workflow |
+
+#### Typical use cases on the exam
+
+1. **Transactional email** — account signup, password reset, order confirmation, shipping notification, receipts, security alerts. *The default SES answer.*
+2. **Bulk marketing email** — newsletters, promo campaigns. Supported but harder (reputation, suppression list management).
+3. **Application-generated notifications** — Lambda triggers, CloudWatch alarms feeding a Lambda that formats and SES-sends a rich email.
+4. **Inbound email processing** — SES receives via MX → drops into S3 → Lambda processes (e.g., parse customer reply, file as ticket).
+
+#### What SES is NOT
+
+| Confused with | Actually is |
+| ------------- | ----------- |
+| **SNS** | Pub/sub fanout. Can send email to subscribers but it's plain-text and limited — not a transactional email service. *"Send a rich receipt to a customer" → SES, not SNS* |
+| **SQS** | A queue. Often *paired* with SES (queue outgoing emails, Lambda consumes and calls SES) but doesn't send email itself |
+| **Amazon WorkMail** | Hosted inboxes for employees (like Gmail / Office 365). SES is the sending API, not a mailbox product |
+| **Amazon Pinpoint** | Multi-channel customer engagement (email + SMS + push + analytics + targeting). Uses SES *under the hood* for email. Use Pinpoint if you need campaigns + targeting; use SES if you just need to send |
+| **AWS Chatbot** | Sends Slack / Teams / Chime messages from CloudWatch / SNS. Nothing to do with email |
+
+#### Exam-relevant SES gotchas
+
+| Gotcha | Detail |
+| ------ | ------ |
+| **Sandbox mode by default** | New SES accounts can only send to **verified** addresses, max 200/day, 1/sec. Must **request production access** to lift this — heavily tested phrasing |
+| **Verified identities required** | Must verify the **sender domain or email** before SES will send on its behalf. DKIM/SPF/DMARC for deliverability |
+| **Bounce / complaint handling** | If you ignore bounces and complaints, SES will throttle or suspend you. Configure SNS notifications on bounces → process them |
+| **Configuration Sets** | Group settings for event publishing (bounces → SNS / Kinesis / CloudWatch), suppression, IP pools |
+| **Suppression list** | Auto-suppresses addresses that bounced/complained — prevents you damaging reputation |
+| **Dedicated IPs** | High-volume senders who need to warm and own their IP reputation (vs. SES shared pool) |
+
+#### Exam triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Send password reset / order confirmation / signup email at scale and cheaply from a Lambda"* | **Amazon SES** |
+| *"Cognito needs to send branded verification emails from your domain"* | **Cognito + SES** (verify domain in SES, configure Cognito to use it) |
+| *"Receive email at support@ and trigger a workflow"* | **SES inbound** → S3 / Lambda / SNS |
+| *"Multi-channel campaign with email + SMS + push to segmented users"* | **Amazon Pinpoint** (uses SES under the hood) |
+| *"Send notification to ops team when CloudWatch alarm fires"* | **SNS email subscription** (not SES — fanout, simple) |
+| *"Why is my new SES account only sending to my own email and capped at 200/day?"* | **Sandbox mode** — request production access |
+| *"My SES sending rate dropped — why?"* | High bounce/complaint rate triggered throttling — process bounce SNS notifications, clean list |
+| *"Hosted email inboxes for our 500 employees"* | **Amazon WorkMail** (NOT SES) |
+
+> *SES = the cheap, programmatic email-sending API for anything running on AWS that needs to send transactional or marketing email. Sandbox-by-default (verify identities and request production access), domain verification + DKIM for deliverability, bounce/complaint handling mandatory. Pinpoint and Cognito both use it under the hood. NOT SNS (pub/sub), NOT WorkMail (inboxes), NOT Pinpoint (multi-channel campaigns).*
 
 ## Amazon Redshift
 
