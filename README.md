@@ -183,6 +183,16 @@
   - [Secrets Manager vs Parameter Store — the Comparison](#secrets-manager-vs-parameter-store--the-comparison)
   - [Common Anti-patterns (exam wrong answers)](#common-anti-patterns-exam-wrong-answers-19)
   - [Exam Triggers](#exam-triggers-19)
+- [AWS Systems Manager (Session Manager, Run Command, Patch Manager)](#aws-systems-manager-session-manager-run-command-patch-manager)
+  - [Session Manager — how it actually works at the network layer](#session-manager--how-it-actually-works-at-the-network-layer)
+  - [The three SSM endpoints (all port 443)](#the-three-ssm-endpoints-all-port-443)
+  - [Numbered flow — what happens when you start a session](#numbered-flow--what-happens-when-you-start-a-session)
+  - [Security group requirements](#security-group-requirements)
+  - [Private subnet — VPC Interface Endpoints required](#private-subnet--vpc-interface-endpoints-required)
+  - [Port forwarding via SSM](#port-forwarding-via-ssm)
+  - [Other SSM capabilities the exam touches](#other-ssm-capabilities-the-exam-touches)
+  - [What Session Manager is NOT](#what-session-manager-is-not)
+  - [Exam Triggers for SSM](#exam-triggers-for-ssm)
 - [Amazon GuardDuty](#amazon-guardduty)
   - [What GuardDuty is NOT](#what-guardduty-is-not)
   - [Core Concepts](#core-concepts-8)
@@ -6674,6 +6684,151 @@ Does the value need automatic rotation managed by AWS?
 - *"App needs both config and rotating DB password"* → **Hybrid: Parameter Store for config + reference to Secrets Manager**
 
 **The 80/20:** *Parameter Store = part of SSM, **free up to 10,000 params** on Standard tier, hierarchical paths (`/app/env/key`), three types (String / StringList / SecureString-KMS). Use for **config + non-rotating secrets**. Pair with Secrets Manager via `/aws/reference/secretsmanager/...` reference syntax so apps read everything from one API but rotating secrets are managed by Secrets Manager. **Advanced tier** ($0.05/param/month) only when you need >10,000 params, >4 KB values, expiration policies, or change notifications. Public parameters give you AWS-published values like latest AMIs.*
+
+## AWS Systems Manager (Session Manager, Run Command, Patch Manager)
+
+**Anchored against Ansible / Salt / Tanium — but AWS-native and agentless from a network standpoint.** Systems Manager is the umbrella for fleet operations: shell access (Session Manager), running scripts (Run Command), OS patching (Patch Manager), inventory, automation, change calendars. Parameter Store (covered above) is also technically part of SSM but is usually treated separately on the exam.
+
+The headline exam topic is **Session Manager**: shell into EC2 without opening any inbound port.
+
+### Session Manager — how it actually works at the network layer
+
+```
+EC2 instance                                AWS SSM endpoints
+┌────────────────┐                         ┌──────────────────────┐
+│ SSM Agent      │ ─────► TCP 443 ───────► │ ssm.<region>.        │
+│ (long-poll /   │ ─────► HTTPS ─────────► │ amazonaws.com        │
+│  WebSocket)    │ ─────► outbound only ─► │ ssmmessages.<region> │
+│                │                         │ ec2messages.<region> │
+└────────────────┘                         └──────────────────────┘
+       ▲
+       │ no inbound — SG can be `deny all in`
+```
+
+The SSM agent (pre-installed on Amazon Linux 2/2023, Ubuntu, Windows AMIs) opens a **persistent outbound HTTPS connection** to three regional SSM endpoints. When you start a session from your laptop, the session traffic flows **down through that pre-existing outbound tunnel** to the agent. Your laptop never connects directly to the instance.
+
+**It is all 443. No other ports involved.** No SSH (22), no RDP (3389), no custom agent port.
+
+### The three SSM endpoints (all port 443)
+
+| Endpoint | Purpose |
+| -------- | ------- |
+| `ssm.<region>.amazonaws.com` | Control plane API (state, inventory, run commands) |
+| `ssmmessages.<region>.amazonaws.com` | The **Session Manager** websocket channel — actual shell traffic flows here |
+| `ec2messages.<region>.amazonaws.com` | Legacy bidirectional messaging — still required by older agent versions for Run Command etc. |
+
+### Numbered flow — what happens when you start a session
+
+```
+1. SSM Agent on EC2 boots → opens outbound HTTPS to ssmmessages.<region> (port 443)
+   → connection stays open (long-poll / WebSocket)
+        ↓
+2. You run: aws ssm start-session --target i-0abc123
+   → CLI hits the SSM control plane API (443)
+   → IAM check: "can this user start a session on this instance?"
+        ↓
+3. SSM service tells the waiting agent (via the open WebSocket): "open a shell, route stdin/stdout to me"
+        ↓
+4. Your CLI opens its own outbound 443 connection to ssmmessages
+   → SSM bridges the two WebSocket connections (your CLI ↔ SSM ↔ agent ↔ shell)
+        ↓
+5. Every keystroke you type:
+   → CLI → 443 → SSM → 443 → agent → /bin/bash → stdout
+   → return path same in reverse
+        ↓
+6. Session log (if enabled) → streams to CloudWatch Logs or S3
+```
+
+**At no point does any inbound port open on the instance.** Security group inbound can be empty.
+
+### Security group requirements
+
+| Direction | Required |
+| --------- | -------- |
+| **Inbound** | **Nothing** — no port 22, no port 3389, nothing |
+| **Outbound** | **TCP 443 to the SSM endpoints** (or to `0.0.0.0/0` if egress is open) |
+
+That's the magic — you can run an EC2 with `inbound: deny all` and still get a shell. The IAM role attached to the instance must allow the `AmazonSSMManagedInstanceCore` policy (or equivalent), and the user starting the session needs `ssm:StartSession` permission.
+
+### Private subnet — VPC Interface Endpoints required
+
+If the instance is in a private subnet without internet access (no NAT gateway), you must create **VPC interface endpoints** for the three SSM endpoints so the agent can reach them privately:
+
+| VPC Endpoint | What for |
+| ------------ | -------- |
+| `com.amazonaws.<region>.ssm` | Control plane |
+| `com.amazonaws.<region>.ssmmessages` | Session Manager traffic |
+| `com.amazonaws.<region>.ec2messages` | Run Command etc. |
+
+Plus `s3` and `logs` VPC endpoints if you're logging sessions to S3 / CloudWatch.
+
+**This is heavily exam-tested**: *"SSM Session Manager not working from private subnet — what's needed?"* → **VPC interface endpoints for `ssm`, `ssmmessages`, `ec2messages`**.
+
+### Port forwarding via SSM
+
+You can tunnel arbitrary TCP ports **through** the 443 SSM channel to reach things like RDS, RDP, or internal services — without ever opening those ports to the world:
+
+```bash
+# Tunnel local port 9999 -> instance's port 3306 (MySQL) through SSM
+aws ssm start-session \
+  --target i-0abc123 \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters '{"portNumber":["3306"],"localPortNumber":["9999"]}'
+
+# Then connect MySQL locally:
+mysql -h localhost -P 9999 -u admin -p
+```
+
+Or to reach a remote host **from** the EC2 instance (e.g., reach RDS through an EC2 jump):
+
+```bash
+aws ssm start-session \
+  --target i-0abc123 \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["rds.private.dns"],"portNumber":["3306"],"localPortNumber":["9999"]}'
+```
+
+The tunnel itself is still **443 outbound** from instance to AWS.
+
+### Other SSM capabilities the exam touches
+
+| Capability | What it does |
+| ---------- | ------------ |
+| **Run Command** | Execute scripts/commands across a fleet of instances. Uses the same agent + 443 channel. IAM-controlled, results captured |
+| **Patch Manager** | Schedule OS patching across fleets. Uses **Patch Baselines** (which patches are approved) and **Maintenance Windows** (when to apply). Heavy compliance reporting |
+| **State Manager** | Continuously enforce desired configuration (like Ansible playbooks running on a schedule) |
+| **Inventory** | Collect OS/package/installed-app inventory across fleets — feeds into compliance / Config |
+| **Automation (SSM Documents)** | Pre-built or custom runbooks for common ops tasks (patch + reboot, snapshot then resize, EBS encrypt-in-place). The "AWS-…" documents are AWS-managed |
+| **Hybrid activations** | Register **on-premises servers** as SSM-managed instances so all of the above works on-prem too. Uses a one-time activation code + 443 outbound |
+| **Change Calendar / Change Manager** | Block automation/patching during freeze windows. Tested in governance scenarios |
+
+### What Session Manager is NOT
+
+| Confused with | Actually is |
+| ------------- | ----------- |
+| **SSH bastion / jump host** | Bastion = a public-facing EC2 with inbound 22, keypair management, hardened access. SSM = no host, no inbound port, no keypair, IAM-based |
+| **EC2 Instance Connect (EIC)** | EIC pushes a temporary SSH public key via API, then **still uses SSH on port 22** (just via Instance Connect Endpoint or direct). SSM uses no SSH at all |
+| **VPN / Client VPN** | VPN routes IP traffic across networks. SSM is application-layer session brokering — single instance, single shell |
+| **Direct Connect / Site-to-Site VPN** | Network connectivity products. SSM is admin access |
+| **AWS Cloud9** | Cloud9 is a browser-based IDE that runs on EC2 (or your own host); not a shell-broker. Separate product |
+
+### Exam Triggers for SSM
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Shell into EC2 without opening port 22 / without a bastion"* | **SSM Session Manager** |
+| *"No inbound security group rules but admins need shell access"* | **SSM Session Manager** |
+| *"EC2 in private subnet, no internet, SSM not working"* | Create **VPC interface endpoints** for `ssm`, `ssmmessages`, `ec2messages` |
+| *"Audit log of every command run during admin sessions"* | **SSM Session Manager** with logging to **CloudWatch Logs / S3** |
+| *"Access RDS in private subnet from laptop without VPN or bastion"* | **SSM Port Forwarding to Remote Host** (tunnel through an EC2 to reach RDS) |
+| *"No port 22 but admins want shell, no keypair management, IAM-based access"* | **SSM Session Manager** |
+| *"Patch 500 EC2 instances on a schedule with compliance reporting"* | **SSM Patch Manager** with Patch Baselines + Maintenance Windows |
+| *"Run a script across all instances tagged `env=prod`"* | **SSM Run Command** |
+| *"Manage on-premises servers with the same tooling as EC2"* | **SSM Hybrid Activations** |
+| *"Continuously enforce that all instances have CloudWatch agent installed"* | **SSM State Manager** |
+| *"Prevent automation from running during the holiday freeze window"* | **SSM Change Calendar** |
+
+> *SSM = umbrella for fleet ops over a single outbound HTTPS 443 channel from the agent. Session Manager is the headline feature — shell access with **no inbound ports, no SSH keys, IAM-based**. In private subnets, **VPC interface endpoints for `ssm`, `ssmmessages`, `ec2messages`** are mandatory. Port forwarding tunnels other TCP ports (3306, 3389) over the same 443. Run Command runs scripts at fleet scale, Patch Manager handles OS patching with Baselines + Maintenance Windows, State Manager continuously enforces config, Hybrid Activations extend all of this to on-prem servers.*
 
 ## Amazon GuardDuty
 
