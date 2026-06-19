@@ -385,6 +385,14 @@
 - [Hybrid Cloud Storage](#hybrid-cloud-storage)
   - [AWS Storage Gateway](#aws-storage-gateway)
   - [Amazon FSx](#amazon-fsx)
+- [AWS Outposts](#aws-outposts)
+  - [What Outposts actually is](#what-outposts-actually-is)
+  - [Form factors](#form-factors)
+  - [Services that run on Outposts](#services-that-run-on-outposts)
+  - [How EKS on Outposts fits the data-residency question](#how-eks-on-outposts-fits-the-data-residency-question)
+  - [Outposts vs EKS Anywhere — the disambiguator](#outposts-vs-eks-anywhere--the-disambiguator)
+  - [What Outposts is NOT](#what-outposts-is-not)
+  - [Exam Triggers for Outposts](#exam-triggers-for-outposts)
 - [CloudFront and Global Accelerator](#cloudfront-and-global-accelerator)
   - [CloudFront Overview](#cloudfront-overview)
   - [CloudFront vs S3 Transfer Acceleration](#cloudfront-vs-s3-transfer-acceleration)
@@ -13196,6 +13204,126 @@ Exam keyword map:
 | Durability | Replicated within one AZ | Active/standby across two AZs |
 | Failover | Manual | Automatic |
 | Use case | Dev/test, cost savings | Production, high availability |
+
+## AWS Outposts
+
+**Anchored against Azure Stack / Google Anthos on-prem appliances — except it's AWS hardware, AWS-managed, exposing the regular AWS API surface from inside your own data centre.** AWS physically ships a rack (or smaller server) to your DC, installs it, then manages it remotely. Data stays on-prem, but you build with EC2, EBS, EKS, ECS, RDS, S3 (Outposts variant), and friends as if they were in a cloud region.
+
+### What Outposts actually is
+
+```
+Your data centre                              AWS Region (parent)
+┌───────────────────────────────┐             ┌────────────────────┐
+│ Outpost rack (AWS hardware)   │ ◄─── DX ──► │ Control plane      │
+│  • EC2, EBS, EKS, ECS         │  or VPN     │ (S3-in-region,     │
+│  • RDS on Outposts            │             │  IAM, CloudWatch)  │
+│  • S3 on Outposts             │             │                    │
+│  • ALB, EBS local             │             └────────────────────┘
+│                               │
+│  Your data + workloads        │  ← never leaves the building
+└───────────────────────────────┘
+```
+
+| Aspect | How it works |
+| ------ | ------------ |
+| **Who owns the hardware** | AWS — they ship, install, and remotely manage it |
+| **Where the hardware lives** | Your data centre / colo (you provide power, cooling, space, network uplink) |
+| **Who manages updates** | AWS — same control plane behaviour as a cloud region |
+| **API surface** | Regular AWS APIs (EC2, EKS, ECS, EBS, RDS, S3 on Outposts, etc.) |
+| **Connectivity to parent region** | **Required** — DX or VPN. Some control-plane functions need the link. Pure data plane keeps working if the link is brief degraded |
+| **Where data lives** | On the Outpost — **on-premises**, physically in your DC |
+| **Billing** | Subscription (1- or 3-year) for the rack capacity + usage of services on it |
+
+### Form factors
+
+| Form factor | What it is | Use case |
+| ----------- | ---------- | -------- |
+| **Outposts Rack** | A full 42U rack of AWS hardware | Data centres needing significant capacity — financial services, healthcare, manufacturing |
+| **Outposts Servers (1U / 2U)** | A single AWS-managed server | Edge locations, retail stores, factory floors — smaller footprint, more sites |
+
+### Services that run on Outposts
+
+Subset of AWS services — not everything in cloud is available locally:
+
+| Layer | Available on Outposts |
+| ----- | --------------------- |
+| **Compute** | EC2, ECS, EKS, Lambda (Local) |
+| **Storage** | EBS, S3 on Outposts (local S3 buckets) |
+| **Database** | RDS on Outposts (MySQL, PostgreSQL, SQL Server) |
+| **Networking** | VPC, ALB, ENI |
+| **Containers** | EKS (local + extended), ECS |
+| **Analytics** | EMR on Outposts (limited) |
+| **Observability** | CloudWatch metrics/logs flow to parent region |
+
+Things that are **NOT on Outposts**: most managed services that aren't in the list above (DynamoDB, SNS, SQS, Kinesis, etc. — those run only in the parent region). You can call them from Outposts workloads, but the data flows to the region.
+
+### How EKS on Outposts fits the data-residency question
+
+Two deployment modes — pick based on whether the **control plane** also needs to stay on-prem:
+
+| Mode | Control plane | Worker nodes | When to pick |
+| ---- | ------------- | ------------ | ------------ |
+| **Local cluster** | On the Outpost | On the Outpost | Strict data residency — control-plane state also stays on-prem (regulated workloads) |
+| **Extended cluster** | In the parent AWS region | On the Outpost | Less strict residency — you tolerate control plane in cloud but pods on-prem |
+
+For "all data physically on-prem" exam questions → **EKS Outposts local cluster** is the safe answer.
+
+### Outposts vs EKS Anywhere — the disambiguator
+
+These two are the classic exam trap pair, and AWS deliberately phrases questions to test which one fits:
+
+| | **AWS Outposts (EKS on Outposts)** | **EKS Anywhere** |
+| - | ---------------------------------- | ---------------- |
+| Hardware | **AWS-owned**, shipped and installed in your DC | **Your own hardware** (bare metal, vSphere, Nutanix, etc.) |
+| Who manages the control plane | **AWS** — same managed service as cloud EKS | **You** — install/upgrade via `eksctl anywhere` |
+| Automated K8s upgrades | ✅ AWS rolls them out | ❌ You trigger them yourself |
+| Native CloudWatch / IAM | ✅ Native — same as cloud EKS | ⚠️ Limited (EKS Connector for read-only console; IAM Roles Anywhere bolt-on) |
+| Connectivity to AWS | **Required** | Optional (works disconnected) |
+| Cost model | Subscription for the rack + usage | Open source (free) + paid support tier optional |
+| Picked when | "AWS-managed K8s on-prem with full AWS API surface" | "Curated K8s distro I run on my own kit with full control" |
+
+**Keyword decoder:**
+
+| Phrase | Points to |
+| ------ | --------- |
+| *"AWS-managed services and APIs"* | **Outposts** |
+| *"automated Kubernetes upgrades"* | **Outposts** |
+| *"CloudWatch integration"* / *"IAM features"* (native, not bolt-on) | **Outposts** |
+| *"data must remain on-premises"* + *"AWS-managed"* | **Outposts** (rack is physically in your DC, AWS manages it remotely) |
+| *"on our own hardware"* / *"customer-owned servers"* | **EKS Anywhere** |
+| *"self-managed Kubernetes distribution"* | **EKS Anywhere** |
+
+> *I got this one wrong on a practice exam: regulated financial-services company wants on-prem K8s with AWS-managed services, automated upgrades, native CloudWatch and IAM. Answer was **Outposts**, not EKS Anywhere. The phrase **"AWS-managed services and APIs"** is the Outposts giveaway — EKS Anywhere is self-managed.*
+
+### What Outposts is NOT
+
+| Confused with | Actually is |
+| ------------- | ----------- |
+| **EKS Anywhere** | Self-managed K8s distro on **your** hardware. Outposts is AWS-managed on **AWS** hardware in your DC |
+| **ECS Anywhere** | Run ECS on your own EC2/on-prem servers using SSM-managed agents — no AWS hardware. Outposts is AWS hardware |
+| **AWS Snow Family** | Snowball/Snowmobile = offline bulk data transfer (one-time migration). Outposts = persistent on-prem AWS presence for ongoing workloads |
+| **AWS Local Zones** | Smaller AWS regions placed in metro areas (LA, NYC, etc.) for low-latency to nearby users. AWS-owned, AWS-located — **not in your DC**. Outposts is AWS hardware in **your** DC |
+| **AWS Wavelength** | AWS infra inside 5G carrier networks (Verizon, KDDI) for mobile edge latency. Telecom-edge, not customer-DC |
+| **Direct Connect** | A private network *link* to AWS via a colo cross-connect. No AWS hardware on your side. Outposts is hardware in your DC |
+| **AWS Dedicated Host** | A physical EC2 host **inside AWS** reserved for your workloads. Outposts is AWS hardware **on-prem** |
+| **VMware Cloud on AWS** | VMware running on AWS bare metal **in AWS regions** — for VMware customers moving to cloud. Outposts is the reverse direction (AWS in your DC) |
+
+### Exam Triggers for Outposts
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"On-prem K8s with AWS-managed services, automated upgrades, native CloudWatch/IAM, data must stay on-premises"* | **EKS on AWS Outposts** |
+| *"Regulated workload — data physically on-prem but want AWS-managed compute"* | **AWS Outposts** |
+| *"Low single-digit ms latency from on-prem app to AWS services"* | **Outposts** (services run locally on the rack) |
+| *"Run RDS / EKS / EC2 inside our own data centre"* | **AWS Outposts** (with the corresponding service "on Outposts") |
+| *"Same APIs and tooling as AWS region, but on-prem"* | **AWS Outposts** |
+| *"Self-managed K8s on our own hardware, with AWS-branded distro"* | **EKS Anywhere** (NOT Outposts) |
+| *"Low latency to users in Los Angeles but we want it AWS-owned"* | **AWS Local Zones** (NOT Outposts) |
+| *"Bulk one-time data migration of 50 TB from our DC to S3"* | **Snowball Edge** (NOT Outposts) |
+| *"Persistent on-prem AWS presence for production workloads"* | **AWS Outposts** |
+| *"Run AWS services at the 5G mobile network edge"* | **AWS Wavelength** (NOT Outposts) |
+
+> *AWS Outposts = AWS-owned, AWS-managed hardware physically installed in **your** data centre, exposing the regular AWS API surface for a subset of services (EC2, EBS, EKS, ECS, RDS, S3 on Outposts, etc.). Pick Outposts when the question wants **on-prem data residency AND AWS-managed services AND native CloudWatch/IAM/automated upgrades**. NOT EKS Anywhere (that's self-managed on your hardware), NOT Local Zones (AWS-located, not in your DC), NOT Wavelength (5G edge). The "AWS-managed" language is the giveaway.*
 
 ## CloudFront and Global Accelerator
 
