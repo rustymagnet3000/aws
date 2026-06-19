@@ -56,6 +56,7 @@
   - [CloudWatch Alarms and Scaling](#cloudwatch-alarms-and-scaling)
   - [Scaling Cooldowns](#scaling-cooldowns)
   - [Health Checks](#health-checks)
+  - [Maintenance on a Single ASG Instance — the Standby flow](#maintenance-on-a-single-asg-instance--the-standby-flow)
   - [ALB and EC2 Security Groups](#alb-and-ec2-security-groups)
   - [EC2 without a Public IP](#ec2-without-a-public-ip)
 - [Amazon CloudWatch](#amazon-cloudwatch)
@@ -4021,6 +4022,87 @@ Settings you can tune:
 - *"unhealthy instances are still receiving traffic"* → health check misconfigured or threshold too high
 - *"instances are being terminated too aggressively"* → health check interval/threshold too sensitive
 - *"ASG is not replacing unhealthy instances that fail ALB health checks"* → ASG is only using EC2 checks, needs ELB health checks enabled
+
+### Maintenance on a Single ASG Instance — the Standby flow
+
+**The recurring exam scenario:** team applies a maintenance patch to an instance in an ASG → instance briefly shows unhealthy → ASG immediately provisions a replacement. How to stop that without disrupting the rest of the group?
+
+**Answer: put that one instance into Standby state, do the maintenance, then exit Standby.** Two steps, surgical, AWS-documented.
+
+#### What Standby actually does
+
+| Behaviour while in Standby | Effect |
+| -------------------------- | ------ |
+| ASG **stops health-checking** the instance | No failed health check → no replacement |
+| **Deregistered** from the load balancer target group | No production traffic during maintenance |
+| Still **belongs to the ASG** | You don't lose group membership; easy return |
+| Desired capacity | At Standby time you choose: **decrement desired by 1** (no replacement launches) or **keep desired** (ASG launches a temp replacement) |
+| When you exit Standby | Re-attached to ALB, health checks resume, traffic resumes |
+
+It's surgical — only this one instance is affected. The rest of the ASG keeps reacting normally to legitimate failures.
+
+#### Numbered flow
+
+```
+1. aws autoscaling enter-standby \
+     --instance-ids i-0abc \
+     --auto-scaling-group-name web-asg \
+     --should-decrement-desired-capacity   ← no replacement launches
+        ↓
+2. ASG marks instance as InStandby
+   → ALB drains and deregisters target
+   → Health checks paused for this instance
+        ↓
+3. Apply the maintenance patch
+   → instance goes "unhealthy" briefly — ASG ignores it
+        ↓
+4. aws autoscaling exit-standby \
+     --instance-ids i-0abc \
+     --auto-scaling-group-name web-asg
+        ↓
+5. ASG marks instance InService
+   → Re-attached to ALB target group
+   → Health checks resume
+   → Desired capacity increments back (if you decremented earlier)
+```
+
+#### Why the obvious-looking distractors fail
+
+| Distractor | Why it's wrong |
+| ---------- | -------------- |
+| **Suspend ALL ASG scaling processes** | Sledgehammer — affects every instance in the ASG; the group can't replace *legitimately* failed instances during the window. Not "most efficient" |
+| **Detach the instance from the ASG** | Loses group membership and the option of an easy return; decrements desired without coordination |
+| **Terminate it and let ASG launch a fresh one** | Loses any in-flight state, wastes resources, defeats the goal of maintaining *this* instance |
+| **Manually mark the instance as Unhealthy** | The exact opposite — that triggers replacement |
+| **Increase health check grace period** | Grace period only applies to **newly launched** instances during boot, not to running ones doing maintenance |
+| **Reduce desired capacity by 1** | Doesn't tell the ASG to leave *this specific* instance alone — could result in a *different* instance being terminated |
+| **Adjust the cool-down period** | Cool-down delays *scaling actions*, not health-check-driven replacements |
+| **Change scaling policy from step to target tracking** | Irrelevant — the problem is health-check-driven replacement, not scaling |
+
+#### The "select two" trap on the exam
+
+The question is usually phrased *"select two most efficient steps"* and the right pair is the two ends of the Standby flow:
+
+1. **Put the instance into Standby state** (before maintenance)
+2. **Exit Standby / move the instance back to InService** (after maintenance)
+
+Some practice exams use a less-surgical pair as a near-miss:
+
+- *Put the instance in Standby state* + *Suspend the `ReplaceUnhealthy` process for the ASG*
+
+That pair works but is less surgical (suspending `ReplaceUnhealthy` affects the whole group). If both pairs appear, **Standby + ExitStandby is the more efficient answer**.
+
+#### Keyword decoder
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Maintain one specific instance without ASG replacing it"* | **Standby state** + exit Standby |
+| *"Pause ASG's automated reactions across the whole group during a maintenance window"* | **Suspend processes** (`ReplaceUnhealthy`, `HealthCheck`, `ScheduledActions`, `Launch`, `Terminate`) |
+| *"Remove the instance from the ASG entirely"* | **Detach** |
+| *"Newly launched instances are being killed too early"* | Increase the **health check grace period** |
+| *"Don't scale right after the last scaling action"* | **Cool-down period** |
+
+> *Standby = "put this one instance on the bench" — surgical, ASG ignores it, LB drains it, no replacement launches. ExitStandby = "back on the field". Use for any maintenance on a single ASG member. Suspending ASG processes is the broader hammer that affects the whole group — only reach for it when you genuinely want the entire ASG to pause its automated reactions.*
 
 ### ALB and EC2 Security Groups
 
