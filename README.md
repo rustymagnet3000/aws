@@ -2282,6 +2282,75 @@ This is the most-tested PrivateLink decision:
 
 If you only need to share *one service* (not the whole network) and want CIDR-overlap immunity, PrivateLink wins. The trade-off: it's per-service plumbing, so dozens of services means dozens of endpoints.
 
+#### Worked example — cross-account RDS access (the classic exam trap)
+
+**Scenario:** Biotech research company needs to query a partner's RDS for MySQL in the partner's AWS account. The research VPC has **no internet, no Direct Connect, no VPN**. Minimise complexity, meet data security requirements.
+
+**Wrong answer (looks right):** VPC Peering.
+
+| Why peering fails this question | |
+| --- | --- |
+| Exposes **whole VPCs** at the network layer | Fails "data security" — far more reachable than just the RDS |
+| Needs **non-overlapping CIDRs** | Two random accounts will almost certainly clash |
+| Requires route table edits on both sides | Fails "minimise complexity" |
+| **Symmetric** — partner can also reach back into research VPC | Not what was asked |
+
+**Right answer:** **PrivateLink (VPC Endpoint Service)**.
+
+```
+PARTNER ACCOUNT (provider)               RESEARCH ACCOUNT (consumer)
+┌─────────────────────────────┐          ┌────────────────────────────────┐
+│ Partner VPC                 │          │ Research VPC                   │
+│                             │          │ (no internet / DX / VPN)       │
+│  ┌────────┐                 │          │                                │
+│  │ RDS    │◄─── target IP   │          │  ┌──────────────────┐          │
+│  │ MySQL  │                 │          │  │ Analytics app    │          │
+│  └────────┘                 │          │  └────────┬─────────┘          │
+│      ▲                      │          │           │                    │
+│      │                      │          │           ▼ (port 3306)        │
+│  ┌─────────┐                │          │  ┌──────────────────┐          │
+│  │ NLB     │                │          │  │ Interface VPC    │          │
+│  └────┬────┘                │          │  │ Endpoint (ENI)   │          │
+│       │                     │          │  └────────┬─────────┘          │
+│  ┌─────────────────┐        │          │           │                    │
+│  │ VPC Endpoint    │◄───────┼──────────┼───────────┘ PrivateLink fabric │
+│  │ Service         │        │  consumer initiates only                  │
+│  └─────────────────┘        │                                           │
+└─────────────────────────────┘          └────────────────────────────────┘
+```
+
+Setup steps:
+
+1. **Partner** puts an NLB in front of the RDS instance (target group = `IP` target type, pointing to RDS endpoint IPs)
+2. **Partner** creates a VPC Endpoint Service backed by the NLB
+3. **Partner** adds the research account's principal ARN to the allowed-principals list
+4. **Research** creates an Interface VPC Endpoint targeting the partner's service name
+5. AWS provisions an ENI in research VPC subnets with a private IP
+6. Research app connects to the endpoint's private DNS on port 3306 → traffic flows through PrivateLink to partner NLB → RDS
+
+Why this fits every constraint:
+
+| Constraint | Met because |
+| ---------- | ----------- |
+| No internet / DX / VPN | PrivateLink uses the AWS backbone via the ENI in research VPC |
+| Cross-account | PrivateLink is designed for this |
+| Minimise complexity | No route tables, no CIDR coordination, no symmetric peering |
+| Data security | Only the RDS port is exposed — nothing else in the partner VPC is reachable |
+| One-way | Research initiates; partner can't reach into research VPC |
+
+**The keyword decoder for this question shape:**
+
+| Phrase | Points to |
+| ------ | --------- |
+| *"cross-account access to one specific service"* | **PrivateLink** |
+| *"minimise complexity"* + *"no CIDR coordination"* | **PrivateLink** |
+| *"no internet, no DX, no VPN"* + *"cross-account"* | **PrivateLink** |
+| *"expose RDS / API / EC2 service to a partner account"* | **PrivateLink** (with NLB in front) |
+| *"connect two VPCs at the network layer"* (broad access OK) | **VPC Peering** |
+| *"many VPCs in our org need to reach each other"* | **Transit Gateway** |
+
+> *I got this wrong on a practice exam by picking VPC Peering. Peering "works" for this scenario but loses on **complexity** (CIDR coordination, route tables) and **security** (exposes the whole VPC, not just the RDS). PrivateLink exposes one service through an NLB — narrow, asymmetric, CIDR-agnostic. When the question stresses **"cross-account + one service + minimise complexity + data security"**, the answer is PrivateLink even when peering would also connect the networks.*
+
 #### Acceptance vs allow-listing
 
 Provider controls who can connect via two mechanisms:
