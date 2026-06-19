@@ -518,6 +518,11 @@ aws elasticache describe-cache-clusters --max-items 5
 
 # list topics
 aws elasticache describe-cache-clusters --cache-cluster-id ${CLUSTER_ID}
+
+# list replication groups (cluster-mode / Multi-AZ Redis) as a table
+aws elasticache describe-replication-groups --region eu-west-1 \
+  --query 'ReplicationGroups[*].{id:ReplicationGroupId,status:Status,nodes:NumNodeGroups,desc:Description}' \
+  --output table 2>&1 | head -30
 ```
 
 ## Cloudwatch
@@ -609,6 +614,11 @@ aws cloudwatch get-metric-statistics \
 
 ```bash
 aws rds describe-db-clusters | jq '.DBClusters[] | select(.EngineVersion | contains("9.6")) | { name: .DBClusterIdentifier, version: .EngineVersion }'
+
+# list DB clusters (Aurora / RDS multi-instance) as a table
+aws rds describe-db-clusters --region eu-west-1 \
+  --query 'DBClusters[*].{id:DBClusterIdentifier,engine:Engine,status:Status,endpoint:Endpoint}' \
+  --output table 2>&1 | head -30
 
 aws rds describe-db-engine-versions --engine postgres | grep -A 1 AutoUpgrade| grep -A 2 true |grep PostgreSQL | sort --unique | sed -e 's/"Description": "//g'
 
