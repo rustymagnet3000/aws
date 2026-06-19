@@ -3583,6 +3583,19 @@ Real-world examples:
 - **Genomics pipeline (Max I/O + Provisioned)** — 500 instances all reading a large dataset simultaneously. Max I/O handles the parallelism; Provisioned throughput guarantees the MB/s regardless of how much data is stored.
 - **CI/CD cache (General Purpose + Elastic)** — build frequency varies by team activity. Elastic mode handles the unpredictability without over-provisioning.
 
+**Physical-world analogy (the mental anchor):**
+
+| AWS storage | Real-world equivalent | Why |
+| ----------- | --------------------- | --- |
+| **Instance Store** | **NVMe SSD soldered to your laptop motherboard** | On the same physical board, PCIe-direct, microsecond latency. Can't detach. If the laptop dies, data dies with it |
+| **EBS** | **Synology / NAS on your home network** | Mounted over the network — slower than local but persists across machine reboots, can mount on another machine in the same network |
+| **EFS** | **A shared SMB / NFS share at the office** | Many machines mount the same filesystem simultaneously |
+| **S3** | **Dropbox / OneDrive** | Object store accessed via API, durable, accessible from anywhere |
+
+> *Instance Store is the laptop's built-in SSD; EBS is the NAS you mount over Wi-Fi.*
+
+The single fact that explains the performance gap: **EBS goes over the network, Instance Store doesn't.** USB is the wrong analogy — USB is slow and external, Instance Store is the fastest and most internal storage AWS offers.
+
 **EBS vs EFS vs Instance Store — when to pick which:**
 
 | | EBS | EFS | Instance Store |
