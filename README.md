@@ -390,6 +390,9 @@
   - [What Outposts actually is](#what-outposts-actually-is)
   - [Form factors](#form-factors)
   - [Services that run on Outposts](#services-that-run-on-outposts)
+  - [Networking — Local Gateway (LGW)](#networking--local-gateway-lgw)
+  - [Resilience — what happens if the link to the parent region drops](#resilience--what-happens-if-the-link-to-the-parent-region-drops)
+  - [Capacity and limitations](#capacity-and-limitations)
   - [How EKS on Outposts fits the data-residency question](#how-eks-on-outposts-fits-the-data-residency-question)
   - [Outposts vs EKS Anywhere — the disambiguator](#outposts-vs-eks-anywhere--the-disambiguator)
   - [What Outposts is NOT](#what-outposts-is-not)
@@ -13420,6 +13423,68 @@ Subset of AWS services — not everything in cloud is available locally:
 | **Observability** | CloudWatch metrics/logs flow to parent region |
 
 Things that are **NOT on Outposts**: most managed services that aren't in the list above (DynamoDB, SNS, SQS, Kinesis, etc. — those run only in the parent region). You can call them from Outposts workloads, but the data flows to the region.
+
+### Networking — Local Gateway (LGW)
+
+The piece of plumbing that makes Outposts work as an on-prem extension. The **Local Gateway (LGW)** is an Outposts-specific routing component that lets Outposts subnets reach the **on-premises network directly**, without forcing traffic up to the parent AWS region first.
+
+```
+On-prem network                  Outposts rack                    Parent AWS Region
+┌──────────────────┐         ┌───────────────────────┐           ┌──────────────────┐
+│ Local app /      │ ◄────►  │ LGW ────► Outposts    │  ◄────►   │ Region VPC       │
+│ database /       │  LGW    │           subnets     │  Service  │ Services in      │
+│ legacy system    │  path   │  (EC2, EKS, RDS)      │  Link     │ parent region    │
+└──────────────────┘         └───────────────────────┘           └──────────────────┘
+```
+
+Two traffic paths from an Outpost workload:
+
+| Destination | Route via | Why |
+| ----------- | --------- | --- |
+| On-prem app / DB / legacy system in the **local network** | **Local Gateway (LGW)** | Single-digit ms latency — never leaves the building |
+| Anything in the **parent AWS region** (S3-in-region, IAM, CloudWatch, DynamoDB, SQS, etc.) | **Service Link** (DX or VPN back to region) | Required for AWS-side service calls and control plane |
+
+Without an LGW, every packet would round-trip to the AWS region just to talk to a database on the same floor. That's exactly what the LGW prevents.
+
+### Resilience — what happens if the link to the parent region drops
+
+Outposts requires a **Service Link** back to its parent AWS region (DX or VPN). Different things behave differently when that link is degraded or down:
+
+| Behaviour | Link healthy | Link degraded / down |
+| --------- | ------------ | -------------------- |
+| **Running EC2 / containers / RDS on the Outpost** | ✅ Normal | ✅ **Keep running** — data plane continues |
+| **LGW traffic to on-prem** | ✅ Normal | ✅ **Keeps working** — never used the region |
+| **Console / API control plane** (start/stop/launch new instances) | ✅ Works | ❌ **Degraded** — can't launch new resources, can't manage existing via API |
+| **CloudWatch logs / metrics** | ✅ Stream to region | ⚠️ Buffered locally, replay when link returns |
+| **IAM auth for STS calls / IRSA** | ✅ Works | ❌ STS calls fail — pods can't refresh credentials |
+| **Calls to region-only services (DynamoDB, SNS, SQS)** | ✅ Works | ❌ Fail until link restored |
+| **S3 on Outposts (local)** | ✅ Works | ✅ **Keeps working** — local buckets are on the rack |
+
+**Mental model:** the *data plane stays up* during a Service Link outage, but the *control plane and anything that needs region services* doesn't. Design accordingly — workloads that must survive a parent-region disconnect should depend only on local Outposts services + LGW traffic.
+
+### Capacity and limitations
+
+Outposts isn't elastic the way a cloud region is. You pre-order capacity:
+
+| Constraint | Detail |
+| ---------- | ------ |
+| **Fixed capacity per rack** | You pick the instance-type mix and EBS capacity when ordering; AWS ships hardware sized for that mix |
+| **No auto-scale beyond what you ordered** | If your ASG wants to scale to N but you only ordered capacity for M, you're capped at M |
+| **Capacity expansion = ordering more racks** | Lead time in weeks to months |
+| **Subset of EC2 instance types** | Not every family/size is available on Outposts — check the supported list when sizing |
+| **Subset of AWS services** | DynamoDB, SNS, SQS, Kinesis, EventBridge, Step Functions, etc. all run only in the parent region (callable from Outposts but data lives in region) |
+| **No Multi-AZ for RDS on Outposts** (typically) | One Outpost is one AZ in network terms — true HA may need a second Outpost |
+| **1- or 3-year commitment** | Subscription pricing — not pay-as-you-go |
+| **You provide power, cooling, network uplink, physical security** | AWS doesn't supply those — they're your facility's responsibility |
+
+**Exam decoder for limitations:**
+
+| Question phrasing | Implication |
+| ----------------- | ----------- |
+| *"Spiky / unpredictable capacity needs"* | **Cloud region**, NOT Outposts (Outposts is fixed capacity) |
+| *"Need DynamoDB / SQS / SNS strictly on-prem"* | **Not possible** — those are region-only. Use Outposts-compatible alternatives or accept region calls |
+| *"Survive a complete disconnect from AWS for days"* | Outposts data plane keeps running, but control plane and IAM/STS depend on the link — design carefully |
+| *"True HA across two failure domains on-prem"* | **Two Outposts** in separate failure domains, not one |
 
 ### How EKS on Outposts fits the data-residency question
 
