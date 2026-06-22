@@ -12432,6 +12432,26 @@ Storage classes sit on a cost-vs-access spectrum. The less frequently you access
 
 **Min storage duration** means you pay for at least that many days even if you delete the object sooner. Delete a Glacier Deep Archive object after 1 day → you still pay for 180 days.
 
+**The classic short-lived-data trap (heavily exam-tested):**
+
+| Workload | Wrong instinct | Right answer |
+| -------- | -------------- | ------------ |
+| Intermediate query results kept 24 hours, heavily referenced | Standard-IA (looks cheaper per GB) | **S3 Standard** |
+| Daily ETL staging zone with 7-day TTL | Standard-IA / Intelligent-Tiering | **S3 Standard** |
+| Cache files regenerated nightly | Standard-IA | **S3 Standard** |
+
+Why the cheap-per-GB classes lose for `<30-day + frequent access`:
+
+| Hidden cost | Effect |
+| ----------- | ------ |
+| **30-day minimum billing** (Standard-IA / One Zone-IA) | Delete after 24h → still billed for 30 days. Negates the per-GB savings |
+| **Per-GB retrieval fee** | "Heavily referenced" = stacks up fast |
+| **128 KB minimum object size** | Small intermediate files get rounded up |
+| **Intelligent-Tiering monitoring fee** | Per-object monthly fee — and IT only moves objects to a cheaper tier after **30 days of no access**, so short-lived data never tiers |
+| **Glacier (any flavour)** | 90/180-day minimums + retrieval delay → completely wrong for *"heavily referenced"* |
+
+**The decision rule:** *Stored for **less than 30 days**? → **S3 Standard**, always. IA/Glacier classes only win once you cross their minimum-duration threshold AND access is infrequent enough that retrieval fees don't eat the savings.*
+
 **Glacier retrieval modes — don't confuse Flexible with Instant:**
 
 Glacier Flexible Retrieval has 3 retrieval modes (you choose per request):
@@ -12485,6 +12505,7 @@ Configure these rules per bucket or per prefix (e.g. only apply to `logs/*`).
 - *"infrequent access but must be available instantly"* → Standard-IA
 - *"archive data, retrieval within 12 hours is acceptable"* → Glacier Flexible Retrieval
 - *"non-critical data, cheapest infrequent access"* → One Zone-IA (single AZ risk)
+- *"intermediate / staging data kept for less than 30 days, heavily accessed"* → **S3 Standard** (NOT Standard-IA — the 30-day minimum + retrieval fees punish short-lived heavily-read data)
 
 ### S3 Object Lock and Glacier Vault Lock
 
