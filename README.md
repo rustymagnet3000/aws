@@ -14014,6 +14014,34 @@ Messages with the same `MessageGroupId` are strictly ordered relative to each ot
 
 **Anchor rule:** *FIFO + a stated msg/sec number = the question is testing batching (or High-Throughput mode at the higher tiers). The number is the clue.*
 
+**Serverless ingestion decoder — SQS vs Firehose vs KDS vs MSK:**
+
+When a question says *"fully serverless, no capacity to provision, no manual response to volume"* and lists multiple ingestion options, the disambiguator is what **other** signal words appear.
+
+| Signal in the question | Answer | Why |
+| ---------------------- | ------ | --- |
+| **No destination named, no real-time analytics, no replay** — just "decouple producer and consumer, fully serverless" | **SQS** | Most stripped-down serverless option — zero capacity concept, ever. The exam picks it when there are no other steering signals |
+| *"Deliver streaming data to **S3 / Redshift / OpenSearch / Splunk**"* | **Kinesis Data Firehose** | The only Kinesis variant whose job is "stream → managed destination" with no capacity to manage |
+| *"Real-time analytics on the stream"* / *"multiple consumers"* / *"consumers can replay from earlier in the stream"* | **Kinesis Data Streams (on-demand)** | Replay, multi-consumer fan-out, per-shard ordering — none of which SQS or Firehose give you |
+| *"Real-time SQL / Flink on the stream"* | **Managed Service for Apache Flink** (formerly Kinesis Data Analytics) | The processing layer over KDS / MSK |
+| *"Kafka-compatible, fully serverless"* | **MSK Serverless** | Kafka API without brokers to provision |
+| *"Kafka-compatible, fine-grained broker / config control"* | **Amazon MSK** (provisioned) | Not serverless — when Kafka tooling matters and serverless doesn't |
+| *"IoT devices over MQTT"* | **AWS IoT Core** | Device-side ingestion; then pipes into Firehose / KDS / SQS for downstream |
+| *"Event bus, content-based routing, SaaS integrations, low-to-medium volume"* | **EventBridge** | Event routing, not a high-volume ingestion pipeline |
+
+The "what tipped it" disambiguator (worth memorising):
+
+| If the question says... | Steers you to |
+| ----------------------- | -------------- |
+| **No destination** mentioned | **SQS** (default-serverless ingestion) |
+| **Destination = S3/Redshift/OpenSearch/Splunk** | **Firehose** |
+| **Replay / multiple consumers / per-shard order** | **Kinesis Data Streams** |
+| **Kafka** named anywhere | **MSK / MSK Serverless** |
+| **MQTT / 'IoT devices'** | **IoT Core** |
+| **'Event bus' / SaaS partner events** | **EventBridge** |
+
+> *"Fully serverless ingestion" matches multiple services. The disambiguator is the **other** word in the question — destination, replay, analytics, MQTT, Kafka, event bus. With **none of those**, the answer collapses to **SQS** because it's the most-stripped-down option with zero capacity concept. Firehose is for streaming-to-storage; KDS is for replay/real-time; MSK is for Kafka.*
+
 **SQS + ASG — scaling consumers based on queue depth:**
 
 ```
