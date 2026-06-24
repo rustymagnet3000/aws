@@ -13915,6 +13915,31 @@ The DLQ isolates these broken messages so they don't block the thousands of heal
 
 Standard is the default when you need speed and can handle duplicates/reordering. FIFO is the safe choice when order or exactly-once matters.
 
+**FIFO throughput threshold table (the exam-favourite trap):**
+
+A FIFO question that includes a **concrete msg/sec number** is testing whether you know FIFO has tiered throughput limits and which tier to pick. Anchor on the **300/sec floor**.
+
+| Required rate | What you need |
+| ------------- | ------------- |
+| **≤ 300 msg/sec** | **SQS FIFO** (default, no batching) |
+| **300 – 3,000 msg/sec** | **SQS FIFO + batching** (`SendMessageBatch` / `ReceiveMessageBatch`, up to 10 messages per call — 10× boost) |
+| **> 3,000 msg/sec** | **SQS FIFO with High-Throughput mode** enabled (~70,000+ msg/sec per region) |
+| Any rate, no ordering needed | **SQS Standard** (unlimited throughput) |
+
+The "select two" trap pattern:
+
+> *"Process ~1,000 msg/sec, messages must be in order"*
+>
+> Correct pair: (1) **Use SQS FIFO** (for ordering) + (2) **Use batching** (to lift the ceiling from 300 to 3,000)
+>
+> Picking only "Use SQS FIFO" fails — defaults cap you at 300/sec and the workload throttles.
+
+**Key nuance — FIFO ordering is per `MessageGroupId`, not per queue:**
+
+Messages with the same `MessageGroupId` are strictly ordered relative to each other. Different group IDs process in parallel. If your throughput needs span many independent ordering streams (e.g., per customer / per account), use the natural identifier as the group ID — you get parallelism with per-group ordering, often without needing High-Throughput mode.
+
+**Anchor rule:** *FIFO + a stated msg/sec number = the question is testing batching (or High-Throughput mode at the higher tiers). The number is the clue.*
+
 **SQS + ASG — scaling consumers based on queue depth:**
 
 ```
@@ -13951,6 +13976,8 @@ SQS is a public AWS API — it has **no ENI in your VPC**, so you **cannot attac
 - *"buffer writes to a database"* → SQS (see below)
 - *"messages processed out of order"* → switch to SQS FIFO
 - *"messages being processed twice"* → increase visibility timeout or switch to FIFO
+- *"in-order processing at 1,000+ msg/sec"* → **SQS FIFO + batching** (default FIFO caps at 300/sec)
+- *"in-order processing at 10,000+ msg/sec"* → **SQS FIFO with High-Throughput mode**
 - *"scale consumers based on workload"* → SQS + CloudWatch Alarm + ASG
 - *"debug failed messages"* → Dead Letter Queue
 - *"restrict cross-account access to a queue"* → queue policy (resource-based)
