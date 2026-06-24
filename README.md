@@ -3969,6 +3969,41 @@ Scaling policies:
 
 Predictive scaling can be combined with target tracking — predictive handles the ramp-up, target tracking handles unexpected spikes.
 
+**The keyword decoder for picking a policy (exam-favourite):**
+
+| Question phrasing | Right policy |
+| ----------------- | ------------ |
+| *"Known clock-time event"* — last day of month, every Monday 9am, daily at 02:00 | **Scheduled** |
+| *"Maintain CPU around X"* / *"keep average requests per target close to N"* | **Target tracking** (the words *around* / *close to* are the tell) |
+| *"Add 1 if CPU 60–70%, 2 if 70–80%, 4 if >80%"* (explicit tiers) | **Step scaling** |
+| *"Anticipate a recurring weekly pattern from history"* (not a fixed clock time) | **Predictive** |
+| *"Fixed action when alarm breaches threshold, then wait"* (legacy) | **Simple scaling** |
+
+**Worked example — why Scheduled wins for clock-time peaks:**
+
+> *"Payroll runs at a designated hour on the last day of every month. Need 10 instances during that hour, 2 otherwise."*
+
+This is the classic Scheduled-scaling exam trap. **Target / Step / Simple all fail** because they're reactive — they wait for CPU (or another metric) to breach a threshold *after* the workload has started, then add capacity. By the time replacement instances boot and warm up, the payroll job has already been crawling for several minutes. The user experiences the lag.
+
+Two scheduled actions solve it proactively:
+
+```
+Schedule: last-day-of-month, 14:00 UTC → desired=10, min=10  (BEFORE the peak)
+Schedule: last-day-of-month, 15:00 UTC → desired=2,  min=2   (AFTER the peak)
+```
+
+Capacity is already in place when the workload begins → zero lag.
+
+| Why each reactive policy fails this scenario | |
+| --- | --- |
+| **Target tracking** | Reactive — won't add instances until CPU already breaches target. Several minutes of degraded performance during boot + warm-up |
+| **Step scaling** | Same reactive lag — multiple tiers don't help if the spike is instant |
+| **Simple scaling** | Same reactive lag, plus cool-down stretches it further |
+| **Predictive** | Could work, but overkill when the schedule is *exactly known*. AWS prefers explicit Scheduled when you can name the time |
+| **Larger instance type (vertical)** | Wasteful for 29 days/month |
+
+**Anchor rule:** *Question gives you a **known clock time + recurrence** → **Scheduled scaling**, even if other policies "could also work" reactively.*
+
 If an instance fails a health check, ASG terminates it and launches a replacement automatically.
 
 ### CloudWatch Alarms and Scaling
