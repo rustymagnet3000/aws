@@ -13420,6 +13420,45 @@ Exam keyword map:
 
 **Exam trigger:** *"temporary high-performance processing, data doesn't need to survive"* → Lustre Scratch. *"high-performance storage that must persist"* → Lustre Persistent.
 
+**Worked example — EDA / chip design (the most-trapped Lustre question):**
+
+> *"An EDA (Electronic Design Automation) application produces massive volumes of data — hot data needs parallel + distributed processing and fast storage; cold data needs cheap access for reads and updates."*
+
+**Answer: FSx for Lustre + S3 integration.**
+
+| Tier | Service | Why |
+| ---- | ------- | --- |
+| **Hot** — parallel + distributed, fast | **FSx for Lustre** | Parallel POSIX FS designed for HPC — hundreds of GB/s, millions of IOPS, sub-ms latency. Built for **EDA, genomics, ML training, seismic processing, video rendering** |
+| **Cold** — cheap, durable | **S3** | Object store |
+| **The link** | FSx for Lustre **natively integrates with S3** | Lazy-loads S3 objects as files on first access; exports results back to S3 |
+
+The flow: cold data sits permanently in S3. When an EDA job runs, FSx for Lustre lazy-loads the working set into its hot tier; hundreds of compute nodes read/write at HPC speeds; results export back to S3; you can delete the Lustre FS when the job's done (results survive in S3). This is the canonical *"S3 = persistent home, Lustre = performance scratch"* pattern.
+
+**The common trap: picking AWS Glue, EMR, or just S3 instead.**
+
+The wording *"massive volumes of data + parallel and distributed processing"* pattern-matches to Spark / Glue / EMR if you skim it. But those services solve a **different problem**:
+
+| Service | What it parallelises | Why it's wrong for EDA |
+| ------- | -------------------- | ----------------------- |
+| **AWS Glue** | Spark ETL transformations on tabular data | EDA tools aren't a Glue job — they're binaries that need a POSIX file system |
+| **EMR (Hadoop/Spark)** | Big data analytics across a cluster | Same — wrong execution model. EMR isn't running chip simulations |
+| **S3 alone** | Nothing — it's just storage | EDA tools expect POSIX (`open()`, `read()`, locks). S3 is HTTP API, no filesystem |
+| **EFS** | Single NFS path — fine for shared web content, no HPC parallelism | Wrong throughput model — EFS streams from one path, Lustre stripes across many |
+| **FSx for Windows / OpenZFS / NetApp** | Wrong protocol / not parallel HPC-grade | EDA tools run on Linux, need parallel HPC throughput |
+
+**The EDA / HPC signal words that anchor to Lustre (not Glue/EMR/S3):**
+
+| Signal | Why it's Lustre |
+| ------ | ---------------- |
+| *"EDA"* / *"chip design"* / *"place and route"* / *"simulation"* / *"verification"* | All canonical Lustre use cases AWS markets it for |
+| *"genomics"* / *"seismic"* / *"ML training data"* / *"video rendering"* | Same HPC pattern |
+| *"hundreds/thousands of compute nodes reading the same files in parallel"* | Lustre stripes for parallel reads |
+| *"POSIX filesystem + millions of IOPS"* | Only Lustre delivers this |
+| *"hot data in fast storage, cold data in cheap object storage"* | The S3-integrated Lustre pairing |
+| *"S3 with high-throughput file system access"* | Lustre's S3 integration |
+
+> *Lustre = "parallel POSIX file system AWS built for HPC / EDA / ML training". S3 = the persistent cheap home. The two are designed to work together. When the question says **EDA / chip design / genomics / ML training / seismic** with **massive data + parallel access**, the answer is **FSx for Lustre + S3** — never Glue, EMR, or plain S3.*
+
 **FSx for Windows — availability:**
 
 | | Single-AZ | Multi-AZ |
