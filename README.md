@@ -9260,6 +9260,60 @@ Multi-AZ is about **availability**, not performance. AWS maintains a standby ins
 - *"improve read performance"* → Read Replicas
 - Both needed → Multi-AZ for HA + Read Replicas for scaling (they can be used together)
 
+#### Multi-AZ engine upgrades — the surprising exam trap
+
+**Multi-AZ does NOT make engine version upgrades zero-downtime.** Different RDS operations have completely different downtime profiles, and the exam tests whether you know which:
+
+| Operation | Multi-AZ flow | Downtime |
+| --------- | ------------- | -------- |
+| **OS patching / hardware maintenance** | Standby patched → failover → primary patched | **Brief (~60–120s — only the failover)** |
+| **Instance type change (scale up/down)** | Standby modified → failover → primary modified | **Brief (~60–120s — only the failover)** |
+| **Database engine version upgrade (minor or major)** | **Both primary AND standby upgraded simultaneously** | **Full outage for the upgrade duration (5–30+ minutes)** |
+| **AZ failure (unplanned)** | Failover to standby | ~60–120s |
+| **Storage scaling** | Online operation | None |
+
+**Why engine upgrades behave differently:**
+
+Multi-AZ uses **synchronous block-level replication**, and that replication channel is **engine-version-specific**. A primary on v8.0.34 can't sync-replicate to a standby on v8.0.36 — the wire protocol assumes both ends speak the same dialect. So AWS can't upgrade the standby first then fail over (that would break replication during the transition). The only option is to take both down at once.
+
+OS patches and instance-type changes don't touch the engine protocol, so the standby-first-then-failover flow works fine for them.
+
+**The exam-tested answer phrasing:**
+
+> *"Any database engine level upgrade for an Amazon RDS database instance with Multi-AZ deployment triggers both the primary and standby database instances to be upgraded at the same time. This causes downtime until the upgrade is complete."*
+
+**How to minimise engine-upgrade downtime (worth knowing):**
+
+| Option | How it helps |
+| ------ | ------------ |
+| **RDS Blue/Green Deployments** | Spin up a green environment on the new version → sync from blue → switch over with ~1 min outage. **The modern AWS-recommended path for major engine upgrades** |
+| **Multi-AZ DB Cluster** (newer architecture, 2 readable standbys with logical replication) | Supports **rolling engine upgrades** with much less downtime |
+| **Aurora** | Storage layer decoupled from compute — supports rolling engine upgrades, often zero-downtime patching for minor versions |
+| **Read replica → promote** | Create a cross-version replica, let it catch up, promote, cut over. Complex and manual; not all engines support cross-version replication |
+
+**Multi-AZ variant distinction (the exam test):**
+
+| Variant | Replication | Engine-upgrade behaviour |
+| ------- | ----------- | ------------------------- |
+| **Multi-AZ instance** (classic) | Synchronous block-level, standby **not readable** | **Both upgraded simultaneously → full outage** |
+| **Multi-AZ DB Cluster** (newer) | Logical replication, **2 readable standbys** | **Rolling upgrades supported** — much less downtime |
+| **Aurora** | Shared storage, separate compute nodes | **Rolling upgrades** standard, zero-downtime patching common |
+
+If the exam says *"Multi-AZ"* without further qualification, assume the classic instance variant — which means engine upgrades take a full outage.
+
+**Updated exam triggers:**
+
+| Phrasing | Answer |
+| -------- | ------ |
+| *"Multi-AZ engine version upgrade and downtime"* | **Both primary and standby upgrade simultaneously → full outage for the upgrade duration** |
+| *"Minimise downtime for a major engine upgrade"* | **RDS Blue/Green Deployments** |
+| *"Rolling engine upgrade with zero / near-zero downtime"* | **Aurora** or **Multi-AZ DB Cluster** (NOT standard Multi-AZ instance) |
+| *"Multi-AZ OS patching"* | Brief failover-only outage (~60–120s) |
+| *"Multi-AZ instance type change"* | Brief failover-only outage (~60–120s) |
+| *"Multi-AZ AZ failover (unplanned)"* | ~60–120s |
+
+> *Multi-AZ classic = synchronous block-level replication, **engine version must match on both sides**. So engine upgrades — minor or major — take **both instances down at the same time** for the upgrade duration. OS patches and instance-type changes follow the standby-first-then-failover flow because they don't break replication. **For minimal-downtime engine upgrades, use Blue/Green Deployments, Aurora, or the newer Multi-AZ DB Cluster** — standard Multi-AZ doesn't help.*
+
 **Using them together:**
 
 Multi-AZ and Read Replicas are complementary — you can and often should use both:
