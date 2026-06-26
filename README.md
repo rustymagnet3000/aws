@@ -13333,6 +13333,50 @@ Backup software (Veeam, Veritas, etc.) → Tape Gateway → S3 Glacier
 - *"backup software needs a tape library target"* → Tape Gateway
 - *"migrate data to AWS"* → DataSync (not Storage Gateway — Gateway is for ongoing access)
 
+#### File Gateway vs EFS — the exam trap
+
+**Both** expose NFS, **both** support automated tiering to cheaper storage. The disambiguator is **where the clients/workloads live**:
+
+| Scenario | Right answer |
+| -------- | ------------ |
+| **Workloads stay on-prem**, only the **storage** moves to the cloud, keep NFS, minimise cost | **File Gateway + S3 + S3 Lifecycle to Glacier** |
+| **Workloads are in AWS** (EC2 / containers / Lambda), need shared NFS, auto-tier cold data | **EFS with Lifecycle Management** (Standard → IA → Archive) |
+| Hybrid file share with on-prem cache and S3 backing | **File Gateway** |
+| Fully cloud-native NFS for EC2 / EKS / ECS workloads | **EFS** |
+
+**Why "minimise cost + tiering" leans toward File Gateway:**
+
+| Tier | EFS | S3 equivalent |
+| ---- | --- | ------------- |
+| Hot | $0.30/GB (Standard) | $0.023/GB (S3 Standard) |
+| Cold | $0.025/GB (IA) | $0.0125/GB (S3 Standard-IA) |
+| Coldest | $0.008/GB (Archive) | $0.00099/GB (Glacier Deep Archive) |
+
+S3's coldest tier is ~**25× cheaper** than EFS's coldest tier. When the question stresses *"minimise cost"* AND *"automated tiering of rarely accessed data to lower-cost storage"*, the S3 lifecycle ladder is the cheaper path.
+
+**The disambiguator question to ask yourself:**
+
+> ***"Do the workloads accessing this storage live on-prem or in AWS?"***
+>
+> *On-prem → File Gateway*
+> *AWS → EFS*
+
+If the question puts the clients on-prem and asks you to migrate **storage** (not compute), you'd either need to move compute (out of scope) or mount EFS over DX/VPN from on-prem (high latency, expensive, not recommended). File Gateway sidesteps both by keeping a local NFS-presenting appliance with hot-file caching.
+
+**Worked example — the on-prem batch job + log files scenario:**
+
+> *"On-prem NFS storage is hard to scale. Migrate to a cloud-based storage solution, keep NFS-based tools, minimise cost, auto-tier rarely accessed data."*
+
+Answer: **File Gateway** — present NFS locally to the on-prem batch jobs (they don't change), back it with S3, use S3 Lifecycle to push old log files to Standard-IA → Glacier Flexible → Glacier Deep Archive. Hot files stay cached on the gateway VM for low-latency access.
+
+The EFS instinct fails because:
+
+| Why EFS loses this scenario | |
+| --- | --- |
+| Workloads are on-prem, not in AWS | EFS over DX/VPN would be slow and expensive |
+| Moving compute to AWS wasn't asked | Broader migration scope than the question described |
+| Cost minimisation language | S3 + Glacier is dramatically cheaper than EFS-IA/Archive |
+
 ### Amazon FSx
 
 Fully managed third-party file systems on AWS. Where EFS is managed NFS (Linux), FSx covers everything else.
