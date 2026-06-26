@@ -3693,6 +3693,61 @@ Why not the others:
 
 The keyword pattern: "shared" + "dynamically loaded" + "Linux" → **EFS**.
 
+### The billing-model gotcha — provisioned vs metered storage
+
+The single most-tested storage pricing trap on the exam:
+
+| Service | Billing model | What you pay for |
+| ------- | ------------- | ---------------- |
+| **EBS** | **Provisioned** | The **size of the volume you allocated** — regardless of how much data you actually wrote |
+| **S3** | **Metered** | The actual GB of objects stored |
+| **EFS** | **Metered** | The actual GB of files stored |
+
+> ***An empty 100 GB EBS volume costs the same as a full one.*** *S3 and EFS scale the bill with usage; EBS doesn't.*
+
+**Worked example — 1 GB file on each service:**
+
+| Storage | Per-GB-month | Billable GB | Monthly cost |
+| ------- | ------------- | ----------- | ------------- |
+| **S3 Standard** | ~$0.023 | 1 GB (actual) | **~$0.023** |
+| **EFS Standard** | ~$0.30 | 1 GB (actual) | **~$0.30** |
+| **EBS gp2 (100 GB volume)** | ~$0.10 | **100 GB (provisioned)** | **~$10.00** |
+
+Same 1 GB file → roughly **400× spread**, all because EBS charges for the volume size, not the data.
+
+**Order from cheapest to most expensive: S3 < EFS < EBS (when over-provisioned).**
+
+**The exam-trap phrasings:**
+
+| Question phrasing | Lesson it tests |
+| ----------------- | --------------- |
+| *"Cheapest storage for a 1 GB file"* | **S3** — lowest per-GB rate, pays only for the GB |
+| *"Most expensive of S3 / EBS / EFS for the same file"* | **EBS** when the volume is over-provisioned (provisioning trap); **EFS** by raw per-GB rate |
+| *"Why didn't our EBS bill drop after deleting most of the data?"* | EBS bills the provisioned size — must **shrink the volume or delete it** to reduce the bill |
+| *"Storage that scales the bill with actual usage"* | **S3 or EFS** (both metered) |
+| *"How to reduce EBS costs"* | Right-size the volume; don't over-provision; or migrate cold data to S3 |
+
+**The price ladder worth memorising (per-GB-month, broad strokes):**
+
+```
+~$0.001  ── S3 Glacier Deep Archive
+~$0.004  ── S3 Glacier Flexible Retrieval
+~$0.008  ── EFS One Zone-IA
+~$0.0125 ── S3 Standard-IA
+~$0.023  ── S3 Standard                ← cheapest hot tier
+~$0.025  ── EFS Standard-IA
+~$0.08   ── EBS gp3
+~$0.10   ── EBS gp2 (provisioned!)
+~$0.125  ── EBS io2 Block Express     (+ IOPS charges)
+~$0.30   ── EFS Standard                ← priciest hot tier per-GB
+```
+
+Rough order: **S3 cold < S3 Standard < EBS gp3 < EFS Standard**. EFS Standard is the **priciest by per-GB rate**; EBS becomes the priciest in practice when volumes are over-provisioned.
+
+**Mental model:**
+
+> *Three different billing models. **S3 = per object stored** (cheapest hot tier, pay-for-what-you-use). **EFS = per actual filesystem usage** (highest hot-tier per-GB rate but still pay-for-what-you-use). **EBS = per provisioned volume size** (regardless of fill rate — the gotcha). For the same 1 GB file on an over-provisioned EBS volume, EBS ends up the most expensive of the three by orders of magnitude — because of the provisioning model, not the per-GB rate.*
+
 ## Scaling and ELB
 
 **Scalability — the two types:**
