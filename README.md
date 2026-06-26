@@ -17829,6 +17829,73 @@ Step Functions workflow:
 | Cost | Per state transition | Per execution + duration |
 | Use case | Long-running workflows, human approval | High-volume event processing (IoT, streaming) |
 
+**The four service-integration patterns:**
+
+When a Step Functions state calls another AWS service, you pick one of four patterns. This is what determines how the workflow waits (or doesn't) for the downstream work.
+
+| Pattern | ARN suffix | Behaviour | Use when |
+| ------- | ---------- | --------- | -------- |
+| **Request-response** (default) | `:lambda:invoke` | Fire-and-forget — gets the API's immediate response and moves on | Most calls — Lambda, DynamoDB, SNS publish, etc. |
+| **Run a Job** | `.sync` | Waits until the downstream job *completes* before moving on | Long-running synchronous jobs — **ECS RunTask, Batch SubmitJob, Glue StartJobRun, SageMaker training, EMR step** |
+| **Wait for Callback** | `.waitForTaskToken` | Pauses workflow, hands out a **task token**, resumes only when something external calls `SendTaskSuccess` / `SendTaskFailure` with that token | **Human approval, external SaaS waits, async third-party callbacks** — workflow can hold state up to 1 year |
+| **Activity** | n/a — uses Activity tasks | A worker pool you run polls Step Functions for tasks via `GetActivityTask` | Legacy pattern for self-managed worker fleets (rare today — `.waitForTaskToken` usually wins) |
+
+**Why the four patterns matter:**
+
+```
+Request-response (default):
+  State A → call Lambda → got response → State B
+                          (no waiting beyond the Lambda call)
+
+.sync (run a job):
+  State A → start ECS task → ............ wait until task exits ............ → State B
+                              (Step Functions polls for completion automatically)
+
+.waitForTaskToken (callback):
+  State A → send message to SQS with token → ... PAUSED ... → manager clicks approve →
+            external system calls SendTaskSuccess(token, output) → State B resumes
+                              (workflow can pause for up to 1 year)
+```
+
+**Worked example — human approval flow using `.waitForTaskToken`:**
+
+```
+1. Workflow starts (employee submits expense)
+        ↓
+2. State: "Wait for approval"
+   → uses arn:aws:states:::sqs:sendMessage.waitForTaskToken
+   → posts a message to SQS containing the task token + expense details
+        ↓
+3. Step Functions PAUSES — execution stays in "Wait" state, no charge for compute
+        ↓
+4. Approval worker (Lambda / app) reads SQS → notifies manager via Slack / email
+        ↓
+5. Manager clicks "Approve" → app calls SendTaskSuccess(token, "approved")
+        ↓
+6. Step Functions RESUMES on the next state → process payment
+```
+
+The pause-and-resume model is the magic — workflows can wait days, weeks, or up to a year on a single execution without burning compute.
+
+**`.sync` vs `.waitForTaskToken` (the exam-favourite distinction):**
+
+| | `.sync` | `.waitForTaskToken` |
+| - | ------- | -------------------- |
+| **Waits for what?** | An AWS service's own job-completion signal | An external system calling `SendTaskSuccess` with a token |
+| **Knows when done how?** | Step Functions polls the service's API (e.g., `DescribeJob`) | The external system explicitly notifies |
+| **Use for** | ECS task, Batch job, Glue job, SageMaker training, EMR step | Human approval, async SaaS callback, custom worker fleets |
+| **Max wait** | Tied to the underlying service's own time limits | Up to **1 year** (Standard workflow lifetime) |
+
+**Exam triggers for the patterns:**
+
+| Phrasing | Pattern |
+| -------- | ------- |
+| *"Wait for an ECS task / Batch job / Glue job / SageMaker training to finish"* | **`.sync`** |
+| *"Pause workflow until a human clicks approve"* | **`.waitForTaskToken`** |
+| *"Wait for a callback from a third-party SaaS"* | **`.waitForTaskToken`** |
+| *"Fire a Lambda and immediately proceed with its return value"* | **Request-response** (default) |
+| *"Self-hosted worker pool polls Step Functions for tasks"* | **Activity** (rare today) |
+
 **Real-world examples:**
 
 - **Order processing** — validate → charge payment → reserve stock → ship → notify customer. If payment fails, skip to refund. Each step is a separate Lambda.
