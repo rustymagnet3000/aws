@@ -960,6 +960,75 @@ Need dedicated hardware (licensing/compliance)? → Dedicated Host
 - *"software licensed per physical socket"* → Dedicated Host
 - *"short-term, unpredictable workload"* → On-Demand
 
+#### Layered demand — mixing pricing models (the recurring exam pattern)
+
+The exam loves to give you a workload with **three tiers of demand** and ask which mix is most cost-optimal. The trick is to match each tier to the pricing model that fits its **utilisation pattern**, not the workload type.
+
+```
+Demand profile:
+─────────────────────────────────────────────
+Spike (e.g. 220 instances)     ████ ██ ███ ██   ← bursty, low total hours
+─────────────────────────────────────────────
+Steady-state (e.g. 60 above    ████████████████
+baseline, 80% of the time)     ↑ predictable, high utilisation
+─────────────────────────────────────────────
+Baseline (e.g. 20 instances)   ████████████████
+                               ↑ always-on 24x7
+─────────────────────────────────────────────
+
+Right pricing for each tier:
+- Baseline (100% utilisation)        → Reserved / Savings Plans (cheapest for sustained)
+- Steady-state (>60-75% utilisation) → Reserved / Savings Plans (past break-even)
+- Spike (<25% utilisation, bursty)   → Spot (if interruption-tolerant) or On-Demand
+```
+
+**The decision rule — utilisation drives the choice, not workload type:**
+
+| Utilisation pattern | Pricing model |
+| ------------------- | ------------- |
+| **100% always on (baseline)** | **Reserved Instances or Savings Plans** — always |
+| **>~60–75% utilisation** | **Reserved / Savings Plans** — past the RI break-even point |
+| **<~25% bursty, interruption-tolerant** (Spark, Hadoop, batch, ML training) | **Spot** — up to 90% off, AWS can reclaim with 2 min notice |
+| **<~25% bursty, can't be interrupted** (occasional on-demand jobs, dev/test) | **On-Demand** |
+| **Niche: per-socket licensing or compliance** | **Dedicated Host** |
+
+**Worked example — the canonical exam pattern (20 / 80 / 300):**
+
+> *"Workload needs 20 instances minimum 24x7, 80 instances 80% of the time, 300 instances during spikes. Most cost-optimal?"*
+
+| Tier | Instances | Utilisation | Pricing |
+| ---- | --------- | ----------- | ------- |
+| **Baseline always-on** | 20 | 100% | **Reserved / Savings Plans** |
+| **Above baseline, steady** | 60 (= 80 − 20) | 80% | **Reserved / Savings Plans** (past break-even) |
+| **Spike capacity** | 220 (= 300 − 80) | Burst | **Spot Instances** (big data is interruption-tolerant) |
+
+**Total mix: 80 Reserved/Savings Plans + 220 Spot.**
+
+Why the obvious-looking traps lose:
+
+| Trap | Why it loses |
+| ---- | ------------ |
+| **All 300 On-Demand** | Pays sticker price for capacity that's mostly there 24x7 — skips the RI discount on the always-on tier |
+| **All 300 Reserved** | Over-commits to peak capacity that's rarely needed — paying for 220 idle RIs most of the time |
+| **All 300 Spot** | Baseline needs guaranteed availability — Spot can be reclaimed with 2 min notice |
+| **20 Reserved + 280 Spot** | Wastes savings on the 60-instance steady-state tier (80% utilisation = prime RI territory) |
+| **20 Reserved + 60 On-Demand + 220 Spot** | Right shape but pays On-Demand sticker on the 80%-utilised tier |
+
+**The mental model:**
+
+> *Pricing strategy is **utilisation-driven**, not workload-driven. **Always-on baseline → Reserved / Savings Plans.** **>75% utilisation → Reserved / Savings Plans** (past the RI break-even). **Bursty + interruption-tolerant → Spot.** **Bursty + interruption-intolerant → On-Demand.** Real workloads layer all three tiers — the answer is the MIX. Picking "all Reserved" is the over-commitment trap; "all Spot" is the availability trap; "all On-Demand" is the discount-skipping trap.*
+
+**Exam triggers for the layered pattern:**
+
+| Phrasing | Implication |
+| -------- | ----------- |
+| *"Baseline capacity needed 24x7"* | **Reserved / Savings Plans** for that tier |
+| *"N% of the time we need M instances"* | If N > 60–75%, that's a **Reserved / Savings Plans** tier |
+| *"Spikes during which we need extra capacity"* | **Spot** (if big data / interruption-tolerant) or **On-Demand** (if not) |
+| *"Most cost-optimal mix"* | Layered — almost never "all of one model" |
+| *"Fault-tolerant / interruption-tolerant / big data / Spark / Hadoop"* | **Spot** is on the table for the spike tier |
+| *"Mission-critical, can't be interrupted"* | Spike tier becomes **On-Demand**, not Spot |
+
 ### AMI
 
 An **AMI (Amazon Machine Image)** is a pre-packaged template used to launch EC2 instances. It includes the OS, application server, application code, and configuration — everything needed to boot a new instance.
