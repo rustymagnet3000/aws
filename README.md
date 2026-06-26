@@ -6572,6 +6572,92 @@ The console UI buries the opt-in. You click through "create replication rule," s
 | *"Cross-region replication with KMS"* | Plus **multi-region key** OR re-encryption with target-region key during copy |
 | *"Cross-account replication with KMS"* | Plus **target bucket policy** allowing source account's replication role to write |
 
+### KMS Multi-Region Keys (MRKs)
+
+**The problem MRKs exist to solve:** standard KMS keys are **regional** — a CMK in us-east-1 has no presence in us-west-1, and **ciphertext encrypted in one region cannot be decrypted in another**. For cross-region replication scenarios where security policy demands *"the same key in both regions"*, Multi-Region Keys are the only correct answer.
+
+#### The mechanic
+
+```
+Standard KMS:
+us-east-1: Key A (key-id: abc-123)   ← unique key, unique material
+us-west-1: Key B (key-id: xyz-456)   ← separate key, separate material
+                                     → ciphertext from A cannot decrypt with B
+
+Multi-Region Key:
+us-east-1: PRIMARY MRK   (key-id: mrk-1234567890abcdef)   ← same material
+us-west-1: REPLICA MRK   (key-id: mrk-1234567890abcdef)   ← same material
+                                                          → identical key ID
+                                                          → ciphertext interoperable
+```
+
+Replica MRKs share the primary's **key material and key ID**. Encrypt in us-east-1; decrypt directly in us-west-1 without round-tripping ciphertext to the source region. Each replica is technically a separate KMS key resource (and billed separately at ~$1/month each), but cryptographically they're equivalent.
+
+#### Setup flow
+
+```
+1. Create the PRIMARY multi-region key in the source region
+   aws kms create-key --multi-region --region us-east-1
+        ↓
+2. Replicate it to the destination region (creates a REPLICA MRK)
+   aws kms replicate-key --key-id mrk-... --replica-region us-west-1
+        ↓
+3. Configure S3 CRR (or DynamoDB Global Table, EBS snapshot copy, etc.)
+   → destination uses the REPLICA MRK
+        ↓
+4. Both regions encrypt/decrypt with the same key material
+```
+
+#### What MRKs solve (and what they don't)
+
+| Use case | MRK fits? |
+| -------- | --------- |
+| **S3 CRR with "same key" compliance requirement** | ✅ Primary canonical use case |
+| **DynamoDB Global Tables with KMS encryption** | ✅ Each region uses its local replica MRK |
+| **EBS snapshot copy across regions without re-encryption decrypt-loop** | ✅ |
+| **Multi-region failover where DR region must decrypt source ciphertext** | ✅ |
+| **Encrypting data with a key that auditors can prove is "the same key" cryptographically across regions** | ✅ |
+| Cross-account scenarios where the key stays in one account but data needs to be readable in another | ❌ — that's solved by key policy / grant, not MRKs |
+| Sharing a key with an external partner | ❌ — use key policy / grants on a regional key |
+| Importing your own key material | ✅ partially — MRKs support BYOK; you import the same material into the primary, replicas inherit |
+
+#### Multi-Region Keys vs regular KMS — the differences
+
+| | **Regular KMS key (regional)** | **Multi-Region Key** |
+| - | ------------------------------- | -------------------- |
+| Key ID | Unique per region | **Same key ID across all replicas** (starts with `mrk-`) |
+| Key material | Separate per region | **Identical** across primary + replicas |
+| Cross-region encrypt/decrypt | ❌ — ciphertext is region-bound | ✅ Interoperable |
+| Created with | `create-key` | `create-key --multi-region` (primary), then `replicate-key` |
+| Convertible? | ❌ A regular key cannot become an MRK after creation | ❌ Must decide at creation time |
+| Replica region addition | n/a | Add new replica regions later as needs grow |
+| Synchronisation | n/a | Automatic key rotation propagates across all replicas |
+| Pricing | $1/month per key | **$1/month per replica** (so primary + 2 replicas = ~$3/month) |
+| Lifecycle | Delete the key | Delete primary → replicas continue independently; delete each replica separately |
+
+#### What MRKs are NOT
+
+| Confused with | Distinction |
+| ------------- | ----------- |
+| **Sharing a key via key policy** | Sharing access doesn't share key material — a us-east-1 key still doesn't exist cryptographically in us-west-1 |
+| **AWS Backup cross-region copy** | Works at the snapshot level — re-encrypts with destination-region key. Different mechanism, not MRK-based |
+| **External CMKs (BYOK / Imported)** | You import key material into a single key. MRKs can use BYOK (import same material to primary, replicas inherit) but BYOK alone doesn't replicate across regions |
+| **S3 Bucket Keys** | A caching optimisation that reduces KMS API calls — orthogonal to MRKs |
+| **CloudHSM** | Hardware-backed dedicated single-tenant — doesn't solve cross-region the same way; you'd need separate clusters per region |
+
+#### Exam triggers specifically for MRKs
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Same KMS key must be used to encrypt and decrypt in both regions"* | **Multi-Region Keys** |
+| *"S3 CRR with KMS encryption preserving the same key identity"* | **MRK primary in source + replica in destination** |
+| *"DynamoDB Global Tables encrypted with the same KMS key across all regions"* | **MRK** |
+| *"DR plan needs the same KMS key in the failover region"* | **MRK** |
+| *"Why does decrypting this ciphertext in us-west-1 fail when it was encrypted in us-east-1?"* | **Regular KMS keys are regional — use an MRK or re-encrypt at destination** |
+| *"Can I convert a regular KMS key to a Multi-Region Key?"* | **No — must create as multi-region at creation time** |
+
+> *Standard KMS = one regional crypto root, ciphertext bound to its region. MRKs = one logical key with identical material replicated to chosen regions, allowing cross-region encrypt/decrypt interoperability. Whenever the question says **"same key in both regions"** or describes a cross-region replication / DR scenario with strict same-key compliance, the answer is **Multi-Region Keys**.*
+
 ### When to Use CloudHSM Instead
 
 CloudHSM is the **dedicated single-tenant hardware HSM** alternative to KMS. Same crypto operations, very different operational model.
