@@ -12609,6 +12609,7 @@ WORM (Write Once Read Many) — prevent objects from being deleted or overwritte
 **S3 Object Lock:**
 - WORM at the S3 bucket level (any storage class, not just Glacier)
 - Can be set per-object or as a bucket default
+- **Requires S3 Versioning** — hard prerequisite (lock metadata attaches to a version, not a key)
 - Two modes:
 
 | Mode | Who can delete/overwrite? |
@@ -12618,11 +12619,36 @@ WORM (Write Once Read Many) — prevent objects from being deleted or overwritte
 
 Use **Compliance mode** when regulation demands it. Use **Governance mode** when you want protection with an escape hatch for authorised admins.
 
+**Two retention types** (independent of mode):
+
+| Type | Behaviour |
+| ---- | --------- |
+| **Retention period** | Fixed expiry date — set per version or as a bucket default. Auto-expires (Governance) or never expires early (Compliance) |
+| **Legal hold** | Indefinite — held until manually removed by an authorised user. Orthogonal to retention periods (can have both at once) |
+
+**Per-version retention — the nuance the exam tests:**
+
+Object Lock metadata is attached to **each version of a key, not the key itself**. Since Versioning is a prerequisite, every "object" in a locked bucket is really a sequence of versions, and each can have its own lock settings:
+
+```
+file.txt
+├── v1 (uploaded 2026-01-01)  → Compliance mode, until 2031-01-01
+├── v2 (uploaded 2026-06-01)  → Governance mode, until 2027-06-01
+└── v3 (uploaded 2026-12-01)  → no retention but Legal Hold on
+```
+
+When v2's Governance period expires in 2027, v1 is still under Compliance lock until 2031. v3 stays held until someone removes the legal hold. **Different versions of the same object key can have entirely different modes, periods, and legal-hold flags.** The `PutObjectRetention` / `PutObjectLegalHold` APIs both take a `VersionId` parameter — proving the lock targets a specific version.
+
+The use case AWS designed this for: regulatory snapshots where each *committed state* of a document needs its own retention. E.g., a signed contract amendment goes through versions, and each signed version gets its own independent retention clock.
+
 **Exam triggers:**
 - *"ensure data cannot be deleted for 7 years, even by root"* → S3 Object Lock (Compliance mode) or Glacier Vault Lock
 - *"WORM storage"* → S3 Object Lock or Glacier Vault Lock
 - *"SEC 17a-4 compliance"* → Glacier Vault Lock
 - *"prevent deletion but allow admins to override in emergencies"* → S3 Object Lock (Governance mode)
+- *"different versions of an object can have different retention modes and periods"* → **true — lock is per-version**, not per-key
+- *"hold an object indefinitely until litigation resolves"* → **Legal Hold** (no fixed expiry; manually removed)
+- *"why doesn't Object Lock work on my bucket?"* → **Versioning must be enabled first**
 
 ### S3 Event Notifications
 
