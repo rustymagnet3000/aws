@@ -935,10 +935,42 @@ Four ways to pay for EC2 — the exam tests whether you can pick the cheapest op
 - Best for: batch processing, data analysis, CI/CD builds, ML training, anything that can handle interruption
 - **Not for:** databases, web servers, or anything that can't tolerate sudden termination
 
+**Dedicated Instances:**
+- Physical hardware **dedicated to your AWS account** — no other AWS customers on the same host
+- AWS still picks which host, and may move you across hosts on stop/start
+- ~10–20% premium over shared tenancy
+- Billed **per instance**
+- Best for: regulatory guidelines demanding single-tenant hardware without per-socket licensing or host affinity
+
 **Dedicated Hosts:**
-- A physical server dedicated to you — no other AWS customers on the hardware
-- Most expensive option
-- Use case: software licensing that's per-physical-core/socket (Oracle, Windows Server), or compliance requirements mandating dedicated hardware
+- A **specific physical server** dedicated to you — you see host ID, sockets, cores
+- Most expensive option — pay for the **whole host** regardless of instance count
+- Best for: BYOL software licensed **per physical core / socket** (Oracle, Windows Server, SQL Server), host affinity across restarts, compliance requiring visibility into hardware attributes
+
+**Dedicated Instances vs Dedicated Hosts — the exam-tested split:**
+
+| | **Dedicated Instance** | **Dedicated Host** |
+| - | ----------------------- | ------------------- |
+| Single-tenant hardware? | ✅ Yes | ✅ Yes |
+| Billing granularity | **Per instance** | **Per host** (pay for whole server) |
+| Visibility into physical host | ❌ No | ✅ Yes (host ID, sockets, cores) |
+| Host affinity across restart | ❌ No — AWS may relocate | ✅ Yes (Host Affinity setting) |
+| BYOL per-socket / per-core licences (Oracle, Windows Server) | ⚠️ Limited | ✅ Required |
+| Cost | Cheaper — small premium over shared | More expensive — pay for the whole box |
+| Pick when | "Single-tenant hardware, most cost-effective" | Per-socket licensing OR host affinity OR host visibility |
+
+**Tenancy and pricing are independent axes:**
+
+Tenancy (shared / dedicated-instance / dedicated-host) is orthogonal to pricing (On-Demand / Reserved / Spot / Savings Plans). You can combine most pairs — e.g., "Reserved Dedicated Instances" (long-term commit + single-tenant hardware).
+
+| Pricing × Tenancy | Available? |
+| ------------------ | ---------- |
+| On-Demand / Reserved / Savings Plans + Shared | ✅ |
+| On-Demand / Reserved / Savings Plans + Dedicated Instance | ✅ |
+| On-Demand / Reserved / Savings Plans + Dedicated Host | ✅ |
+| Spot + Shared | ✅ |
+| Spot + Dedicated Instance | ✅ (limited) |
+| Spot + Dedicated Host | ❌ |
 
 **Decision tree:**
 
@@ -950,15 +982,23 @@ Is the workload steady and predictable (runs 24/7)?
 └── No
     ├── Can it handle interruption? → Spot Instance (cheapest)
     └── Can't handle interruption? → On-Demand
-Need dedicated hardware (licensing/compliance)? → Dedicated Host
+
+Need dedicated hardware?
+├── Just single-tenant for compliance, most cost-effective → Dedicated Instance
+├── Per-socket / per-core licensing (Oracle, Windows Server) → Dedicated Host
+├── Host affinity or visibility into physical attributes → Dedicated Host
+└── AWS hardware in your own DC → AWS Outposts (different service)
 ```
 
 **Exam triggers:**
 - *"reduce costs for a database running 24/7"* → Reserved Instance
 - *"flexible commitment across multiple instance types"* → Savings Plan
 - *"cheapest option for batch processing that can retry"* → Spot Instance
-- *"software licensed per physical socket"* → Dedicated Host
 - *"short-term, unpredictable workload"* → On-Demand
+- *"single-tenant hardware, most cost-effective, regulatory guideline"* → **Dedicated Instance**
+- *"software licensed per physical socket / core (Oracle, Windows Server BYOL)"* → **Dedicated Host**
+- *"visibility into sockets / cores / host ID"* → **Dedicated Host**
+- *"instance stays on the same physical server across restarts"* → **Dedicated Host** (Host Affinity)
 
 #### Layered demand — mixing pricing models (the recurring exam pattern)
 
