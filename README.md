@@ -57,6 +57,7 @@
   - [Scaling Cooldowns](#scaling-cooldowns)
   - [Health Checks](#health-checks)
   - [Maintenance on a Single ASG Instance — the Standby flow](#maintenance-on-a-single-asg-instance--the-standby-flow)
+  - [ASG default termination policy — which instance dies first](#asg-default-termination-policy--which-instance-dies-first)
   - [ALB and EC2 Security Groups](#alb-and-ec2-security-groups)
   - [EC2 without a Public IP](#ec2-without-a-public-ip)
 - [Amazon CloudWatch](#amazon-cloudwatch)
@@ -4305,6 +4306,106 @@ That pair works but is less surgical (suspending `ReplaceUnhealthy` affects the 
 | *"Don't scale right after the last scaling action"* | **Cool-down period** |
 
 > *Standby = "put this one instance on the bench" — surgical, ASG ignores it, LB drains it, no replacement launches. ExitStandby = "back on the field". Use for any maintenance on a single ASG member. Suspending ASG processes is the broader hammer that affects the whole group — only reach for it when you genuinely want the entire ASG to pause its automated reactions.*
+
+### ASG default termination policy — which instance dies first
+
+When ASG scales in, it doesn't pick an instance at random — it runs a **cascading tie-breaker algorithm**. Learning the order stops the exam-favourite "which of these instances gets terminated?" trap.
+
+#### The default termination policy — the six-step cascade
+
+```
+1. Availability Zone with the MOST instances (with at least one unprotected)
+        ↓
+2. Instances launched from a launch CONFIGURATION are preferred over
+   instances launched from a launch TEMPLATE
+        ↓
+3. Among matching instances, pick the OLDEST launch configuration
+   (or OLDEST launch template + oldest version, if only LT users remain)
+        ↓
+4. If still tied, pick the instance CLOSEST TO THE NEXT BILLING HOUR
+        ↓
+5. If still tied, pick RANDOMLY
+```
+
+Steps 1 → 5 execute in order — a step only matters if all earlier steps left multiple candidates.
+
+#### Why launch configurations die before launch templates
+
+AWS documents this explicitly. The reasoning is that **launch configurations are legacy** — AWS wants to phase them out. Making LC-based instances the first to die nudges you to replace them with LT-based ones over time.
+
+| | Launch Configuration | Launch Template |
+| - | -------------------- | ---------------- |
+| Status | **Legacy** — deprecated | **Modern, recommended** |
+| Versioning | ❌ Immutable | ✅ Versioned (v1, v2, …) |
+| Feature support | Limited — no mixed instances, no T3 unlimited | Full |
+| Termination preference | **Dies first** in default policy | Dies later |
+
+If you have any launch-configuration-based instances mixed with launch-template-based ones, the LC ones are always terminated first (all else being equal).
+
+#### Worked example — the exam-canonical question
+
+Given 4 instances in the AZ with the most instances (us-east-1a):
+
+| Instance | Attribute |
+| -------- | --------- |
+| A | Oldest **launch template** |
+| B | **Oldest launch configuration** |
+| C | Newest launch configuration |
+| D | Closest to next billing hour |
+
+Walkthrough:
+
+```
+Step 1: AZ with most instances → us-east-1a (given)
+Step 2: LC users beat LT users → narrow to B and C (both use LCs)
+Step 3: Oldest LC among B and C → Instance B ✓ TERMINATED
+
+(Steps 4–5 never reached.)
+```
+
+**Instance B wins the elimination.** Instance A (oldest LT) is skipped at step 2. Instance D (billing hour) is a step-4 tiebreaker that never gets used.
+
+#### Why the "closest to billing hour" criterion is barely relevant today
+
+This tiebreaker is a **legacy remnant** from when EC2 was billed per full hour. Modern EC2 bills **per-second** for most Linux instance types — so terminating an instance close to a billing-hour boundary saves virtually nothing. The rule remains in the default policy for backwards compatibility only.
+
+#### Custom termination policies (alternatives worth knowing)
+
+ASG lets you replace the default with one or more explicit policies. They execute in the order you list them:
+
+| Policy | Behaviour |
+| ------ | --------- |
+| **`OldestInstance`** | Kills the oldest instance regardless of launch config / template |
+| **`NewestInstance`** | Kills the newest — useful for **canary rollback** ("that thing I just launched is broken, remove it first") |
+| **`OldestLaunchConfiguration`** | Old-LC users only |
+| **`OldestLaunchTemplate`** | Old-LT users only |
+| **`ClosestToNextInstanceHour`** | Straight billing-hour minimisation |
+| **`AllocationStrategy`** | For mixed instances policies — align remaining fleet with strategy |
+| **`Default`** | The composite cascade above |
+
+#### Instance Scale-in Protection (the escape hatch)
+
+Independent of the termination policy, you can flag specific instances as **scale-in protected**. ASG will never terminate a protected instance during a scale-in event — the policy simply skips them and picks another candidate. Useful for:
+
+- Instances processing long-running jobs that shouldn't be interrupted
+- Stateful worker instances the fleet controller wants to preserve
+- Manual protection during debugging
+
+Set via `aws autoscaling set-instance-protection --instance-ids i-0abc --protected-from-scale-in`.
+
+Note: scale-in protection **doesn't** prevent termination from **health-check failures** — only from scale-in events.
+
+#### Exam triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Which instance does ASG terminate — LC vs LT + oldest vs newest + billing hour?"* | **Oldest launch configuration wins** (LC users beat LT users; oldest wins the tiebreaker) |
+| *"Terminate newest instance first (canary rollback)"* | **`NewestInstance`** termination policy |
+| *"Prevent a specific instance from being terminated during scale-in"* | **Instance Scale-in Protection** |
+| *"Terminate oldest instance regardless of launch config"* | **`OldestInstance`** termination policy |
+| *"Custom order of termination criteria"* | List **multiple termination policies** in the ASG config |
+
+> *Default termination policy = cascade: AZ with most instances → launch-config users before launch-template users → oldest launch config / template → closest to next billing hour → random. Launch configurations always die first because they're legacy. The billing-hour criterion is nearly meaningless today (per-second billing) but survives in the default. **Instance Scale-in Protection** flags specific instances as exempt from scale-in termination without changing the policy.*
 
 ### ALB and EC2 Security Groups
 
