@@ -2676,6 +2676,33 @@ Network account (owner)
 - **No duplicate NAT Gateways** — participants share the owner's NAT, saving $$
 - **Simpler hybrid connectivity** — DX / VPN attaches once to the owner's VPC, all participants benefit
 - **Cleaner security** — Security Groups in participant accounts can reference each other across the shared VPC
+- **Cheapest multi-account connectivity in one region** — no peering fees, no TGW attachment fees (~$36/month each), no cross-VPC data transfer
+
+#### The trade-offs (the flip side of "cheapest")
+
+VPC Sharing is dramatically cheaper than Peering or TGW, but you buy that saving with real architectural constraints:
+
+| Trade-off | Detail |
+| --------- | ------ |
+| **Larger blast radius** | All accounts share **one VPC's networking**. A misconfigured route table, NACL, or subnet change affects **every participant simultaneously**. There's no "network boundary" between prod and dev, between teams, or between compliance zones — everyone is in the same broadcast domain from a networking perspective |
+| **IP address contention** | Everyone shares the VPC's **single CIDR block**. Subnet sizing must accommodate the total expected instance count across all participants. A team that suddenly needs 5,000 instances can starve the others. Careful upfront CIDR / subnet planning is critical |
+| **Regulatory / environment isolation** | Some regulators (PCI, HIPAA, GDPR-heavy shops) demand strict **network isolation** between environments. Shared VPC blurs that boundary. For strong isolation, TGW with separate VPCs per account is safer despite the cost |
+| **Owner-account bottleneck** | Only the owner account can create / modify VPC-level resources (route tables, NACLs, IGW, NAT, subnets). Participants can't self-serve — they have to file a ticket / raise a PR against the network team's IaC |
+| **Cross-team troubleshooting** | Problems that would be "your VPC, your problem" in a per-account model now involve the owner network team as an intermediary in every incident |
+| **Security Group sprawl** | Cross-account SG references are powerful but can create a spaghetti of SG-to-SG rules that's hard to audit — every team's SG affects the shared VPC's traffic patterns |
+
+**The cost-vs-isolation trade-off in one line:**
+
+> ***VPC Sharing = cheapest multi-account connectivity, but you sacrifice network isolation between accounts.*** *Transit Gateway = pricier ($36/month per attachment + data-processing), but each account keeps its own VPC and its own isolation guarantees.*
+
+When to accept the trade-off:
+
+| Fit | Not a fit |
+| --- | --------- |
+| Related teams / same trust boundary (e.g., product engineering across squads) | Prod + dev + PCI environments all in one VPC |
+| Small IP footprint per team + generous CIDR | Any team with unpredictable / spiky instance growth |
+| Central networking team already exists and owns the VPC | No dedicated networking team — participants want self-serve |
+| Cost sensitivity dominates | Regulatory / compliance requires network isolation per environment |
 
 #### What participants CAN and CANNOT do
 
