@@ -973,6 +973,39 @@ Tenancy (shared / dedicated-instance / dedicated-host) is orthogonal to pricing 
 | Spot + Dedicated Instance | ✅ (limited) |
 | Spot + Dedicated Host | ❌ |
 
+**VPC-level vs Launch-Template-level tenancy — the precedence matrix (exam-favourite trap):**
+
+Tenancy can be set at TWO layers: on the **VPC itself** and on the **Launch Template / instance-launch API call**. They interact via a strict precedence rule:
+
+> ***VPC-level "dedicated" tenancy ALWAYS overrides instance-level tenancy. VPC-level "default" lets instance-level tenancy take effect.***
+
+| VPC tenancy | LT / instance tenancy | Result |
+| ----------- | ---------------------- | ------ |
+| **default** | default (shared) | **Shared** |
+| **default** | dedicated | **Dedicated** |
+| **dedicated** | default (shared) | **Dedicated** (VPC overrides) |
+| **dedicated** | dedicated | **Dedicated** |
+
+**The one-line rule:** if **either** the VPC OR the LT says "dedicated", the instance is dedicated. **VPC-dedicated is a one-way lock** — once set, every instance in the VPC is dedicated regardless of LT config.
+
+**Why the design exists:** compliance / regulatory. An org sets VPC-tenancy to dedicated so a regulator's "single-tenant hardware" guarantee can't be silently opted out of by any workload landing in that VPC.
+
+**The silent cost trap:** an org that flips a VPC to dedicated inadvertently starts paying the ~10–20% dedicated premium on every workload in that VPC, even ones whose Launch Template requested shared. Audit VPC-level tenancy settings if unexpected bills appear.
+
+**Worked example — the canonical exam question:**
+
+> *"LT1 (dedicated) launches into VPC V1 (default). LT2 (shared) launches into VPC V2 (dedicated). What tenancy do the instances have?"*
+
+- **LT1 + V1**: VPC is default → LT's dedicated setting wins → **Dedicated**
+- **LT2 + V2**: VPC is dedicated → VPC overrides LT → **Dedicated**
+
+Both end up as Dedicated Instances. The trap: LT2 explicitly requested shared, but the VPC's dedicated setting silently overrides it.
+
+**Modifying VPC tenancy later:**
+
+- `default → dedicated` — supported; only affects *new* instances (existing ones keep current tenancy)
+- `dedicated → default` — supported (added ~2020); relaxes the lock
+
 **Decision tree:**
 
 ```
