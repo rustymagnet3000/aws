@@ -1581,6 +1581,38 @@ Multi-AZ NAT setup:
   Private subnet in 1b → NAT GW in 1b → IGW   ← independent failure domains
 ```
 
+**The placement trap (exam-favourite):** ***a NAT Gateway MUST be deployed in a PUBLIC subnet, not a private subnet.*** *A NAT Gateway needs its own path to the internet in order to forward traffic upstream — meaning the subnet it sits in needs a `0.0.0.0/0 → IGW` route, which by definition makes that subnet **public**. Deploying a NAT in a private subnet leaves it with no upstream path — every packet gets black-holed.*
+
+```
+✅ CORRECT — NAT Gateway in PUBLIC subnet:
+   Public subnet (route: 0.0.0.0/0 → IGW)
+      └── NAT Gateway (has Elastic IP)
+             ▲
+             │ forwards outbound packets to IGW → internet ✅
+   Private subnet (route: 0.0.0.0/0 → NAT Gateway)
+      └── EC2 instance
+             │
+             │ software update requests
+             ▼
+             NAT Gateway (in the public subnet above)
+
+❌ WRONG — NAT Gateway in PRIVATE subnet:
+   Private subnet (route: 0.0.0.0/0 → NAT Gateway)
+      ├── EC2 instance ─── 0.0.0.0/0 → nat-a
+      └── NAT Gateway "nat-a"
+             │
+             │  Where does nat-a route to? This subnet has NO route to IGW.
+             ▼
+             ❌ PACKETS BLACK-HOLED
+```
+
+**Two signals that confirm NAT Gateway = public subnet:**
+
+- NAT Gateway requires an **Elastic IP** (public IPv4) — private subnets can't meaningfully route packets to/from a public IP without an IGW
+- The NAT Gateway's role is to be the **bridge to the internet** — the bridge lives on the side facing the internet (public subnet)
+
+**Exam distractor:** *"Deploy three NAT Gateways, one in each **private subnet** in each AZ"* is a classic wrong option. The correct wording is always *"one NAT Gateway in each **public subnet**"*.
+
 **The 55,000 connection limit gotcha:** a single NAT Gateway supports up to **55,000 simultaneous connections per unique destination (IP + port)**. If hundreds of EC2 instances all hammer the same external endpoint (e.g. a popular SaaS API on the same hostname:port), you can exhaust this and see intermittent connection failures — but only to *that* destination. Calls to other destinations work fine. **Fix:** distribute traffic across multiple destinations / endpoints, deploy multiple NAT Gateways in the same AZ + split subnets across them, or use **VPC Endpoints** for AWS services to bypass NAT entirely. Exam trigger: *"hundreds of EC2 instances seeing intermittent connection drops to a single external API but other traffic works"* → **NAT Gateway 55k connection limit per destination**.
 
 **NAT exam triggers:**
