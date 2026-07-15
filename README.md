@@ -13293,12 +13293,31 @@ The user's IAM policy (or a group/SCP policy) has an explicit Deny. The bucket p
 
 **S3 encryption:**
 
-| Type | How it works |
-| ---- | ------------ |
-| SSE-S3 | AWS manages the keys entirely — default encryption for new buckets |
-| SSE-KMS | You use a KMS key — audit trail via CloudTrail, can control who has access to the key |
-| SSE-C | You provide the encryption key with every request — AWS doesn't store it |
-| Client-side | You encrypt before uploading — AWS never sees the plaintext |
+| Type | How it works | Different data key per object? |
+| ---- | ------------ | ------------------------------ |
+| SSE-S3 | AWS manages the keys entirely — default encryption for new buckets | ✅ **Yes — envelope encryption** (unique data key per object under an AWS master key) |
+| SSE-KMS | You use a KMS key — audit trail via CloudTrail, can control who has access to the key | ✅ **Yes — envelope encryption** (unique data key per object under your CMK) |
+| SSE-C | You provide the encryption key with every request — AWS doesn't store it | ✅ Yes — customer supplies the key per PUT/GET |
+| Client-side | You encrypt before uploading — AWS never sees the plaintext | ✅ Yes — client controls fully |
+
+**The "different key per file" reading trap (exam-favourite):**
+
+*"Encrypt each file with a different encryption key"* on its own is satisfied by ALL FOUR options because envelope encryption gives every object its own unique data encryption key. **This is the SSE-S3 default behaviour** — the simplest option that meets the requirement without customer key management.
+
+Don't over-read this phrase as "customer must supply the keys." Only escalate to SSE-C or CSE when the question also says:
+
+- *"Customer must retain sole custody of keys"* → SSE-C or CSE
+- *"AWS must never see the encryption keys"* → SSE-C or CSE
+- *"Encrypt before sending to AWS"* → CSE
+- *"AWS must never see the plaintext"* → CSE
+
+Escalate to SSE-KMS when:
+
+- *"Audit trail of who used which key"* → SSE-KMS (CloudTrail)
+- *"Customer-managed KMS key with rotation and access control"* → SSE-KMS
+- *"Different KMS key for different data classifications"* → SSE-KMS with multiple keys
+
+**Default answer for "encrypt each file with a different key" without other constraints: SSE-S3.** The envelope encryption gives per-object data keys with zero customer key-management burden.
 
 **Exam triggers:**
 - *"user can't access S3 despite bucket policy allowing it"* → explicit Deny in IAM policy
@@ -13306,6 +13325,8 @@ The user's IAM policy (or a group/SCP policy) has an explicit Deny. The bucket p
 - *"give temporary access to a private S3 object"* → pre-signed URL
 - *"audit who accessed which encryption key"* → SSE-KMS (CloudTrail logs key usage)
 - *"compliance requires customer-managed encryption keys"* → SSE-KMS or SSE-C
+- *"encrypt each file with a different key, no other constraints"* → **SSE-S3** (envelope encryption per object by default)
+- *"customer must retain sole custody of encryption keys"* → **SSE-C** (per-request) or **CSE** (client-side)
 
 ### S3 Access Points
 
