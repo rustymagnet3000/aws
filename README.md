@@ -13725,10 +13725,39 @@ Partner → SFTP → AWS Transfer Family → S3 bucket
 - You get a DNS endpoint (or bring your own domain with Route 53)
 - Pay per protocol endpoint per hour + data transferred
 
+**Managed Workflows — the post-upload trigger (exam-favourite):**
+
+Transfer Family supports **Managed Workflows** — automated processing that fires **the moment a file upload completes**. This is the Transfer-Family-native way to do "process file immediately after upload" — preferred over generic S3 Event Notifications for SFTP scenarios.
+
+```
+SFTP upload completes → Transfer Family Managed Workflow → chain of steps:
+   1. Copy / move to another S3 location
+   2. Decrypt (built-in PGP decryption)
+   3. Tag S3 object with metadata
+   4. Custom step → invoke Lambda for validation / transformation / routing
+   5. Delete source file after processing
+```
+
+**Why Managed Workflows beats S3 Event Notification for SFTP flows:**
+
+| | **Managed Workflows** | **S3 Event Notification** |
+| - | ---------------------- | -------------------------- |
+| Trigger | **After SFTP upload completes** (Transfer Family-specific) | Any `ObjectCreated` (SDK / SFTP / copy / anything) |
+| Multi-step orchestration | Built-in (chained steps) | Would need Step Functions / multi-Lambda |
+| Per-user customisation | Different workflow per SFTP user | Bucket-wide |
+| Audit trail | Per-file workflow status in Transfer Family | CloudWatch Logs on Lambda |
+| Modern AWS-recommended pattern | ✅ For Transfer Family scenarios | ✅ For generic S3 write events |
+
+**Exam signal for Managed Workflows:** *"process files **immediately after upload completes**"* — the "upload complete" phrasing is Transfer Family-specific. Generic "when files land in S3" without the SFTP-completion emphasis can be either pattern.
+
 **Exam triggers:**
 - *"migrate an existing SFTP server to AWS"* → Transfer Family
 - *"partners upload files via SFTP into S3"* → Transfer Family
 - *"managed FTP endpoint"* → Transfer Family
+- *"process file **immediately after SFTP upload completes**"* → **Transfer Family + Managed Workflow → Lambda**
+- *"multi-step post-upload processing (decrypt, validate, tag, move)"* → **Managed Workflow with chained steps**
+- *"PGP-encrypted files via SFTP"* → **Managed Workflow with built-in Decrypt step**
+- *"HA SFTP endpoint across multiple AZs"* → Transfer Family (multi-AZ by default; deploy VPC endpoint type across ≥2 AZs)
 
 **Transfer Family vs DataSync:** Transfer Family is for **external parties pushing files to you** using standard FTP/SFTP protocols. DataSync is for **you moving data** between on-prem and AWS or between AWS services. Different use cases.
 
