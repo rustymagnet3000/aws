@@ -56,6 +56,8 @@
   - [CloudWatch Alarms and Scaling](#cloudwatch-alarms-and-scaling)
   - [Scaling Cooldowns](#scaling-cooldowns)
   - [Health Checks](#health-checks)
+  - [Maintenance on a Single ASG Instance — the Standby flow](#maintenance-on-a-single-asg-instance--the-standby-flow)
+  - [ASG default termination policy — which instance dies first](#asg-default-termination-policy--which-instance-dies-first)
   - [ALB and EC2 Security Groups](#alb-and-ec2-security-groups)
   - [EC2 without a Public IP](#ec2-without-a-public-ip)
 - [Amazon CloudWatch](#amazon-cloudwatch)
@@ -385,6 +387,17 @@
 - [Hybrid Cloud Storage](#hybrid-cloud-storage)
   - [AWS Storage Gateway](#aws-storage-gateway)
   - [Amazon FSx](#amazon-fsx)
+- [AWS Outposts](#aws-outposts)
+  - [What Outposts actually is](#what-outposts-actually-is)
+  - [Form factors](#form-factors)
+  - [Services that run on Outposts](#services-that-run-on-outposts)
+  - [Networking — Local Gateway (LGW)](#networking--local-gateway-lgw)
+  - [Resilience — what happens if the link to the parent region drops](#resilience--what-happens-if-the-link-to-the-parent-region-drops)
+  - [Capacity and limitations](#capacity-and-limitations)
+  - [How EKS on Outposts fits the data-residency question](#how-eks-on-outposts-fits-the-data-residency-question)
+  - [Outposts vs EKS Anywhere — the disambiguator](#outposts-vs-eks-anywhere--the-disambiguator)
+  - [What Outposts is NOT](#what-outposts-is-not)
+  - [Exam Triggers for Outposts](#exam-triggers-for-outposts)
 - [CloudFront and Global Accelerator](#cloudfront-and-global-accelerator)
   - [CloudFront Overview](#cloudfront-overview)
   - [CloudFront vs S3 Transfer Acceleration](#cloudfront-vs-s3-transfer-acceleration)
@@ -923,10 +936,75 @@ Four ways to pay for EC2 — the exam tests whether you can pick the cheapest op
 - Best for: batch processing, data analysis, CI/CD builds, ML training, anything that can handle interruption
 - **Not for:** databases, web servers, or anything that can't tolerate sudden termination
 
+**Dedicated Instances:**
+- Physical hardware **dedicated to your AWS account** — no other AWS customers on the same host
+- AWS still picks which host, and may move you across hosts on stop/start
+- ~10–20% premium over shared tenancy
+- Billed **per instance**
+- Best for: regulatory guidelines demanding single-tenant hardware without per-socket licensing or host affinity
+
 **Dedicated Hosts:**
-- A physical server dedicated to you — no other AWS customers on the hardware
-- Most expensive option
-- Use case: software licensing that's per-physical-core/socket (Oracle, Windows Server), or compliance requirements mandating dedicated hardware
+- A **specific physical server** dedicated to you — you see host ID, sockets, cores
+- Most expensive option — pay for the **whole host** regardless of instance count
+- Best for: BYOL software licensed **per physical core / socket** (Oracle, Windows Server, SQL Server), host affinity across restarts, compliance requiring visibility into hardware attributes
+
+**Dedicated Instances vs Dedicated Hosts — the exam-tested split:**
+
+| | **Dedicated Instance** | **Dedicated Host** |
+| - | ----------------------- | ------------------- |
+| Single-tenant hardware? | ✅ Yes | ✅ Yes |
+| Billing granularity | **Per instance** | **Per host** (pay for whole server) |
+| Visibility into physical host | ❌ No | ✅ Yes (host ID, sockets, cores) |
+| Host affinity across restart | ❌ No — AWS may relocate | ✅ Yes (Host Affinity setting) |
+| BYOL per-socket / per-core licences (Oracle, Windows Server) | ⚠️ Limited | ✅ Required |
+| Cost | Cheaper — small premium over shared | More expensive — pay for the whole box |
+| Pick when | "Single-tenant hardware, most cost-effective" | Per-socket licensing OR host affinity OR host visibility |
+
+**Tenancy and pricing are independent axes:**
+
+Tenancy (shared / dedicated-instance / dedicated-host) is orthogonal to pricing (On-Demand / Reserved / Spot / Savings Plans). You can combine most pairs — e.g., "Reserved Dedicated Instances" (long-term commit + single-tenant hardware).
+
+| Pricing × Tenancy | Available? |
+| ------------------ | ---------- |
+| On-Demand / Reserved / Savings Plans + Shared | ✅ |
+| On-Demand / Reserved / Savings Plans + Dedicated Instance | ✅ |
+| On-Demand / Reserved / Savings Plans + Dedicated Host | ✅ |
+| Spot + Shared | ✅ |
+| Spot + Dedicated Instance | ✅ (limited) |
+| Spot + Dedicated Host | ❌ |
+
+**VPC-level vs Launch-Template-level tenancy — the precedence matrix (exam-favourite trap):**
+
+Tenancy can be set at TWO layers: on the **VPC itself** and on the **Launch Template / instance-launch API call**. They interact via a strict precedence rule:
+
+> ***VPC-level "dedicated" tenancy ALWAYS overrides instance-level tenancy. VPC-level "default" lets instance-level tenancy take effect.***
+
+| VPC tenancy | LT / instance tenancy | Result |
+| ----------- | ---------------------- | ------ |
+| **default** | default (shared) | **Shared** |
+| **default** | dedicated | **Dedicated** |
+| **dedicated** | default (shared) | **Dedicated** (VPC overrides) |
+| **dedicated** | dedicated | **Dedicated** |
+
+**The one-line rule:** if **either** the VPC OR the LT says "dedicated", the instance is dedicated. **VPC-dedicated is a one-way lock** — once set, every instance in the VPC is dedicated regardless of LT config.
+
+**Why the design exists:** compliance / regulatory. An org sets VPC-tenancy to dedicated so a regulator's "single-tenant hardware" guarantee can't be silently opted out of by any workload landing in that VPC.
+
+**The silent cost trap:** an org that flips a VPC to dedicated inadvertently starts paying the ~10–20% dedicated premium on every workload in that VPC, even ones whose Launch Template requested shared. Audit VPC-level tenancy settings if unexpected bills appear.
+
+**Worked example — the canonical exam question:**
+
+> *"LT1 (dedicated) launches into VPC V1 (default). LT2 (shared) launches into VPC V2 (dedicated). What tenancy do the instances have?"*
+
+- **LT1 + V1**: VPC is default → LT's dedicated setting wins → **Dedicated**
+- **LT2 + V2**: VPC is dedicated → VPC overrides LT → **Dedicated**
+
+Both end up as Dedicated Instances. The trap: LT2 explicitly requested shared, but the VPC's dedicated setting silently overrides it.
+
+**Modifying VPC tenancy later:**
+
+- `default → dedicated` — supported; only affects *new* instances (existing ones keep current tenancy)
+- `dedicated → default` — supported (added ~2020); relaxes the lock
 
 **Decision tree:**
 
@@ -938,15 +1016,92 @@ Is the workload steady and predictable (runs 24/7)?
 └── No
     ├── Can it handle interruption? → Spot Instance (cheapest)
     └── Can't handle interruption? → On-Demand
-Need dedicated hardware (licensing/compliance)? → Dedicated Host
+
+Need dedicated hardware?
+├── Just single-tenant for compliance, most cost-effective → Dedicated Instance
+├── Per-socket / per-core licensing (Oracle, Windows Server) → Dedicated Host
+├── Host affinity or visibility into physical attributes → Dedicated Host
+└── AWS hardware in your own DC → AWS Outposts (different service)
 ```
 
 **Exam triggers:**
 - *"reduce costs for a database running 24/7"* → Reserved Instance
 - *"flexible commitment across multiple instance types"* → Savings Plan
 - *"cheapest option for batch processing that can retry"* → Spot Instance
-- *"software licensed per physical socket"* → Dedicated Host
 - *"short-term, unpredictable workload"* → On-Demand
+- *"single-tenant hardware, most cost-effective, regulatory guideline"* → **Dedicated Instance**
+- *"software licensed per physical socket / core (Oracle, Windows Server BYOL)"* → **Dedicated Host**
+- *"visibility into sockets / cores / host ID"* → **Dedicated Host**
+- *"instance stays on the same physical server across restarts"* → **Dedicated Host** (Host Affinity)
+
+#### Layered demand — mixing pricing models (the recurring exam pattern)
+
+The exam loves to give you a workload with **three tiers of demand** and ask which mix is most cost-optimal. The trick is to match each tier to the pricing model that fits its **utilisation pattern**, not the workload type.
+
+```
+Demand profile:
+─────────────────────────────────────────────
+Spike (e.g. 220 instances)     ████ ██ ███ ██   ← bursty, low total hours
+─────────────────────────────────────────────
+Steady-state (e.g. 60 above    ████████████████
+baseline, 80% of the time)     ↑ predictable, high utilisation
+─────────────────────────────────────────────
+Baseline (e.g. 20 instances)   ████████████████
+                               ↑ always-on 24x7
+─────────────────────────────────────────────
+
+Right pricing for each tier:
+- Baseline (100% utilisation)        → Reserved / Savings Plans (cheapest for sustained)
+- Steady-state (>60-75% utilisation) → Reserved / Savings Plans (past break-even)
+- Spike (<25% utilisation, bursty)   → Spot (if interruption-tolerant) or On-Demand
+```
+
+**The decision rule — utilisation drives the choice, not workload type:**
+
+| Utilisation pattern | Pricing model |
+| ------------------- | ------------- |
+| **100% always on (baseline)** | **Reserved Instances or Savings Plans** — always |
+| **>~60–75% utilisation** | **Reserved / Savings Plans** — past the RI break-even point |
+| **<~25% bursty, interruption-tolerant** (Spark, Hadoop, batch, ML training) | **Spot** — up to 90% off, AWS can reclaim with 2 min notice |
+| **<~25% bursty, can't be interrupted** (occasional on-demand jobs, dev/test) | **On-Demand** |
+| **Niche: per-socket licensing or compliance** | **Dedicated Host** |
+
+**Worked example — the canonical exam pattern (20 / 80 / 300):**
+
+> *"Workload needs 20 instances minimum 24x7, 80 instances 80% of the time, 300 instances during spikes. Most cost-optimal?"*
+
+| Tier | Instances | Utilisation | Pricing |
+| ---- | --------- | ----------- | ------- |
+| **Baseline always-on** | 20 | 100% | **Reserved / Savings Plans** |
+| **Above baseline, steady** | 60 (= 80 − 20) | 80% | **Reserved / Savings Plans** (past break-even) |
+| **Spike capacity** | 220 (= 300 − 80) | Burst | **Spot Instances** (big data is interruption-tolerant) |
+
+**Total mix: 80 Reserved/Savings Plans + 220 Spot.**
+
+Why the obvious-looking traps lose:
+
+| Trap | Why it loses |
+| ---- | ------------ |
+| **All 300 On-Demand** | Pays sticker price for capacity that's mostly there 24x7 — skips the RI discount on the always-on tier |
+| **All 300 Reserved** | Over-commits to peak capacity that's rarely needed — paying for 220 idle RIs most of the time |
+| **All 300 Spot** | Baseline needs guaranteed availability — Spot can be reclaimed with 2 min notice |
+| **20 Reserved + 280 Spot** | Wastes savings on the 60-instance steady-state tier (80% utilisation = prime RI territory) |
+| **20 Reserved + 60 On-Demand + 220 Spot** | Right shape but pays On-Demand sticker on the 80%-utilised tier |
+
+**The mental model:**
+
+> *Pricing strategy is **utilisation-driven**, not workload-driven. **Always-on baseline → Reserved / Savings Plans.** **>75% utilisation → Reserved / Savings Plans** (past the RI break-even). **Bursty + interruption-tolerant → Spot.** **Bursty + interruption-intolerant → On-Demand.** Real workloads layer all three tiers — the answer is the MIX. Picking "all Reserved" is the over-commitment trap; "all Spot" is the availability trap; "all On-Demand" is the discount-skipping trap.*
+
+**Exam triggers for the layered pattern:**
+
+| Phrasing | Implication |
+| -------- | ----------- |
+| *"Baseline capacity needed 24x7"* | **Reserved / Savings Plans** for that tier |
+| *"N% of the time we need M instances"* | If N > 60–75%, that's a **Reserved / Savings Plans** tier |
+| *"Spikes during which we need extra capacity"* | **Spot** (if big data / interruption-tolerant) or **On-Demand** (if not) |
+| *"Most cost-optimal mix"* | Layered — almost never "all of one model" |
+| *"Fault-tolerant / interruption-tolerant / big data / Spark / Hadoop"* | **Spot** is on the table for the spike tier |
+| *"Mission-critical, can't be interrupted"* | Spike tier becomes **On-Demand**, not Spot |
 
 ### AMI
 
@@ -1425,6 +1580,38 @@ Multi-AZ NAT setup:
   Private subnet in 1a → NAT GW in 1a → IGW
   Private subnet in 1b → NAT GW in 1b → IGW   ← independent failure domains
 ```
+
+**The placement trap (exam-favourite):** ***a NAT Gateway MUST be deployed in a PUBLIC subnet, not a private subnet.*** *A NAT Gateway needs its own path to the internet in order to forward traffic upstream — meaning the subnet it sits in needs a `0.0.0.0/0 → IGW` route, which by definition makes that subnet **public**. Deploying a NAT in a private subnet leaves it with no upstream path — every packet gets black-holed.*
+
+```
+✅ CORRECT — NAT Gateway in PUBLIC subnet:
+   Public subnet (route: 0.0.0.0/0 → IGW)
+      └── NAT Gateway (has Elastic IP)
+             ▲
+             │ forwards outbound packets to IGW → internet ✅
+   Private subnet (route: 0.0.0.0/0 → NAT Gateway)
+      └── EC2 instance
+             │
+             │ software update requests
+             ▼
+             NAT Gateway (in the public subnet above)
+
+❌ WRONG — NAT Gateway in PRIVATE subnet:
+   Private subnet (route: 0.0.0.0/0 → NAT Gateway)
+      ├── EC2 instance ─── 0.0.0.0/0 → nat-a
+      └── NAT Gateway "nat-a"
+             │
+             │  Where does nat-a route to? This subnet has NO route to IGW.
+             ▼
+             ❌ PACKETS BLACK-HOLED
+```
+
+**Two signals that confirm NAT Gateway = public subnet:**
+
+- NAT Gateway requires an **Elastic IP** (public IPv4) — private subnets can't meaningfully route packets to/from a public IP without an IGW
+- The NAT Gateway's role is to be the **bridge to the internet** — the bridge lives on the side facing the internet (public subnet)
+
+**Exam distractor:** *"Deploy three NAT Gateways, one in each **private subnet** in each AZ"* is a classic wrong option. The correct wording is always *"one NAT Gateway in each **public subnet**"*.
 
 **The 55,000 connection limit gotcha:** a single NAT Gateway supports up to **55,000 simultaneous connections per unique destination (IP + port)**. If hundreds of EC2 instances all hammer the same external endpoint (e.g. a popular SaaS API on the same hostname:port), you can exhaust this and see intermittent connection failures — but only to *that* destination. Calls to other destinations work fine. **Fix:** distribute traffic across multiple destinations / endpoints, deploy multiple NAT Gateways in the same AZ + split subnets across them, or use **VPC Endpoints** for AWS services to bypass NAT entirely. Exam trigger: *"hundreds of EC2 instances seeing intermittent connection drops to a single external API but other traffic works"* → **NAT Gateway 55k connection limit per destination**.
 
@@ -2274,6 +2461,75 @@ This is the most-tested PrivateLink decision:
 
 If you only need to share *one service* (not the whole network) and want CIDR-overlap immunity, PrivateLink wins. The trade-off: it's per-service plumbing, so dozens of services means dozens of endpoints.
 
+#### Worked example — cross-account RDS access (the classic exam trap)
+
+**Scenario:** Biotech research company needs to query a partner's RDS for MySQL in the partner's AWS account. The research VPC has **no internet, no Direct Connect, no VPN**. Minimise complexity, meet data security requirements.
+
+**Wrong answer (looks right):** VPC Peering.
+
+| Why peering fails this question | |
+| --- | --- |
+| Exposes **whole VPCs** at the network layer | Fails "data security" — far more reachable than just the RDS |
+| Needs **non-overlapping CIDRs** | Two random accounts will almost certainly clash |
+| Requires route table edits on both sides | Fails "minimise complexity" |
+| **Symmetric** — partner can also reach back into research VPC | Not what was asked |
+
+**Right answer:** **PrivateLink (VPC Endpoint Service)**.
+
+```
+PARTNER ACCOUNT (provider)               RESEARCH ACCOUNT (consumer)
+┌─────────────────────────────┐          ┌────────────────────────────────┐
+│ Partner VPC                 │          │ Research VPC                   │
+│                             │          │ (no internet / DX / VPN)       │
+│  ┌────────┐                 │          │                                │
+│  │ RDS    │◄─── target IP   │          │  ┌──────────────────┐          │
+│  │ MySQL  │                 │          │  │ Analytics app    │          │
+│  └────────┘                 │          │  └────────┬─────────┘          │
+│      ▲                      │          │           │                    │
+│      │                      │          │           ▼ (port 3306)        │
+│  ┌─────────┐                │          │  ┌──────────────────┐          │
+│  │ NLB     │                │          │  │ Interface VPC    │          │
+│  └────┬────┘                │          │  │ Endpoint (ENI)   │          │
+│       │                     │          │  └────────┬─────────┘          │
+│  ┌─────────────────┐        │          │           │                    │
+│  │ VPC Endpoint    │◄───────┼──────────┼───────────┘ PrivateLink fabric │
+│  │ Service         │        │  consumer initiates only                  │
+│  └─────────────────┘        │                                           │
+└─────────────────────────────┘          └────────────────────────────────┘
+```
+
+Setup steps:
+
+1. **Partner** puts an NLB in front of the RDS instance (target group = `IP` target type, pointing to RDS endpoint IPs)
+2. **Partner** creates a VPC Endpoint Service backed by the NLB
+3. **Partner** adds the research account's principal ARN to the allowed-principals list
+4. **Research** creates an Interface VPC Endpoint targeting the partner's service name
+5. AWS provisions an ENI in research VPC subnets with a private IP
+6. Research app connects to the endpoint's private DNS on port 3306 → traffic flows through PrivateLink to partner NLB → RDS
+
+Why this fits every constraint:
+
+| Constraint | Met because |
+| ---------- | ----------- |
+| No internet / DX / VPN | PrivateLink uses the AWS backbone via the ENI in research VPC |
+| Cross-account | PrivateLink is designed for this |
+| Minimise complexity | No route tables, no CIDR coordination, no symmetric peering |
+| Data security | Only the RDS port is exposed — nothing else in the partner VPC is reachable |
+| One-way | Research initiates; partner can't reach into research VPC |
+
+**The keyword decoder for this question shape:**
+
+| Phrase | Points to |
+| ------ | --------- |
+| *"cross-account access to one specific service"* | **PrivateLink** |
+| *"minimise complexity"* + *"no CIDR coordination"* | **PrivateLink** |
+| *"no internet, no DX, no VPN"* + *"cross-account"* | **PrivateLink** |
+| *"expose RDS / API / EC2 service to a partner account"* | **PrivateLink** (with NLB in front) |
+| *"connect two VPCs at the network layer"* (broad access OK) | **VPC Peering** |
+| *"many VPCs in our org need to reach each other"* | **Transit Gateway** |
+
+> *I got this wrong on a practice exam by picking VPC Peering. Peering "works" for this scenario but loses on **complexity** (CIDR coordination, route tables) and **security** (exposes the whole VPC, not just the RDS). PrivateLink exposes one service through an NLB — narrow, asymmetric, CIDR-agnostic. When the question stresses **"cross-account + one service + minimise complexity + data security"**, the answer is PrivateLink even when peering would also connect the networks.*
+
 #### Acceptance vs allow-listing
 
 Provider controls who can connect via two mechanisms:
@@ -2485,6 +2741,33 @@ Network account (owner)
 - **No duplicate NAT Gateways** — participants share the owner's NAT, saving $$
 - **Simpler hybrid connectivity** — DX / VPN attaches once to the owner's VPC, all participants benefit
 - **Cleaner security** — Security Groups in participant accounts can reference each other across the shared VPC
+- **Cheapest multi-account connectivity in one region** — no peering fees, no TGW attachment fees (~$36/month each), no cross-VPC data transfer
+
+#### The trade-offs (the flip side of "cheapest")
+
+VPC Sharing is dramatically cheaper than Peering or TGW, but you buy that saving with real architectural constraints:
+
+| Trade-off | Detail |
+| --------- | ------ |
+| **Larger blast radius** | All accounts share **one VPC's networking**. A misconfigured route table, NACL, or subnet change affects **every participant simultaneously**. There's no "network boundary" between prod and dev, between teams, or between compliance zones — everyone is in the same broadcast domain from a networking perspective |
+| **IP address contention** | Everyone shares the VPC's **single CIDR block**. Subnet sizing must accommodate the total expected instance count across all participants. A team that suddenly needs 5,000 instances can starve the others. Careful upfront CIDR / subnet planning is critical |
+| **Regulatory / environment isolation** | Some regulators (PCI, HIPAA, GDPR-heavy shops) demand strict **network isolation** between environments. Shared VPC blurs that boundary. For strong isolation, TGW with separate VPCs per account is safer despite the cost |
+| **Owner-account bottleneck** | Only the owner account can create / modify VPC-level resources (route tables, NACLs, IGW, NAT, subnets). Participants can't self-serve — they have to file a ticket / raise a PR against the network team's IaC |
+| **Cross-team troubleshooting** | Problems that would be "your VPC, your problem" in a per-account model now involve the owner network team as an intermediary in every incident |
+| **Security Group sprawl** | Cross-account SG references are powerful but can create a spaghetti of SG-to-SG rules that's hard to audit — every team's SG affects the shared VPC's traffic patterns |
+
+**The cost-vs-isolation trade-off in one line:**
+
+> ***VPC Sharing = cheapest multi-account connectivity, but you sacrifice network isolation between accounts.*** *Transit Gateway = pricier ($36/month per attachment + data-processing), but each account keeps its own VPC and its own isolation guarantees.*
+
+When to accept the trade-off:
+
+| Fit | Not a fit |
+| --- | --------- |
+| Related teams / same trust boundary (e.g., product engineering across squads) | Prod + dev + PCI environments all in one VPC |
+| Small IP footprint per team + generous CIDR | Any team with unpredictable / spiky instance growth |
+| Central networking team already exists and owns the VPC | No dedicated networking team — participants want self-serve |
+| Cost sensitivity dominates | Regulatory / compliance requires network isolation per environment |
 
 #### What participants CAN and CANNOT do
 
@@ -3575,6 +3858,19 @@ Real-world examples:
 - **Genomics pipeline (Max I/O + Provisioned)** — 500 instances all reading a large dataset simultaneously. Max I/O handles the parallelism; Provisioned throughput guarantees the MB/s regardless of how much data is stored.
 - **CI/CD cache (General Purpose + Elastic)** — build frequency varies by team activity. Elastic mode handles the unpredictability without over-provisioning.
 
+**Physical-world analogy (the mental anchor):**
+
+| AWS storage | Real-world equivalent | Why |
+| ----------- | --------------------- | --- |
+| **Instance Store** | **NVMe SSD soldered to your laptop motherboard** | On the same physical board, PCIe-direct, microsecond latency. Can't detach. If the laptop dies, data dies with it |
+| **EBS** | **Synology / NAS on your home network** | Mounted over the network — slower than local but persists across machine reboots, can mount on another machine in the same network |
+| **EFS** | **A shared SMB / NFS share at the office** | Many machines mount the same filesystem simultaneously |
+| **S3** | **Dropbox / OneDrive** | Object store accessed via API, durable, accessible from anywhere |
+
+> *Instance Store is the laptop's built-in SSD; EBS is the NAS you mount over Wi-Fi.*
+
+The single fact that explains the performance gap: **EBS goes over the network, Instance Store doesn't.** USB is the wrong analogy — USB is slow and external, Instance Store is the fastest and most internal storage AWS offers.
+
 **EBS vs EFS vs Instance Store — when to pick which:**
 
 | | EBS | EFS | Instance Store |
@@ -3598,6 +3894,61 @@ Why not the others:
 - **Instance Store** — ephemeral, single instance
 
 The keyword pattern: "shared" + "dynamically loaded" + "Linux" → **EFS**.
+
+### The billing-model gotcha — provisioned vs metered storage
+
+The single most-tested storage pricing trap on the exam:
+
+| Service | Billing model | What you pay for |
+| ------- | ------------- | ---------------- |
+| **EBS** | **Provisioned** | The **size of the volume you allocated** — regardless of how much data you actually wrote |
+| **S3** | **Metered** | The actual GB of objects stored |
+| **EFS** | **Metered** | The actual GB of files stored |
+
+> ***An empty 100 GB EBS volume costs the same as a full one.*** *S3 and EFS scale the bill with usage; EBS doesn't.*
+
+**Worked example — 1 GB file on each service:**
+
+| Storage | Per-GB-month | Billable GB | Monthly cost |
+| ------- | ------------- | ----------- | ------------- |
+| **S3 Standard** | ~$0.023 | 1 GB (actual) | **~$0.023** |
+| **EFS Standard** | ~$0.30 | 1 GB (actual) | **~$0.30** |
+| **EBS gp2 (100 GB volume)** | ~$0.10 | **100 GB (provisioned)** | **~$10.00** |
+
+Same 1 GB file → roughly **400× spread**, all because EBS charges for the volume size, not the data.
+
+**Order from cheapest to most expensive: S3 < EFS < EBS (when over-provisioned).**
+
+**The exam-trap phrasings:**
+
+| Question phrasing | Lesson it tests |
+| ----------------- | --------------- |
+| *"Cheapest storage for a 1 GB file"* | **S3** — lowest per-GB rate, pays only for the GB |
+| *"Most expensive of S3 / EBS / EFS for the same file"* | **EBS** when the volume is over-provisioned (provisioning trap); **EFS** by raw per-GB rate |
+| *"Why didn't our EBS bill drop after deleting most of the data?"* | EBS bills the provisioned size — must **shrink the volume or delete it** to reduce the bill |
+| *"Storage that scales the bill with actual usage"* | **S3 or EFS** (both metered) |
+| *"How to reduce EBS costs"* | Right-size the volume; don't over-provision; or migrate cold data to S3 |
+
+**The price ladder worth memorising (per-GB-month, broad strokes):**
+
+```
+~$0.001  ── S3 Glacier Deep Archive
+~$0.004  ── S3 Glacier Flexible Retrieval
+~$0.008  ── EFS One Zone-IA
+~$0.0125 ── S3 Standard-IA
+~$0.023  ── S3 Standard                ← cheapest hot tier
+~$0.025  ── EFS Standard-IA
+~$0.08   ── EBS gp3
+~$0.10   ── EBS gp2 (provisioned!)
+~$0.125  ── EBS io2 Block Express     (+ IOPS charges)
+~$0.30   ── EFS Standard                ← priciest hot tier per-GB
+```
+
+Rough order: **S3 cold < S3 Standard < EBS gp3 < EFS Standard**. EFS Standard is the **priciest by per-GB rate**; EBS becomes the priciest in practice when volumes are over-provisioned.
+
+**Mental model:**
+
+> *Three different billing models. **S3 = per object stored** (cheapest hot tier, pay-for-what-you-use). **EFS = per actual filesystem usage** (highest hot-tier per-GB rate but still pay-for-what-you-use). **EBS = per provisioned volume size** (regardless of fill rate — the gotcha). For the same 1 GB file on an over-provisioned EBS volume, EBS ends up the most expensive of the three by orders of magnitude — because of the provisioning model, not the per-GB rate.*
 
 ## Scaling and ELB
 
@@ -3875,6 +4226,41 @@ Scaling policies:
 
 Predictive scaling can be combined with target tracking — predictive handles the ramp-up, target tracking handles unexpected spikes.
 
+**The keyword decoder for picking a policy (exam-favourite):**
+
+| Question phrasing | Right policy |
+| ----------------- | ------------ |
+| *"Known clock-time event"* — last day of month, every Monday 9am, daily at 02:00 | **Scheduled** |
+| *"Maintain CPU around X"* / *"keep average requests per target close to N"* | **Target tracking** (the words *around* / *close to* are the tell) |
+| *"Add 1 if CPU 60–70%, 2 if 70–80%, 4 if >80%"* (explicit tiers) | **Step scaling** |
+| *"Anticipate a recurring weekly pattern from history"* (not a fixed clock time) | **Predictive** |
+| *"Fixed action when alarm breaches threshold, then wait"* (legacy) | **Simple scaling** |
+
+**Worked example — why Scheduled wins for clock-time peaks:**
+
+> *"Payroll runs at a designated hour on the last day of every month. Need 10 instances during that hour, 2 otherwise."*
+
+This is the classic Scheduled-scaling exam trap. **Target / Step / Simple all fail** because they're reactive — they wait for CPU (or another metric) to breach a threshold *after* the workload has started, then add capacity. By the time replacement instances boot and warm up, the payroll job has already been crawling for several minutes. The user experiences the lag.
+
+Two scheduled actions solve it proactively:
+
+```
+Schedule: last-day-of-month, 14:00 UTC → desired=10, min=10  (BEFORE the peak)
+Schedule: last-day-of-month, 15:00 UTC → desired=2,  min=2   (AFTER the peak)
+```
+
+Capacity is already in place when the workload begins → zero lag.
+
+| Why each reactive policy fails this scenario | |
+| --- | --- |
+| **Target tracking** | Reactive — won't add instances until CPU already breaches target. Several minutes of degraded performance during boot + warm-up |
+| **Step scaling** | Same reactive lag — multiple tiers don't help if the spike is instant |
+| **Simple scaling** | Same reactive lag, plus cool-down stretches it further |
+| **Predictive** | Could work, but overkill when the schedule is *exactly known*. AWS prefers explicit Scheduled when you can name the time |
+| **Larger instance type (vertical)** | Wasteful for 29 days/month |
+
+**Anchor rule:** *Question gives you a **known clock time + recurrence** → **Scheduled scaling**, even if other policies "could also work" reactively.*
+
 If an instance fails a health check, ASG terminates it and launches a replacement automatically.
 
 ### CloudWatch Alarms and Scaling
@@ -3931,6 +4317,187 @@ Settings you can tune:
 - *"unhealthy instances are still receiving traffic"* → health check misconfigured or threshold too high
 - *"instances are being terminated too aggressively"* → health check interval/threshold too sensitive
 - *"ASG is not replacing unhealthy instances that fail ALB health checks"* → ASG is only using EC2 checks, needs ELB health checks enabled
+
+### Maintenance on a Single ASG Instance — the Standby flow
+
+**The recurring exam scenario:** team applies a maintenance patch to an instance in an ASG → instance briefly shows unhealthy → ASG immediately provisions a replacement. How to stop that without disrupting the rest of the group?
+
+**Answer: put that one instance into Standby state, do the maintenance, then exit Standby.** Two steps, surgical, AWS-documented.
+
+#### What Standby actually does
+
+| Behaviour while in Standby | Effect |
+| -------------------------- | ------ |
+| ASG **stops health-checking** the instance | No failed health check → no replacement |
+| **Deregistered** from the load balancer target group | No production traffic during maintenance |
+| Still **belongs to the ASG** | You don't lose group membership; easy return |
+| Desired capacity | At Standby time you choose: **decrement desired by 1** (no replacement launches) or **keep desired** (ASG launches a temp replacement) |
+| When you exit Standby | Re-attached to ALB, health checks resume, traffic resumes |
+
+It's surgical — only this one instance is affected. The rest of the ASG keeps reacting normally to legitimate failures.
+
+#### Numbered flow
+
+```
+1. aws autoscaling enter-standby \
+     --instance-ids i-0abc \
+     --auto-scaling-group-name web-asg \
+     --should-decrement-desired-capacity   ← no replacement launches
+        ↓
+2. ASG marks instance as InStandby
+   → ALB drains and deregisters target
+   → Health checks paused for this instance
+        ↓
+3. Apply the maintenance patch
+   → instance goes "unhealthy" briefly — ASG ignores it
+        ↓
+4. aws autoscaling exit-standby \
+     --instance-ids i-0abc \
+     --auto-scaling-group-name web-asg
+        ↓
+5. ASG marks instance InService
+   → Re-attached to ALB target group
+   → Health checks resume
+   → Desired capacity increments back (if you decremented earlier)
+```
+
+#### Why the obvious-looking distractors fail
+
+| Distractor | Why it's wrong |
+| ---------- | -------------- |
+| **Suspend ALL ASG scaling processes** | Sledgehammer — affects every instance in the ASG; the group can't replace *legitimately* failed instances during the window. Not "most efficient" |
+| **Detach the instance from the ASG** | Loses group membership and the option of an easy return; decrements desired without coordination |
+| **Terminate it and let ASG launch a fresh one** | Loses any in-flight state, wastes resources, defeats the goal of maintaining *this* instance |
+| **Manually mark the instance as Unhealthy** | The exact opposite — that triggers replacement |
+| **Increase health check grace period** | Grace period only applies to **newly launched** instances during boot, not to running ones doing maintenance |
+| **Reduce desired capacity by 1** | Doesn't tell the ASG to leave *this specific* instance alone — could result in a *different* instance being terminated |
+| **Adjust the cool-down period** | Cool-down delays *scaling actions*, not health-check-driven replacements |
+| **Change scaling policy from step to target tracking** | Irrelevant — the problem is health-check-driven replacement, not scaling |
+
+#### The "select two" trap on the exam
+
+The question is usually phrased *"select two most efficient steps"* and the right pair is the two ends of the Standby flow:
+
+1. **Put the instance into Standby state** (before maintenance)
+2. **Exit Standby / move the instance back to InService** (after maintenance)
+
+Some practice exams use a less-surgical pair as a near-miss:
+
+- *Put the instance in Standby state* + *Suspend the `ReplaceUnhealthy` process for the ASG*
+
+That pair works but is less surgical (suspending `ReplaceUnhealthy` affects the whole group). If both pairs appear, **Standby + ExitStandby is the more efficient answer**.
+
+#### Keyword decoder
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Maintain one specific instance without ASG replacing it"* | **Standby state** + exit Standby |
+| *"Pause ASG's automated reactions across the whole group during a maintenance window"* | **Suspend processes** (`ReplaceUnhealthy`, `HealthCheck`, `ScheduledActions`, `Launch`, `Terminate`) |
+| *"Remove the instance from the ASG entirely"* | **Detach** |
+| *"Newly launched instances are being killed too early"* | Increase the **health check grace period** |
+| *"Don't scale right after the last scaling action"* | **Cool-down period** |
+
+> *Standby = "put this one instance on the bench" — surgical, ASG ignores it, LB drains it, no replacement launches. ExitStandby = "back on the field". Use for any maintenance on a single ASG member. Suspending ASG processes is the broader hammer that affects the whole group — only reach for it when you genuinely want the entire ASG to pause its automated reactions.*
+
+### ASG default termination policy — which instance dies first
+
+When ASG scales in, it doesn't pick an instance at random — it runs a **cascading tie-breaker algorithm**. Learning the order stops the exam-favourite "which of these instances gets terminated?" trap.
+
+#### The default termination policy — the six-step cascade
+
+```
+1. Availability Zone with the MOST instances (with at least one unprotected)
+        ↓
+2. Instances launched from a launch CONFIGURATION are preferred over
+   instances launched from a launch TEMPLATE
+        ↓
+3. Among matching instances, pick the OLDEST launch configuration
+   (or OLDEST launch template + oldest version, if only LT users remain)
+        ↓
+4. If still tied, pick the instance CLOSEST TO THE NEXT BILLING HOUR
+        ↓
+5. If still tied, pick RANDOMLY
+```
+
+Steps 1 → 5 execute in order — a step only matters if all earlier steps left multiple candidates.
+
+#### Why launch configurations die before launch templates
+
+AWS documents this explicitly. The reasoning is that **launch configurations are legacy** — AWS wants to phase them out. Making LC-based instances the first to die nudges you to replace them with LT-based ones over time.
+
+| | Launch Configuration | Launch Template |
+| - | -------------------- | ---------------- |
+| Status | **Legacy** — deprecated | **Modern, recommended** |
+| Versioning | ❌ Immutable | ✅ Versioned (v1, v2, …) |
+| Feature support | Limited — no mixed instances, no T3 unlimited | Full |
+| Termination preference | **Dies first** in default policy | Dies later |
+
+If you have any launch-configuration-based instances mixed with launch-template-based ones, the LC ones are always terminated first (all else being equal).
+
+#### Worked example — the exam-canonical question
+
+Given 4 instances in the AZ with the most instances (us-east-1a):
+
+| Instance | Attribute |
+| -------- | --------- |
+| A | Oldest **launch template** |
+| B | **Oldest launch configuration** |
+| C | Newest launch configuration |
+| D | Closest to next billing hour |
+
+Walkthrough:
+
+```
+Step 1: AZ with most instances → us-east-1a (given)
+Step 2: LC users beat LT users → narrow to B and C (both use LCs)
+Step 3: Oldest LC among B and C → Instance B ✓ TERMINATED
+
+(Steps 4–5 never reached.)
+```
+
+**Instance B wins the elimination.** Instance A (oldest LT) is skipped at step 2. Instance D (billing hour) is a step-4 tiebreaker that never gets used.
+
+#### Why the "closest to billing hour" criterion is barely relevant today
+
+This tiebreaker is a **legacy remnant** from when EC2 was billed per full hour. Modern EC2 bills **per-second** for most Linux instance types — so terminating an instance close to a billing-hour boundary saves virtually nothing. The rule remains in the default policy for backwards compatibility only.
+
+#### Custom termination policies (alternatives worth knowing)
+
+ASG lets you replace the default with one or more explicit policies. They execute in the order you list them:
+
+| Policy | Behaviour |
+| ------ | --------- |
+| **`OldestInstance`** | Kills the oldest instance regardless of launch config / template |
+| **`NewestInstance`** | Kills the newest — useful for **canary rollback** ("that thing I just launched is broken, remove it first") |
+| **`OldestLaunchConfiguration`** | Old-LC users only |
+| **`OldestLaunchTemplate`** | Old-LT users only |
+| **`ClosestToNextInstanceHour`** | Straight billing-hour minimisation |
+| **`AllocationStrategy`** | For mixed instances policies — align remaining fleet with strategy |
+| **`Default`** | The composite cascade above |
+
+#### Instance Scale-in Protection (the escape hatch)
+
+Independent of the termination policy, you can flag specific instances as **scale-in protected**. ASG will never terminate a protected instance during a scale-in event — the policy simply skips them and picks another candidate. Useful for:
+
+- Instances processing long-running jobs that shouldn't be interrupted
+- Stateful worker instances the fleet controller wants to preserve
+- Manual protection during debugging
+
+Set via `aws autoscaling set-instance-protection --instance-ids i-0abc --protected-from-scale-in`.
+
+Note: scale-in protection **doesn't** prevent termination from **health-check failures** — only from scale-in events.
+
+#### Exam triggers
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Which instance does ASG terminate — LC vs LT + oldest vs newest + billing hour?"* | **Oldest launch configuration wins** (LC users beat LT users; oldest wins the tiebreaker) |
+| *"Terminate newest instance first (canary rollback)"* | **`NewestInstance`** termination policy |
+| *"Prevent a specific instance from being terminated during scale-in"* | **Instance Scale-in Protection** |
+| *"Terminate oldest instance regardless of launch config"* | **`OldestInstance`** termination policy |
+| *"Custom order of termination criteria"* | List **multiple termination policies** in the ASG config |
+
+> *Default termination policy = cascade: AZ with most instances → launch-config users before launch-template users → oldest launch config / template → closest to next billing hour → random. Launch configurations always die first because they're legacy. The billing-hour criterion is nearly meaningless today (per-second billing) but survives in the default. **Instance Scale-in Protection** flags specific instances as exempt from scale-in termination without changing the policy.*
 
 ### ALB and EC2 Security Groups
 
@@ -6306,6 +6873,92 @@ The console UI buries the opt-in. You click through "create replication rule," s
 | *"Replication role exists, KMS keys exist, replication fails for encrypted objects"* | **Role needs `kms:Decrypt` on source + `kms:Encrypt`/`kms:GenerateDataKey` on target; both key policies must also allow the role** |
 | *"Cross-region replication with KMS"* | Plus **multi-region key** OR re-encryption with target-region key during copy |
 | *"Cross-account replication with KMS"* | Plus **target bucket policy** allowing source account's replication role to write |
+
+### KMS Multi-Region Keys (MRKs)
+
+**The problem MRKs exist to solve:** standard KMS keys are **regional** — a CMK in us-east-1 has no presence in us-west-1, and **ciphertext encrypted in one region cannot be decrypted in another**. For cross-region replication scenarios where security policy demands *"the same key in both regions"*, Multi-Region Keys are the only correct answer.
+
+#### The mechanic
+
+```
+Standard KMS:
+us-east-1: Key A (key-id: abc-123)   ← unique key, unique material
+us-west-1: Key B (key-id: xyz-456)   ← separate key, separate material
+                                     → ciphertext from A cannot decrypt with B
+
+Multi-Region Key:
+us-east-1: PRIMARY MRK   (key-id: mrk-1234567890abcdef)   ← same material
+us-west-1: REPLICA MRK   (key-id: mrk-1234567890abcdef)   ← same material
+                                                          → identical key ID
+                                                          → ciphertext interoperable
+```
+
+Replica MRKs share the primary's **key material and key ID**. Encrypt in us-east-1; decrypt directly in us-west-1 without round-tripping ciphertext to the source region. Each replica is technically a separate KMS key resource (and billed separately at ~$1/month each), but cryptographically they're equivalent.
+
+#### Setup flow
+
+```
+1. Create the PRIMARY multi-region key in the source region
+   aws kms create-key --multi-region --region us-east-1
+        ↓
+2. Replicate it to the destination region (creates a REPLICA MRK)
+   aws kms replicate-key --key-id mrk-... --replica-region us-west-1
+        ↓
+3. Configure S3 CRR (or DynamoDB Global Table, EBS snapshot copy, etc.)
+   → destination uses the REPLICA MRK
+        ↓
+4. Both regions encrypt/decrypt with the same key material
+```
+
+#### What MRKs solve (and what they don't)
+
+| Use case | MRK fits? |
+| -------- | --------- |
+| **S3 CRR with "same key" compliance requirement** | ✅ Primary canonical use case |
+| **DynamoDB Global Tables with KMS encryption** | ✅ Each region uses its local replica MRK |
+| **EBS snapshot copy across regions without re-encryption decrypt-loop** | ✅ |
+| **Multi-region failover where DR region must decrypt source ciphertext** | ✅ |
+| **Encrypting data with a key that auditors can prove is "the same key" cryptographically across regions** | ✅ |
+| Cross-account scenarios where the key stays in one account but data needs to be readable in another | ❌ — that's solved by key policy / grant, not MRKs |
+| Sharing a key with an external partner | ❌ — use key policy / grants on a regional key |
+| Importing your own key material | ✅ partially — MRKs support BYOK; you import the same material into the primary, replicas inherit |
+
+#### Multi-Region Keys vs regular KMS — the differences
+
+| | **Regular KMS key (regional)** | **Multi-Region Key** |
+| - | ------------------------------- | -------------------- |
+| Key ID | Unique per region | **Same key ID across all replicas** (starts with `mrk-`) |
+| Key material | Separate per region | **Identical** across primary + replicas |
+| Cross-region encrypt/decrypt | ❌ — ciphertext is region-bound | ✅ Interoperable |
+| Created with | `create-key` | `create-key --multi-region` (primary), then `replicate-key` |
+| Convertible? | ❌ A regular key cannot become an MRK after creation | ❌ Must decide at creation time |
+| Replica region addition | n/a | Add new replica regions later as needs grow |
+| Synchronisation | n/a | Automatic key rotation propagates across all replicas |
+| Pricing | $1/month per key | **$1/month per replica** (so primary + 2 replicas = ~$3/month) |
+| Lifecycle | Delete the key | Delete primary → replicas continue independently; delete each replica separately |
+
+#### What MRKs are NOT
+
+| Confused with | Distinction |
+| ------------- | ----------- |
+| **Sharing a key via key policy** | Sharing access doesn't share key material — a us-east-1 key still doesn't exist cryptographically in us-west-1 |
+| **AWS Backup cross-region copy** | Works at the snapshot level — re-encrypts with destination-region key. Different mechanism, not MRK-based |
+| **External CMKs (BYOK / Imported)** | You import key material into a single key. MRKs can use BYOK (import same material to primary, replicas inherit) but BYOK alone doesn't replicate across regions |
+| **S3 Bucket Keys** | A caching optimisation that reduces KMS API calls — orthogonal to MRKs |
+| **CloudHSM** | Hardware-backed dedicated single-tenant — doesn't solve cross-region the same way; you'd need separate clusters per region |
+
+#### Exam triggers specifically for MRKs
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Same KMS key must be used to encrypt and decrypt in both regions"* | **Multi-Region Keys** |
+| *"S3 CRR with KMS encryption preserving the same key identity"* | **MRK primary in source + replica in destination** |
+| *"DynamoDB Global Tables encrypted with the same KMS key across all regions"* | **MRK** |
+| *"DR plan needs the same KMS key in the failover region"* | **MRK** |
+| *"Why does decrypting this ciphertext in us-west-1 fail when it was encrypted in us-east-1?"* | **Regular KMS keys are regional — use an MRK or re-encrypt at destination** |
+| *"Can I convert a regular KMS key to a Multi-Region Key?"* | **No — must create as multi-region at creation time** |
+
+> *Standard KMS = one regional crypto root, ciphertext bound to its region. MRKs = one logical key with identical material replicated to chosen regions, allowing cross-region encrypt/decrypt interoperability. Whenever the question says **"same key in both regions"** or describes a cross-region replication / DR scenario with strict same-key compliance, the answer is **Multi-Region Keys**.*
 
 ### When to Use CloudHSM Instead
 
@@ -8839,6 +9492,60 @@ Multi-AZ is about **availability**, not performance. AWS maintains a standby ins
 - *"automatic failover"*, *"high availability"*, or *"survive an AZ failure"* → Multi-AZ
 - *"improve read performance"* → Read Replicas
 - Both needed → Multi-AZ for HA + Read Replicas for scaling (they can be used together)
+
+#### Multi-AZ engine upgrades — the surprising exam trap
+
+**Multi-AZ does NOT make engine version upgrades zero-downtime.** Different RDS operations have completely different downtime profiles, and the exam tests whether you know which:
+
+| Operation | Multi-AZ flow | Downtime |
+| --------- | ------------- | -------- |
+| **OS patching / hardware maintenance** | Standby patched → failover → primary patched | **Brief (~60–120s — only the failover)** |
+| **Instance type change (scale up/down)** | Standby modified → failover → primary modified | **Brief (~60–120s — only the failover)** |
+| **Database engine version upgrade (minor or major)** | **Both primary AND standby upgraded simultaneously** | **Full outage for the upgrade duration (5–30+ minutes)** |
+| **AZ failure (unplanned)** | Failover to standby | ~60–120s |
+| **Storage scaling** | Online operation | None |
+
+**Why engine upgrades behave differently:**
+
+Multi-AZ uses **synchronous block-level replication**, and that replication channel is **engine-version-specific**. A primary on v8.0.34 can't sync-replicate to a standby on v8.0.36 — the wire protocol assumes both ends speak the same dialect. So AWS can't upgrade the standby first then fail over (that would break replication during the transition). The only option is to take both down at once.
+
+OS patches and instance-type changes don't touch the engine protocol, so the standby-first-then-failover flow works fine for them.
+
+**The exam-tested answer phrasing:**
+
+> *"Any database engine level upgrade for an Amazon RDS database instance with Multi-AZ deployment triggers both the primary and standby database instances to be upgraded at the same time. This causes downtime until the upgrade is complete."*
+
+**How to minimise engine-upgrade downtime (worth knowing):**
+
+| Option | How it helps |
+| ------ | ------------ |
+| **RDS Blue/Green Deployments** | Spin up a green environment on the new version → sync from blue → switch over with ~1 min outage. **The modern AWS-recommended path for major engine upgrades** |
+| **Multi-AZ DB Cluster** (newer architecture, 2 readable standbys with logical replication) | Supports **rolling engine upgrades** with much less downtime |
+| **Aurora** | Storage layer decoupled from compute — supports rolling engine upgrades, often zero-downtime patching for minor versions |
+| **Read replica → promote** | Create a cross-version replica, let it catch up, promote, cut over. Complex and manual; not all engines support cross-version replication |
+
+**Multi-AZ variant distinction (the exam test):**
+
+| Variant | Replication | Engine-upgrade behaviour |
+| ------- | ----------- | ------------------------- |
+| **Multi-AZ instance** (classic) | Synchronous block-level, standby **not readable** | **Both upgraded simultaneously → full outage** |
+| **Multi-AZ DB Cluster** (newer) | Logical replication, **2 readable standbys** | **Rolling upgrades supported** — much less downtime |
+| **Aurora** | Shared storage, separate compute nodes | **Rolling upgrades** standard, zero-downtime patching common |
+
+If the exam says *"Multi-AZ"* without further qualification, assume the classic instance variant — which means engine upgrades take a full outage.
+
+**Updated exam triggers:**
+
+| Phrasing | Answer |
+| -------- | ------ |
+| *"Multi-AZ engine version upgrade and downtime"* | **Both primary and standby upgrade simultaneously → full outage for the upgrade duration** |
+| *"Minimise downtime for a major engine upgrade"* | **RDS Blue/Green Deployments** |
+| *"Rolling engine upgrade with zero / near-zero downtime"* | **Aurora** or **Multi-AZ DB Cluster** (NOT standard Multi-AZ instance) |
+| *"Multi-AZ OS patching"* | Brief failover-only outage (~60–120s) |
+| *"Multi-AZ instance type change"* | Brief failover-only outage (~60–120s) |
+| *"Multi-AZ AZ failover (unplanned)"* | ~60–120s |
+
+> *Multi-AZ classic = synchronous block-level replication, **engine version must match on both sides**. So engine upgrades — minor or major — take **both instances down at the same time** for the upgrade duration. OS patches and instance-type changes follow the standby-first-then-failover flow because they don't break replication. **For minimal-downtime engine upgrades, use Blue/Green Deployments, Aurora, or the newer Multi-AZ DB Cluster** — standard Multi-AZ doesn't help.*
 
 **Using them together:**
 
@@ -12257,6 +12964,26 @@ Storage classes sit on a cost-vs-access spectrum. The less frequently you access
 
 **Min storage duration** means you pay for at least that many days even if you delete the object sooner. Delete a Glacier Deep Archive object after 1 day → you still pay for 180 days.
 
+**The classic short-lived-data trap (heavily exam-tested):**
+
+| Workload | Wrong instinct | Right answer |
+| -------- | -------------- | ------------ |
+| Intermediate query results kept 24 hours, heavily referenced | Standard-IA (looks cheaper per GB) | **S3 Standard** |
+| Daily ETL staging zone with 7-day TTL | Standard-IA / Intelligent-Tiering | **S3 Standard** |
+| Cache files regenerated nightly | Standard-IA | **S3 Standard** |
+
+Why the cheap-per-GB classes lose for `<30-day + frequent access`:
+
+| Hidden cost | Effect |
+| ----------- | ------ |
+| **30-day minimum billing** (Standard-IA / One Zone-IA) | Delete after 24h → still billed for 30 days. Negates the per-GB savings |
+| **Per-GB retrieval fee** | "Heavily referenced" = stacks up fast |
+| **128 KB minimum object size** | Small intermediate files get rounded up |
+| **Intelligent-Tiering monitoring fee** | Per-object monthly fee — and IT only moves objects to a cheaper tier after **30 days of no access**, so short-lived data never tiers |
+| **Glacier (any flavour)** | 90/180-day minimums + retrieval delay → completely wrong for *"heavily referenced"* |
+
+**The decision rule:** *Stored for **less than 30 days**? → **S3 Standard**, always. IA/Glacier classes only win once you cross their minimum-duration threshold AND access is infrequent enough that retrieval fees don't eat the savings.*
+
 **Glacier retrieval modes — don't confuse Flexible with Instant:**
 
 Glacier Flexible Retrieval has 3 retrieval modes (you choose per request):
@@ -12310,6 +13037,7 @@ Configure these rules per bucket or per prefix (e.g. only apply to `logs/*`).
 - *"infrequent access but must be available instantly"* → Standard-IA
 - *"archive data, retrieval within 12 hours is acceptable"* → Glacier Flexible Retrieval
 - *"non-critical data, cheapest infrequent access"* → One Zone-IA (single AZ risk)
+- *"intermediate / staging data kept for less than 30 days, heavily accessed"* → **S3 Standard** (NOT Standard-IA — the 30-day minimum + retrieval fees punish short-lived heavily-read data)
 
 ### S3 Object Lock and Glacier Vault Lock
 
@@ -12323,6 +13051,7 @@ WORM (Write Once Read Many) — prevent objects from being deleted or overwritte
 **S3 Object Lock:**
 - WORM at the S3 bucket level (any storage class, not just Glacier)
 - Can be set per-object or as a bucket default
+- **Requires S3 Versioning** — hard prerequisite (lock metadata attaches to a version, not a key)
 - Two modes:
 
 | Mode | Who can delete/overwrite? |
@@ -12332,11 +13061,36 @@ WORM (Write Once Read Many) — prevent objects from being deleted or overwritte
 
 Use **Compliance mode** when regulation demands it. Use **Governance mode** when you want protection with an escape hatch for authorised admins.
 
+**Two retention types** (independent of mode):
+
+| Type | Behaviour |
+| ---- | --------- |
+| **Retention period** | Fixed expiry date — set per version or as a bucket default. Auto-expires (Governance) or never expires early (Compliance) |
+| **Legal hold** | Indefinite — held until manually removed by an authorised user. Orthogonal to retention periods (can have both at once) |
+
+**Per-version retention — the nuance the exam tests:**
+
+Object Lock metadata is attached to **each version of a key, not the key itself**. Since Versioning is a prerequisite, every "object" in a locked bucket is really a sequence of versions, and each can have its own lock settings:
+
+```
+file.txt
+├── v1 (uploaded 2026-01-01)  → Compliance mode, until 2031-01-01
+├── v2 (uploaded 2026-06-01)  → Governance mode, until 2027-06-01
+└── v3 (uploaded 2026-12-01)  → no retention but Legal Hold on
+```
+
+When v2's Governance period expires in 2027, v1 is still under Compliance lock until 2031. v3 stays held until someone removes the legal hold. **Different versions of the same object key can have entirely different modes, periods, and legal-hold flags.** The `PutObjectRetention` / `PutObjectLegalHold` APIs both take a `VersionId` parameter — proving the lock targets a specific version.
+
+The use case AWS designed this for: regulatory snapshots where each *committed state* of a document needs its own retention. E.g., a signed contract amendment goes through versions, and each signed version gets its own independent retention clock.
+
 **Exam triggers:**
 - *"ensure data cannot be deleted for 7 years, even by root"* → S3 Object Lock (Compliance mode) or Glacier Vault Lock
 - *"WORM storage"* → S3 Object Lock or Glacier Vault Lock
 - *"SEC 17a-4 compliance"* → Glacier Vault Lock
 - *"prevent deletion but allow admins to override in emergencies"* → S3 Object Lock (Governance mode)
+- *"different versions of an object can have different retention modes and periods"* → **true — lock is per-version**, not per-key
+- *"hold an object indefinitely until litigation resolves"* → **Legal Hold** (no fixed expiry; manually removed)
+- *"why doesn't Object Lock work on my bucket?"* → **Versioning must be enabled first**
 
 ### S3 Event Notifications
 
@@ -12971,10 +13725,39 @@ Partner → SFTP → AWS Transfer Family → S3 bucket
 - You get a DNS endpoint (or bring your own domain with Route 53)
 - Pay per protocol endpoint per hour + data transferred
 
+**Managed Workflows — the post-upload trigger (exam-favourite):**
+
+Transfer Family supports **Managed Workflows** — automated processing that fires **the moment a file upload completes**. This is the Transfer-Family-native way to do "process file immediately after upload" — preferred over generic S3 Event Notifications for SFTP scenarios.
+
+```
+SFTP upload completes → Transfer Family Managed Workflow → chain of steps:
+   1. Copy / move to another S3 location
+   2. Decrypt (built-in PGP decryption)
+   3. Tag S3 object with metadata
+   4. Custom step → invoke Lambda for validation / transformation / routing
+   5. Delete source file after processing
+```
+
+**Why Managed Workflows beats S3 Event Notification for SFTP flows:**
+
+| | **Managed Workflows** | **S3 Event Notification** |
+| - | ---------------------- | -------------------------- |
+| Trigger | **After SFTP upload completes** (Transfer Family-specific) | Any `ObjectCreated` (SDK / SFTP / copy / anything) |
+| Multi-step orchestration | Built-in (chained steps) | Would need Step Functions / multi-Lambda |
+| Per-user customisation | Different workflow per SFTP user | Bucket-wide |
+| Audit trail | Per-file workflow status in Transfer Family | CloudWatch Logs on Lambda |
+| Modern AWS-recommended pattern | ✅ For Transfer Family scenarios | ✅ For generic S3 write events |
+
+**Exam signal for Managed Workflows:** *"process files **immediately after upload completes**"* — the "upload complete" phrasing is Transfer Family-specific. Generic "when files land in S3" without the SFTP-completion emphasis can be either pattern.
+
 **Exam triggers:**
 - *"migrate an existing SFTP server to AWS"* → Transfer Family
 - *"partners upload files via SFTP into S3"* → Transfer Family
 - *"managed FTP endpoint"* → Transfer Family
+- *"process file **immediately after SFTP upload completes**"* → **Transfer Family + Managed Workflow → Lambda**
+- *"multi-step post-upload processing (decrypt, validate, tag, move)"* → **Managed Workflow with chained steps**
+- *"PGP-encrypted files via SFTP"* → **Managed Workflow with built-in Decrypt step**
+- *"HA SFTP endpoint across multiple AZs"* → Transfer Family (multi-AZ by default; deploy VPC endpoint type across ≥2 AZs)
 
 **Transfer Family vs DataSync:** Transfer Family is for **external parties pushing files to you** using standard FTP/SFTP protocols. DataSync is for **you moving data** between on-prem and AWS or between AWS services. Different use cases.
 
@@ -13102,6 +13885,50 @@ Backup software (Veeam, Veritas, etc.) → Tape Gateway → S3 Glacier
 - *"backup software needs a tape library target"* → Tape Gateway
 - *"migrate data to AWS"* → DataSync (not Storage Gateway — Gateway is for ongoing access)
 
+#### File Gateway vs EFS — the exam trap
+
+**Both** expose NFS, **both** support automated tiering to cheaper storage. The disambiguator is **where the clients/workloads live**:
+
+| Scenario | Right answer |
+| -------- | ------------ |
+| **Workloads stay on-prem**, only the **storage** moves to the cloud, keep NFS, minimise cost | **File Gateway + S3 + S3 Lifecycle to Glacier** |
+| **Workloads are in AWS** (EC2 / containers / Lambda), need shared NFS, auto-tier cold data | **EFS with Lifecycle Management** (Standard → IA → Archive) |
+| Hybrid file share with on-prem cache and S3 backing | **File Gateway** |
+| Fully cloud-native NFS for EC2 / EKS / ECS workloads | **EFS** |
+
+**Why "minimise cost + tiering" leans toward File Gateway:**
+
+| Tier | EFS | S3 equivalent |
+| ---- | --- | ------------- |
+| Hot | $0.30/GB (Standard) | $0.023/GB (S3 Standard) |
+| Cold | $0.025/GB (IA) | $0.0125/GB (S3 Standard-IA) |
+| Coldest | $0.008/GB (Archive) | $0.00099/GB (Glacier Deep Archive) |
+
+S3's coldest tier is ~**25× cheaper** than EFS's coldest tier. When the question stresses *"minimise cost"* AND *"automated tiering of rarely accessed data to lower-cost storage"*, the S3 lifecycle ladder is the cheaper path.
+
+**The disambiguator question to ask yourself:**
+
+> ***"Do the workloads accessing this storage live on-prem or in AWS?"***
+>
+> *On-prem → File Gateway*
+> *AWS → EFS*
+
+If the question puts the clients on-prem and asks you to migrate **storage** (not compute), you'd either need to move compute (out of scope) or mount EFS over DX/VPN from on-prem (high latency, expensive, not recommended). File Gateway sidesteps both by keeping a local NFS-presenting appliance with hot-file caching.
+
+**Worked example — the on-prem batch job + log files scenario:**
+
+> *"On-prem NFS storage is hard to scale. Migrate to a cloud-based storage solution, keep NFS-based tools, minimise cost, auto-tier rarely accessed data."*
+
+Answer: **File Gateway** — present NFS locally to the on-prem batch jobs (they don't change), back it with S3, use S3 Lifecycle to push old log files to Standard-IA → Glacier Flexible → Glacier Deep Archive. Hot files stay cached on the gateway VM for low-latency access.
+
+The EFS instinct fails because:
+
+| Why EFS loses this scenario | |
+| --- | --- |
+| Workloads are on-prem, not in AWS | EFS over DX/VPN would be slow and expensive |
+| Moving compute to AWS wasn't asked | Broader migration scope than the question described |
+| Cost minimisation language | S3 + Glacier is dramatically cheaper than EFS-IA/Archive |
+
 ### Amazon FSx
 
 Fully managed third-party file systems on AWS. Where EFS is managed NFS (Linux), FSx covers everything else.
@@ -13189,6 +14016,45 @@ Exam keyword map:
 
 **Exam trigger:** *"temporary high-performance processing, data doesn't need to survive"* → Lustre Scratch. *"high-performance storage that must persist"* → Lustre Persistent.
 
+**Worked example — EDA / chip design (the most-trapped Lustre question):**
+
+> *"An EDA (Electronic Design Automation) application produces massive volumes of data — hot data needs parallel + distributed processing and fast storage; cold data needs cheap access for reads and updates."*
+
+**Answer: FSx for Lustre + S3 integration.**
+
+| Tier | Service | Why |
+| ---- | ------- | --- |
+| **Hot** — parallel + distributed, fast | **FSx for Lustre** | Parallel POSIX FS designed for HPC — hundreds of GB/s, millions of IOPS, sub-ms latency. Built for **EDA, genomics, ML training, seismic processing, video rendering** |
+| **Cold** — cheap, durable | **S3** | Object store |
+| **The link** | FSx for Lustre **natively integrates with S3** | Lazy-loads S3 objects as files on first access; exports results back to S3 |
+
+The flow: cold data sits permanently in S3. When an EDA job runs, FSx for Lustre lazy-loads the working set into its hot tier; hundreds of compute nodes read/write at HPC speeds; results export back to S3; you can delete the Lustre FS when the job's done (results survive in S3). This is the canonical *"S3 = persistent home, Lustre = performance scratch"* pattern.
+
+**The common trap: picking AWS Glue, EMR, or just S3 instead.**
+
+The wording *"massive volumes of data + parallel and distributed processing"* pattern-matches to Spark / Glue / EMR if you skim it. But those services solve a **different problem**:
+
+| Service | What it parallelises | Why it's wrong for EDA |
+| ------- | -------------------- | ----------------------- |
+| **AWS Glue** | Spark ETL transformations on tabular data | EDA tools aren't a Glue job — they're binaries that need a POSIX file system |
+| **EMR (Hadoop/Spark)** | Big data analytics across a cluster | Same — wrong execution model. EMR isn't running chip simulations |
+| **S3 alone** | Nothing — it's just storage | EDA tools expect POSIX (`open()`, `read()`, locks). S3 is HTTP API, no filesystem |
+| **EFS** | Single NFS path — fine for shared web content, no HPC parallelism | Wrong throughput model — EFS streams from one path, Lustre stripes across many |
+| **FSx for Windows / OpenZFS / NetApp** | Wrong protocol / not parallel HPC-grade | EDA tools run on Linux, need parallel HPC throughput |
+
+**The EDA / HPC signal words that anchor to Lustre (not Glue/EMR/S3):**
+
+| Signal | Why it's Lustre |
+| ------ | ---------------- |
+| *"EDA"* / *"chip design"* / *"place and route"* / *"simulation"* / *"verification"* | All canonical Lustre use cases AWS markets it for |
+| *"genomics"* / *"seismic"* / *"ML training data"* / *"video rendering"* | Same HPC pattern |
+| *"hundreds/thousands of compute nodes reading the same files in parallel"* | Lustre stripes for parallel reads |
+| *"POSIX filesystem + millions of IOPS"* | Only Lustre delivers this |
+| *"hot data in fast storage, cold data in cheap object storage"* | The S3-integrated Lustre pairing |
+| *"S3 with high-throughput file system access"* | Lustre's S3 integration |
+
+> *Lustre = "parallel POSIX file system AWS built for HPC / EDA / ML training". S3 = the persistent cheap home. The two are designed to work together. When the question says **EDA / chip design / genomics / ML training / seismic** with **massive data + parallel access**, the answer is **FSx for Lustre + S3** — never Glue, EMR, or plain S3.*
+
 **FSx for Windows — availability:**
 
 | | Single-AZ | Multi-AZ |
@@ -13196,6 +14062,188 @@ Exam keyword map:
 | Durability | Replicated within one AZ | Active/standby across two AZs |
 | Failover | Manual | Automatic |
 | Use case | Dev/test, cost savings | Production, high availability |
+
+## AWS Outposts
+
+**Anchored against Azure Stack / Google Anthos on-prem appliances — except it's AWS hardware, AWS-managed, exposing the regular AWS API surface from inside your own data centre.** AWS physically ships a rack (or smaller server) to your DC, installs it, then manages it remotely. Data stays on-prem, but you build with EC2, EBS, EKS, ECS, RDS, S3 (Outposts variant), and friends as if they were in a cloud region.
+
+### What Outposts actually is
+
+```
+Your data centre                              AWS Region (parent)
+┌───────────────────────────────┐             ┌────────────────────┐
+│ Outpost rack (AWS hardware)   │ ◄─── DX ──► │ Control plane      │
+│  • EC2, EBS, EKS, ECS         │  or VPN     │ (S3-in-region,     │
+│  • RDS on Outposts            │             │  IAM, CloudWatch)  │
+│  • S3 on Outposts             │             │                    │
+│  • ALB, EBS local             │             └────────────────────┘
+│                               │
+│  Your data + workloads        │  ← never leaves the building
+└───────────────────────────────┘
+```
+
+| Aspect | How it works |
+| ------ | ------------ |
+| **Who owns the hardware** | AWS — they ship, install, and remotely manage it |
+| **Where the hardware lives** | Your data centre / colo (you provide power, cooling, space, network uplink) |
+| **Who manages updates** | AWS — same control plane behaviour as a cloud region |
+| **API surface** | Regular AWS APIs (EC2, EKS, ECS, EBS, RDS, S3 on Outposts, etc.) |
+| **Connectivity to parent region** | **Required** — DX or VPN. Some control-plane functions need the link. Pure data plane keeps working if the link is brief degraded |
+| **Where data lives** | On the Outpost — **on-premises**, physically in your DC |
+| **Billing** | Subscription (1- or 3-year) for the rack capacity + usage of services on it |
+
+### Form factors
+
+| Form factor | What it is | Use case |
+| ----------- | ---------- | -------- |
+| **Outposts Rack** | A full 42U rack of AWS hardware | Data centres needing significant capacity — financial services, healthcare, manufacturing |
+| **Outposts Servers (1U / 2U)** | A single AWS-managed server | Edge locations, retail stores, factory floors — smaller footprint, more sites |
+
+### Services that run on Outposts
+
+Subset of AWS services — not everything in cloud is available locally:
+
+| Layer | Available on Outposts |
+| ----- | --------------------- |
+| **Compute** | EC2, ECS, EKS, Lambda (Local) |
+| **Storage** | EBS, S3 on Outposts (local S3 buckets) |
+| **Database** | RDS on Outposts (MySQL, PostgreSQL, SQL Server) |
+| **Networking** | VPC, ALB, ENI |
+| **Containers** | EKS (local + extended), ECS |
+| **Analytics** | EMR on Outposts (limited) |
+| **Observability** | CloudWatch metrics/logs flow to parent region |
+
+Things that are **NOT on Outposts**: most managed services that aren't in the list above (DynamoDB, SNS, SQS, Kinesis, etc. — those run only in the parent region). You can call them from Outposts workloads, but the data flows to the region.
+
+### Networking — Local Gateway (LGW)
+
+The piece of plumbing that makes Outposts work as an on-prem extension. The **Local Gateway (LGW)** is an Outposts-specific routing component that lets Outposts subnets reach the **on-premises network directly**, without forcing traffic up to the parent AWS region first.
+
+```
+On-prem network                  Outposts rack                    Parent AWS Region
+┌──────────────────┐         ┌───────────────────────┐           ┌──────────────────┐
+│ Local app /      │ ◄────►  │ LGW ────► Outposts    │  ◄────►   │ Region VPC       │
+│ database /       │  LGW    │           subnets     │  Service  │ Services in      │
+│ legacy system    │  path   │  (EC2, EKS, RDS)      │  Link     │ parent region    │
+└──────────────────┘         └───────────────────────┘           └──────────────────┘
+```
+
+Two traffic paths from an Outpost workload:
+
+| Destination | Route via | Why |
+| ----------- | --------- | --- |
+| On-prem app / DB / legacy system in the **local network** | **Local Gateway (LGW)** | Single-digit ms latency — never leaves the building |
+| Anything in the **parent AWS region** (S3-in-region, IAM, CloudWatch, DynamoDB, SQS, etc.) | **Service Link** (DX or VPN back to region) | Required for AWS-side service calls and control plane |
+
+Without an LGW, every packet would round-trip to the AWS region just to talk to a database on the same floor. That's exactly what the LGW prevents.
+
+### Resilience — what happens if the link to the parent region drops
+
+Outposts requires a **Service Link** back to its parent AWS region (DX or VPN). Different things behave differently when that link is degraded or down:
+
+| Behaviour | Link healthy | Link degraded / down |
+| --------- | ------------ | -------------------- |
+| **Running EC2 / containers / RDS on the Outpost** | ✅ Normal | ✅ **Keep running** — data plane continues |
+| **LGW traffic to on-prem** | ✅ Normal | ✅ **Keeps working** — never used the region |
+| **Console / API control plane** (start/stop/launch new instances) | ✅ Works | ❌ **Degraded** — can't launch new resources, can't manage existing via API |
+| **CloudWatch logs / metrics** | ✅ Stream to region | ⚠️ Buffered locally, replay when link returns |
+| **IAM auth for STS calls / IRSA** | ✅ Works | ❌ STS calls fail — pods can't refresh credentials |
+| **Calls to region-only services (DynamoDB, SNS, SQS)** | ✅ Works | ❌ Fail until link restored |
+| **S3 on Outposts (local)** | ✅ Works | ✅ **Keeps working** — local buckets are on the rack |
+
+**Mental model:** the *data plane stays up* during a Service Link outage, but the *control plane and anything that needs region services* doesn't. Design accordingly — workloads that must survive a parent-region disconnect should depend only on local Outposts services + LGW traffic.
+
+### Capacity and limitations
+
+Outposts isn't elastic the way a cloud region is. You pre-order capacity:
+
+| Constraint | Detail |
+| ---------- | ------ |
+| **Fixed capacity per rack** | You pick the instance-type mix and EBS capacity when ordering; AWS ships hardware sized for that mix |
+| **No auto-scale beyond what you ordered** | If your ASG wants to scale to N but you only ordered capacity for M, you're capped at M |
+| **Capacity expansion = ordering more racks** | Lead time in weeks to months |
+| **Subset of EC2 instance types** | Not every family/size is available on Outposts — check the supported list when sizing |
+| **Subset of AWS services** | DynamoDB, SNS, SQS, Kinesis, EventBridge, Step Functions, etc. all run only in the parent region (callable from Outposts but data lives in region) |
+| **No Multi-AZ for RDS on Outposts** (typically) | One Outpost is one AZ in network terms — true HA may need a second Outpost |
+| **1- or 3-year commitment** | Subscription pricing — not pay-as-you-go |
+| **You provide power, cooling, network uplink, physical security** | AWS doesn't supply those — they're your facility's responsibility |
+
+**Exam decoder for limitations:**
+
+| Question phrasing | Implication |
+| ----------------- | ----------- |
+| *"Spiky / unpredictable capacity needs"* | **Cloud region**, NOT Outposts (Outposts is fixed capacity) |
+| *"Need DynamoDB / SQS / SNS strictly on-prem"* | **Not possible** — those are region-only. Use Outposts-compatible alternatives or accept region calls |
+| *"Survive a complete disconnect from AWS for days"* | Outposts data plane keeps running, but control plane and IAM/STS depend on the link — design carefully |
+| *"True HA across two failure domains on-prem"* | **Two Outposts** in separate failure domains, not one |
+
+### How EKS on Outposts fits the data-residency question
+
+Two deployment modes — pick based on whether the **control plane** also needs to stay on-prem:
+
+| Mode | Control plane | Worker nodes | When to pick |
+| ---- | ------------- | ------------ | ------------ |
+| **Local cluster** | On the Outpost | On the Outpost | Strict data residency — control-plane state also stays on-prem (regulated workloads) |
+| **Extended cluster** | In the parent AWS region | On the Outpost | Less strict residency — you tolerate control plane in cloud but pods on-prem |
+
+For "all data physically on-prem" exam questions → **EKS Outposts local cluster** is the safe answer.
+
+### Outposts vs EKS Anywhere — the disambiguator
+
+These two are the classic exam trap pair, and AWS deliberately phrases questions to test which one fits:
+
+| | **AWS Outposts (EKS on Outposts)** | **EKS Anywhere** |
+| - | ---------------------------------- | ---------------- |
+| Hardware | **AWS-owned**, shipped and installed in your DC | **Your own hardware** (bare metal, vSphere, Nutanix, etc.) |
+| Who manages the control plane | **AWS** — same managed service as cloud EKS | **You** — install/upgrade via `eksctl anywhere` |
+| Automated K8s upgrades | ✅ AWS rolls them out | ❌ You trigger them yourself |
+| Native CloudWatch / IAM | ✅ Native — same as cloud EKS | ⚠️ Limited (EKS Connector for read-only console; IAM Roles Anywhere bolt-on) |
+| Connectivity to AWS | **Required** | Optional (works disconnected) |
+| Cost model | Subscription for the rack + usage | Open source (free) + paid support tier optional |
+| Picked when | "AWS-managed K8s on-prem with full AWS API surface" | "Curated K8s distro I run on my own kit with full control" |
+
+**Keyword decoder:**
+
+| Phrase | Points to |
+| ------ | --------- |
+| *"AWS-managed services and APIs"* | **Outposts** |
+| *"automated Kubernetes upgrades"* | **Outposts** |
+| *"CloudWatch integration"* / *"IAM features"* (native, not bolt-on) | **Outposts** |
+| *"data must remain on-premises"* + *"AWS-managed"* | **Outposts** (rack is physically in your DC, AWS manages it remotely) |
+| *"on our own hardware"* / *"customer-owned servers"* | **EKS Anywhere** |
+| *"self-managed Kubernetes distribution"* | **EKS Anywhere** |
+
+> *I got this one wrong on a practice exam: regulated financial-services company wants on-prem K8s with AWS-managed services, automated upgrades, native CloudWatch and IAM. Answer was **Outposts**, not EKS Anywhere. The phrase **"AWS-managed services and APIs"** is the Outposts giveaway — EKS Anywhere is self-managed.*
+
+### What Outposts is NOT
+
+| Confused with | Actually is |
+| ------------- | ----------- |
+| **EKS Anywhere** | Self-managed K8s distro on **your** hardware. Outposts is AWS-managed on **AWS** hardware in your DC |
+| **ECS Anywhere** | Run ECS on your own EC2/on-prem servers using SSM-managed agents — no AWS hardware. Outposts is AWS hardware |
+| **AWS Snow Family** | Snowball/Snowmobile = offline bulk data transfer (one-time migration). Outposts = persistent on-prem AWS presence for ongoing workloads |
+| **AWS Local Zones** | Smaller AWS regions placed in metro areas (LA, NYC, etc.) for low-latency to nearby users. AWS-owned, AWS-located — **not in your DC**. Outposts is AWS hardware in **your** DC |
+| **AWS Wavelength** | AWS infra inside 5G carrier networks (Verizon, KDDI) for mobile edge latency. Telecom-edge, not customer-DC |
+| **Direct Connect** | A private network *link* to AWS via a colo cross-connect. No AWS hardware on your side. Outposts is hardware in your DC |
+| **AWS Dedicated Host** | A physical EC2 host **inside AWS** reserved for your workloads. Outposts is AWS hardware **on-prem** |
+| **VMware Cloud on AWS** | VMware running on AWS bare metal **in AWS regions** — for VMware customers moving to cloud. Outposts is the reverse direction (AWS in your DC) |
+
+### Exam Triggers for Outposts
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"On-prem K8s with AWS-managed services, automated upgrades, native CloudWatch/IAM, data must stay on-premises"* | **EKS on AWS Outposts** |
+| *"Regulated workload — data physically on-prem but want AWS-managed compute"* | **AWS Outposts** |
+| *"Low single-digit ms latency from on-prem app to AWS services"* | **Outposts** (services run locally on the rack) |
+| *"Run RDS / EKS / EC2 inside our own data centre"* | **AWS Outposts** (with the corresponding service "on Outposts") |
+| *"Same APIs and tooling as AWS region, but on-prem"* | **AWS Outposts** |
+| *"Self-managed K8s on our own hardware, with AWS-branded distro"* | **EKS Anywhere** (NOT Outposts) |
+| *"Low latency to users in Los Angeles but we want it AWS-owned"* | **AWS Local Zones** (NOT Outposts) |
+| *"Bulk one-time data migration of 50 TB from our DC to S3"* | **Snowball Edge** (NOT Outposts) |
+| *"Persistent on-prem AWS presence for production workloads"* | **AWS Outposts** |
+| *"Run AWS services at the 5G mobile network edge"* | **AWS Wavelength** (NOT Outposts) |
+
+> *AWS Outposts = AWS-owned, AWS-managed hardware physically installed in **your** data centre, exposing the regular AWS API surface for a subset of services (EC2, EBS, EKS, ECS, RDS, S3 on Outposts, etc.). Pick Outposts when the question wants **on-prem data residency AND AWS-managed services AND native CloudWatch/IAM/automated upgrades**. NOT EKS Anywhere (that's self-managed on your hardware), NOT Local Zones (AWS-located, not in your DC), NOT Wavelength (5G edge). The "AWS-managed" language is the giveaway.*
 
 ## CloudFront and Global Accelerator
 
@@ -13537,6 +14585,59 @@ The DLQ isolates these broken messages so they don't block the thousands of heal
 
 Standard is the default when you need speed and can handle duplicates/reordering. FIFO is the safe choice when order or exactly-once matters.
 
+**FIFO throughput threshold table (the exam-favourite trap):**
+
+A FIFO question that includes a **concrete msg/sec number** is testing whether you know FIFO has tiered throughput limits and which tier to pick. Anchor on the **300/sec floor**.
+
+| Required rate | What you need |
+| ------------- | ------------- |
+| **≤ 300 msg/sec** | **SQS FIFO** (default, no batching) |
+| **300 – 3,000 msg/sec** | **SQS FIFO + batching** (`SendMessageBatch` / `ReceiveMessageBatch`, up to 10 messages per call — 10× boost) |
+| **> 3,000 msg/sec** | **SQS FIFO with High-Throughput mode** enabled (~70,000+ msg/sec per region) |
+| Any rate, no ordering needed | **SQS Standard** (unlimited throughput) |
+
+The "select two" trap pattern:
+
+> *"Process ~1,000 msg/sec, messages must be in order"*
+>
+> Correct pair: (1) **Use SQS FIFO** (for ordering) + (2) **Use batching** (to lift the ceiling from 300 to 3,000)
+>
+> Picking only "Use SQS FIFO" fails — defaults cap you at 300/sec and the workload throttles.
+
+**Key nuance — FIFO ordering is per `MessageGroupId`, not per queue:**
+
+Messages with the same `MessageGroupId` are strictly ordered relative to each other. Different group IDs process in parallel. If your throughput needs span many independent ordering streams (e.g., per customer / per account), use the natural identifier as the group ID — you get parallelism with per-group ordering, often without needing High-Throughput mode.
+
+**Anchor rule:** *FIFO + a stated msg/sec number = the question is testing batching (or High-Throughput mode at the higher tiers). The number is the clue.*
+
+**Serverless ingestion decoder — SQS vs Firehose vs KDS vs MSK:**
+
+When a question says *"fully serverless, no capacity to provision, no manual response to volume"* and lists multiple ingestion options, the disambiguator is what **other** signal words appear.
+
+| Signal in the question | Answer | Why |
+| ---------------------- | ------ | --- |
+| **No destination named, no real-time analytics, no replay** — just "decouple producer and consumer, fully serverless" | **SQS** | Most stripped-down serverless option — zero capacity concept, ever. The exam picks it when there are no other steering signals |
+| *"Deliver streaming data to **S3 / Redshift / OpenSearch / Splunk**"* | **Kinesis Data Firehose** | The only Kinesis variant whose job is "stream → managed destination" with no capacity to manage |
+| *"Real-time analytics on the stream"* / *"multiple consumers"* / *"consumers can replay from earlier in the stream"* | **Kinesis Data Streams (on-demand)** | Replay, multi-consumer fan-out, per-shard ordering — none of which SQS or Firehose give you |
+| *"Real-time SQL / Flink on the stream"* | **Managed Service for Apache Flink** (formerly Kinesis Data Analytics) | The processing layer over KDS / MSK |
+| *"Kafka-compatible, fully serverless"* | **MSK Serverless** | Kafka API without brokers to provision |
+| *"Kafka-compatible, fine-grained broker / config control"* | **Amazon MSK** (provisioned) | Not serverless — when Kafka tooling matters and serverless doesn't |
+| *"IoT devices over MQTT"* | **AWS IoT Core** | Device-side ingestion; then pipes into Firehose / KDS / SQS for downstream |
+| *"Event bus, content-based routing, SaaS integrations, low-to-medium volume"* | **EventBridge** | Event routing, not a high-volume ingestion pipeline |
+
+The "what tipped it" disambiguator (worth memorising):
+
+| If the question says... | Steers you to |
+| ----------------------- | -------------- |
+| **No destination** mentioned | **SQS** (default-serverless ingestion) |
+| **Destination = S3/Redshift/OpenSearch/Splunk** | **Firehose** |
+| **Replay / multiple consumers / per-shard order** | **Kinesis Data Streams** |
+| **Kafka** named anywhere | **MSK / MSK Serverless** |
+| **MQTT / 'IoT devices'** | **IoT Core** |
+| **'Event bus' / SaaS partner events** | **EventBridge** |
+
+> *"Fully serverless ingestion" matches multiple services. The disambiguator is the **other** word in the question — destination, replay, analytics, MQTT, Kafka, event bus. With **none of those**, the answer collapses to **SQS** because it's the most-stripped-down option with zero capacity concept. Firehose is for streaming-to-storage; KDS is for replay/real-time; MSK is for Kafka.*
+
 **SQS + ASG — scaling consumers based on queue depth:**
 
 ```
@@ -13573,6 +14674,8 @@ SQS is a public AWS API — it has **no ENI in your VPC**, so you **cannot attac
 - *"buffer writes to a database"* → SQS (see below)
 - *"messages processed out of order"* → switch to SQS FIFO
 - *"messages being processed twice"* → increase visibility timeout or switch to FIFO
+- *"in-order processing at 1,000+ msg/sec"* → **SQS FIFO + batching** (default FIFO caps at 300/sec)
+- *"in-order processing at 10,000+ msg/sec"* → **SQS FIFO with High-Throughput mode**
 - *"scale consumers based on workload"* → SQS + CloudWatch Alarm + ASG
 - *"debug failed messages"* → Dead Letter Queue
 - *"restrict cross-account access to a queue"* → queue policy (resource-based)
@@ -17222,6 +18325,73 @@ Step Functions workflow:
 | Execution model | Exactly-once | At-least-once |
 | Cost | Per state transition | Per execution + duration |
 | Use case | Long-running workflows, human approval | High-volume event processing (IoT, streaming) |
+
+**The four service-integration patterns:**
+
+When a Step Functions state calls another AWS service, you pick one of four patterns. This is what determines how the workflow waits (or doesn't) for the downstream work.
+
+| Pattern | ARN suffix | Behaviour | Use when |
+| ------- | ---------- | --------- | -------- |
+| **Request-response** (default) | `:lambda:invoke` | Fire-and-forget — gets the API's immediate response and moves on | Most calls — Lambda, DynamoDB, SNS publish, etc. |
+| **Run a Job** | `.sync` | Waits until the downstream job *completes* before moving on | Long-running synchronous jobs — **ECS RunTask, Batch SubmitJob, Glue StartJobRun, SageMaker training, EMR step** |
+| **Wait for Callback** | `.waitForTaskToken` | Pauses workflow, hands out a **task token**, resumes only when something external calls `SendTaskSuccess` / `SendTaskFailure` with that token | **Human approval, external SaaS waits, async third-party callbacks** — workflow can hold state up to 1 year |
+| **Activity** | n/a — uses Activity tasks | A worker pool you run polls Step Functions for tasks via `GetActivityTask` | Legacy pattern for self-managed worker fleets (rare today — `.waitForTaskToken` usually wins) |
+
+**Why the four patterns matter:**
+
+```
+Request-response (default):
+  State A → call Lambda → got response → State B
+                          (no waiting beyond the Lambda call)
+
+.sync (run a job):
+  State A → start ECS task → ............ wait until task exits ............ → State B
+                              (Step Functions polls for completion automatically)
+
+.waitForTaskToken (callback):
+  State A → send message to SQS with token → ... PAUSED ... → manager clicks approve →
+            external system calls SendTaskSuccess(token, output) → State B resumes
+                              (workflow can pause for up to 1 year)
+```
+
+**Worked example — human approval flow using `.waitForTaskToken`:**
+
+```
+1. Workflow starts (employee submits expense)
+        ↓
+2. State: "Wait for approval"
+   → uses arn:aws:states:::sqs:sendMessage.waitForTaskToken
+   → posts a message to SQS containing the task token + expense details
+        ↓
+3. Step Functions PAUSES — execution stays in "Wait" state, no charge for compute
+        ↓
+4. Approval worker (Lambda / app) reads SQS → notifies manager via Slack / email
+        ↓
+5. Manager clicks "Approve" → app calls SendTaskSuccess(token, "approved")
+        ↓
+6. Step Functions RESUMES on the next state → process payment
+```
+
+The pause-and-resume model is the magic — workflows can wait days, weeks, or up to a year on a single execution without burning compute.
+
+**`.sync` vs `.waitForTaskToken` (the exam-favourite distinction):**
+
+| | `.sync` | `.waitForTaskToken` |
+| - | ------- | -------------------- |
+| **Waits for what?** | An AWS service's own job-completion signal | An external system calling `SendTaskSuccess` with a token |
+| **Knows when done how?** | Step Functions polls the service's API (e.g., `DescribeJob`) | The external system explicitly notifies |
+| **Use for** | ECS task, Batch job, Glue job, SageMaker training, EMR step | Human approval, async SaaS callback, custom worker fleets |
+| **Max wait** | Tied to the underlying service's own time limits | Up to **1 year** (Standard workflow lifetime) |
+
+**Exam triggers for the patterns:**
+
+| Phrasing | Pattern |
+| -------- | ------- |
+| *"Wait for an ECS task / Batch job / Glue job / SageMaker training to finish"* | **`.sync`** |
+| *"Pause workflow until a human clicks approve"* | **`.waitForTaskToken`** |
+| *"Wait for a callback from a third-party SaaS"* | **`.waitForTaskToken`** |
+| *"Fire a Lambda and immediately proceed with its return value"* | **Request-response** (default) |
+| *"Self-hosted worker pool polls Step Functions for tasks"* | **Activity** (rare today) |
 
 **Real-world examples:**
 
