@@ -266,7 +266,7 @@
   - [Kubernetes basics — Pods, Deployments, Services, Ingress](#kubernetes-basics--pods-deployments-services-ingress)
   - [Kubernetes scaling — HPA, Cluster Autoscaler, Karpenter](#kubernetes-scaling--hpa-cluster-autoscaler-karpenter)
   - [IRSA (IAM Roles for Service Accounts)](#irsa-iam-roles-for-service-accounts)
-  - [AWS App Runner](#aws-app-runner)
+  - [AWS App Runner (being discontinued)](#aws-app-runner-being-discontinued)
 - [RDS (Relational Database Service)](#rds-relational-database-service)
   - [RDS and Aurora Security](#rds-and-aurora-security)
   - [RDS Backups](#rds-backups)
