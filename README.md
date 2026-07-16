@@ -10990,6 +10990,32 @@ DMS performance depends on the replication instance size. Right-sizing matters:
 - **Large instances** (c5/r5.xlarge+): high-volume production, parallel table loads
 - **Multi-AZ** option for the replication instance during long-running CDC migrations — survives AZ failures without restarting the migration
 
+### DMS as a data-pipeline bridge (non-database uses)
+
+DMS supports **non-database sources and targets** — worth knowing because the service name misleadingly suggests databases only:
+
+| Bridge | Use case |
+| ------ | -------- |
+| **S3 → Kinesis Data Streams** | Continuously stream structured files (CSV / Parquet / JSON) from a data lake into a real-time processing pipeline — **fully managed, no custom code** |
+| **S3 → Kinesis Data Firehose** | Batch to streaming with buffering / transformation before target |
+| **RDBMS → Kinesis / MSK** | Database CDC events streamed for real-time analytics |
+| **Kafka → S3 or RDBMS** | Bring on-prem Kafka data into AWS |
+| **MongoDB / DocumentDB → Kinesis** | NoSQL CDC to stream processing |
+| **Any DB → S3 (Parquet)** | Data lake ingestion — DMS writes Parquet-format files |
+
+**The S3 → Kinesis bridge is exam-tested** as an alternative to S3 Event Notifications + Lambda:
+
+| Signal | Answer |
+| ------ | ------ |
+| *"Bridge between S3 and Kinesis, no custom code, managed"* | **DMS S3 → Kinesis bridge** |
+| *"Continuous streaming of structured data from S3 to Kinesis"* | **DMS** |
+| *"CDC-like ongoing flow from S3 to Kinesis"* | **DMS** |
+| *"File arrives in S3 → trigger arbitrary processing (custom code, transform, notify)"* | **S3 Event Notifications → Lambda** |
+| *"Non-tabular data (images, videos) arriving in S3"* | **S3 Event Notifications → Lambda** |
+| *"CSV / Parquet rows into a real-time pipeline"* | **DMS** |
+
+**The rule of thumb:** structured tabular data + continuous streaming + no custom code = DMS. Arbitrary file processing with custom logic = Lambda.
+
 ### When DMS Is Not the Answer
 
 Common confusions on the exam:
@@ -10997,6 +11023,7 @@ Common confusions on the exam:
 - **Lift-and-shift VM (the whole server, not just the DB)** → **AWS Application Migration Service (MGN)** or **VM Import**, not DMS
 - **Migrate Hadoop / S3 data lake content** → **AWS DataSync** or **Snowball** depending on volume, not DMS
 - **Migrate the OS + database on EC2** → MGN, then point DMS at the new instance if you want to move the DB engine afterward
+- **Arbitrary file processing on S3 arrival (custom code)** → **S3 Event Notifications → Lambda**, not DMS. DMS is for structured tabular data pipelines
 - **Continuous data integration between cloud systems forever** → DMS *can* do this but a streaming service (Kinesis, MSK) or change data capture pipeline is often a better long-term answer
 
 ### DMS vs Native DR for RDS and ElastiCache
