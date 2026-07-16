@@ -263,6 +263,8 @@
   - [ECS Task Placement (EC2 only)](#ecs-task-placement-ec2-only)
   - [ECS Capacity Providers](#ecs-capacity-providers)
   - [EKS (Elastic Kubernetes Service)](#eks-elastic-kubernetes-service)
+  - [Kubernetes basics — Pods, Deployments, Services, Ingress](#kubernetes-basics--pods-deployments-services-ingress)
+  - [Kubernetes scaling — HPA, Cluster Autoscaler, Karpenter](#kubernetes-scaling--hpa-cluster-autoscaler-karpenter)
   - [IRSA (IAM Roles for Service Accounts)](#irsa-iam-roles-for-service-accounts)
   - [AWS App Runner](#aws-app-runner)
 - [RDS (Relational Database Service)](#rds-relational-database-service)
@@ -9145,6 +9147,221 @@ When using EC2, the nodes boot from an AMI. AWS provides optimised AMIs (Amazon 
 - *"run Kubernetes pods without managing nodes"* → EKS on Fargate
 - *"need GPU for ML pods on Kubernetes"* → EKS on EC2
 - *"harden the OS on container nodes"* → Bottlerocket AMI
+
+### Kubernetes basics — Pods, Deployments, Services, Ingress
+
+For the SAA-C03 exam, know the K8s vocabulary well enough to recognise it in questions and map it to ECS equivalents. The concepts are the same shape as ECS — different names.
+
+#### What a Pod actually is
+
+**A Pod = 1 or more containers that share the same network namespace, storage volumes, and lifecycle.** The smallest unit Kubernetes deploys. Equivalent shape to an ECS Task.
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Pod                                                  │
+│  ┌────────────────────────────────────────────────┐  │
+│  │ Container 1 (your app — nginx on port 80)       │  │
+│  ├────────────────────────────────────────────────┤  │
+│  │ Container 2 (sidecar — log shipper)             │  │
+│  ├────────────────────────────────────────────────┤  │
+│  │ Container 3 (sidecar — metrics exporter)        │  │
+│  └────────────────────────────────────────────────┘  │
+│                                                       │
+│  All containers share:                                │
+│    • ONE Pod IP (10.0.5.42)                          │
+│    • ONE localhost — reach each other on             │
+│      localhost:port                                   │
+│    • Shared volumes (mounted into all containers)     │
+│    • Same lifecycle — start/stop as a unit           │
+└──────────────────────────────────────────────────────┘
+
+Same shape as an ECS Task with multiple containers.
+Both platforms group tightly-coupled containers this way.
+Most Pods have just ONE container — multi-container is for
+sidecar patterns (log shipping, service mesh proxy, init).
+```
+
+#### The Deployment + Service + Ingress trio
+
+Kubernetes splits what ECS calls "Service" into two concepts:
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Deployment "web-app"       ← manages Pod replicas  │
+│    replicas: 3                                       │
+│    strategy: RollingUpdate                           │
+│    template: (Pod Spec)                              │
+└──────────────────┬──────────────────────────────────┘
+                   │  Maintains 3 identical Pods
+                   ▼
+       ┌──────┬──────┬──────┐
+       ▼      ▼      ▼      ▼
+     Pod-1  Pod-2  Pod-3
+     10.0.5.10  10.0.5.11  10.0.5.12
+     (labels: app=web-app)
+
+┌─────────────────────────────────────────────────────┐
+│  Service "web-svc"          ← stable network LB     │
+│    ClusterIP: 10.100.1.5:80                          │
+│    Selector: app=web-app                             │
+└──────────────────┬──────────────────────────────────┘
+                   │  Load balances across matching Pods
+                   ▼
+                (routes to Pod-1, Pod-2, or Pod-3)
+
+┌─────────────────────────────────────────────────────┐
+│  Ingress "web-ingress"      ← HTTP routing (Layer 7)│
+│    Host: app.example.com                             │
+│    Rules: / → web-svc:80                             │
+└──────────────────┬──────────────────────────────────┘
+                   │  Provisions an AWS ALB in EKS
+                   ▼
+                Internet → ALB → Service → Pods
+```
+
+- **Deployment** = manages replica count + rolling updates (like half of ECS Service)
+- **Service** = stable IP + load balancer for a set of Pods (like the LB part of ECS Service)
+- **Ingress** = HTTP/HTTPS routing rules (in EKS: AWS ALB Ingress Controller creates a real ALB)
+
+#### The four Service types
+
+Different Services expose Pods differently:
+
+| Type | Behaviour | AWS equivalent |
+| ---- | --------- | -------------- |
+| **ClusterIP** (default) | Internal-only virtual IP inside the cluster | Internal service discovery |
+| **NodePort** | Exposes on a specific port on every node's IP | Each node acts as an entry point |
+| **LoadBalancer** | Provisions a cloud load balancer — **AWS creates an NLB** by default | NLB in front of Pods |
+| **ExternalName** | DNS CNAME to an external service | No traffic routing |
+
+#### The full K8s resource glossary (with ECS anchor)
+
+| K8s resource | Purpose | ECS analogue |
+| ------------ | ------- | ------------- |
+| **Pod** | 1+ containers sharing network/storage | ECS Task |
+| **Deployment** | Manages Pod replicas + rolling updates | Half of ECS Service (replica management) |
+| **ReplicaSet** | Ensures N Pods running (managed by Deployment) | (internal — no ECS analogue) |
+| **StatefulSet** | Deployment variant for stateful pods (stable identity + storage) | Rare in ECS — usually externalised |
+| **DaemonSet** | Runs one Pod per Node (log shippers, monitoring agents) | ECS daemon scheduling strategy |
+| **Job** | Runs a Pod to completion (batch) | ECS `RunTask` API |
+| **CronJob** | Scheduled Jobs (cron-like) | EventBridge → ECS `RunTask` |
+| **Service** | Stable network endpoint for a set of Pods | ALB + service discovery |
+| **Ingress** | HTTP/HTTPS Layer 7 routing rules | ALB with listener rules |
+| **ConfigMap** | Non-secret config data injected into Pods | ECS env vars from Parameter Store |
+| **Secret** | Sensitive data injected into Pods | ECS secrets from Secrets Manager |
+| **Namespace** | Logical grouping / multi-tenancy boundary | (no direct ECS analogue) |
+| **Node** | Worker VM (EC2 or Fargate) | ECS container instance |
+| **PersistentVolume (PV)** | Storage abstraction (backed by EBS/EFS in EKS) | EBS volume / EFS mount |
+| **PersistentVolumeClaim (PVC)** | Pod's request for storage | Pod's volume mount spec |
+
+#### The ECS → K8s translation cheat sheet
+
+For any exam question that uses K8s vocabulary, translate mentally:
+
+| ECS you know | K8s equivalent |
+| ------------ | -------------- |
+| Task | **Pod** |
+| Task Definition | **Pod Spec** (inside Deployment) |
+| Service (ECS) | **Deployment + Service** (K8s splits it) |
+| Container Instance | **Node** |
+| Cluster | **Cluster** (same term) |
+| Task Role | **Service Account (IRSA)** |
+| Task Execution Role | **Node IAM Role** |
+| Capacity Provider | **Node Group / Fargate Profile** |
+| Daemon scheduling | **DaemonSet** |
+| `RunTask` API | **Job** |
+| EventBridge → RunTask | **CronJob** |
+| ECS env vars from SSM | **ConfigMap / Secret** |
+| ALB integration | **Ingress + AWS Load Balancer Controller** |
+
+### Kubernetes scaling — HPA, Cluster Autoscaler, Karpenter
+
+Kubernetes has **two independent scaling axes** — pods and nodes — with separate mechanisms for each:
+
+```
+Layer 1: Pod scaling (HPA)
+   ↓  Scales pod replicas based on CPU / custom metrics
+   
+Layer 2: Node scaling (Cluster Autoscaler or Karpenter)
+   ↓  Provisions nodes when pods can't be scheduled
+```
+
+Both work together — HPA creates more Pods; when they can't be scheduled (not enough node capacity), Karpenter/CA provisions more Nodes to run them on.
+
+#### The Kubernetes scaling family
+
+| Mechanism | What scales | Trigger |
+| --------- | ----------- | ------- |
+| **Horizontal Pod Autoscaler (HPA)** | **Pod replica count** — same deployment, more/fewer pods | CPU / memory / custom metric per pod |
+| **Vertical Pod Autoscaler (VPA)** | **Pod resource requests** (CPU/memory per pod) — same replicas, bigger pods | Historical usage patterns |
+| **Cluster Autoscaler (CA)** | **Number of NODES** in the cluster | Pending pods that can't be scheduled |
+| **Karpenter** | **Number of nodes** — AWS-native, faster + smarter than CA | Pending pods — flexible instance-type selection |
+| **KEDA** (Kubernetes Event-Driven Autoscaling) | Pod replicas based on external events | Queue depth, event streams, custom sources |
+
+#### Cluster Autoscaler (the classic)
+
+- Kubernetes-native mechanism for scaling nodes
+- Works via **AWS Auto Scaling Groups** under the hood
+- Each EKS node group = one ASG
+- Detects pending pods → increases the ASG's desired capacity
+- Slow — ~2-5 min to launch a new node (ASG launch time)
+- One instance type per node group (limited flexibility)
+
+#### Karpenter (the modern AWS-native alternative)
+
+**Karpenter** replaces Cluster Autoscaler with a smarter, faster mechanism — AWS-recommended for new EKS clusters:
+
+| | **Cluster Autoscaler** | **Karpenter** |
+| - | ----------------------- | -------------- |
+| Node provisioning | Via ASG (indirectly) | **Directly launches EC2** (bypasses ASG) |
+| Instance type selection | Fixed per node group | **Dynamic** — picks best-fitting instance per pod |
+| Launch speed | ~2-5 min (ASG launch time) | **~30-60 sec** (direct EC2 API) |
+| Bin-packing / cost optimisation | Limited | **Strong** — right-sizes instance types automatically |
+| Spot support | Via mixed instances policy | **Native, first-class** |
+| Consolidation | ❌ | ✅ Actively moves pods to consolidate, terminates underutilised nodes |
+
+**Karpenter is the AWS-recommended default** for new EKS clusters. Cluster Autoscaler remains valid for legacy setups.
+
+#### Horizontal Pod Autoscaler (HPA)
+
+Scales the **number of pod replicas** based on observed metrics:
+
+```
+Deployment has 3 pod replicas
+   │
+   │  HPA watches CPU / memory / custom metric
+   │
+   ├── CPU averaging 80% (target 60%)
+   │       ↓  Scale UP: 3 → 5 pods
+   │
+   └── CPU averaging 20% (target 60%)
+           ↓  Scale DOWN: 5 → 3 pods
+```
+
+Metrics can be built-in (CPU/memory via metrics-server), custom (Prometheus/CloudWatch), or external (SQS depth, external APIs). HPA operates on **Deployments / StatefulSets / ReplicaSets** — doesn't touch nodes.
+
+#### The Fargate exception
+
+If EKS runs on **Fargate**, node scaling doesn't apply:
+
+- Each Pod gets its own Fargate-managed compute
+- No "node" concept for you
+- **Only HPA matters** — no Cluster Autoscaler / Karpenter needed
+- Trade-off: less flexibility, higher per-pod cost, zero node ops overhead
+
+#### The keyword decoder
+
+| Question phrasing | Answer |
+| ----------------- | ------ |
+| *"Automatically scale EKS worker nodes when pods can't be scheduled"* | **Cluster Autoscaler** or **Karpenter** |
+| *"Modern AWS-native node autoscaler with dynamic instance-type selection"* | **Karpenter** |
+| *"Scale pod replicas based on CPU utilisation"* | **HPA** |
+| *"Adjust pod CPU/memory requests based on usage"* | **VPA** |
+| *"Scale EKS based on SQS queue depth (event-driven)"* | **KEDA with SQS scaler** |
+| *"Faster than Cluster Autoscaler, right-sizes instance types"* | **Karpenter** |
+| *"EKS on Fargate — how does scaling work?"* | **HPA only** — no node scaling needed |
+
+> ***Kubernetes has two scaling axes: HPA scales pod replicas (metric-driven); Cluster Autoscaler / Karpenter scale the number of nodes (pending-pod driven).*** ***Karpenter** is the AWS-recommended modern node autoscaler — bypasses ASGs, launches EC2 directly, picks optimal instance types per workload, consolidates aggressively.* ***For EKS on Fargate**, only HPA applies — no nodes to scale.* ***For SAA-C03**: Cluster Autoscaler and Karpenter are the exam-relevant node scalers; HPA appears less often but worth recognising.*
 
 ### IRSA (IAM Roles for Service Accounts)
 
