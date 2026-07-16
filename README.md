@@ -3841,11 +3841,45 @@ EFS (Elastic File System) is a shared network drive that multiple EC2 instances 
 
 *Throughput mode:*
 
-| Mode | How it works | Use case |
-| ---- | ------------ | -------- |
-| Bursting | Scales with storage size; earns burst credits over time | Spiky, unpredictable workloads |
-| Provisioned | You specify MB/s regardless of storage size | Consistently high throughput needs |
-| Elastic | Automatically scales up/down with demand | Unpredictable workloads, easiest option |
+| Mode | How it works | Cost model | Use case |
+| ---- | ------------ | ---------- | -------- |
+| **Bursting** | Baseline throughput scales with storage size (50 KB/s per GB); **burst credits accumulate** during idle, spent during peaks | Per GB stored only — **cheapest** | **Low average + sporadic bursts** (credits fund the spikes); large filesystems with adequate size-based baseline |
+| **Provisioned** | You specify MB/s regardless of storage size | Per GB + provisioned MB/s (flat) | **Small filesystem with high sustained throughput**; predictable steady load |
+| **Elastic** | Auto-scales throughput to demand with no cap planning | Per GB + **per bytes read/written** | **Genuinely unpredictable spikes** where credit math doesn't work; zero-thinking safest default |
+
+**The Bursting vs Elastic disambiguator (exam-favourite):**
+
+Both handle spiky workloads, but they cost differently:
+
+| Workload pattern | Best fit | Why |
+| ---------------- | -------- | --- |
+| **Low average throughput + occasional bursts** | **Bursting** | Credits accumulate during quiet periods → available for bursts. Cheapest (no per-byte charge) |
+| **Truly unpredictable / high average with spikes** | **Elastic** | Bursting credits could exhaust; Elastic never throttles |
+| **Small filesystem + heavy bursts** | **Elastic** | Bursting's size-based baseline is too low; credits deplete fast |
+| **Predictable steady-state high throughput** | **Provisioned** | Flat pricing beats per-byte Elastic; guarantees the capacity |
+| **Zero thinking, safest default** | **Elastic** | AWS-recommended modern default; never throttles |
+
+**The Bursting credit mechanic — what makes it uniquely cheap:**
+
+Bursting is essentially "free bonus throughput" when the credit math works out:
+
+```
+Filesystem: 100 GB (0.1 TB)
+Baseline: 5 MB/s (50 KB/s × 100 GB)
+Max burst: 100 MB/s (small-filesystem cap)
+Credits: accumulate when throughput < baseline, up to 2.1 TB pool
+
+Scenario:
+   20 hours idle at ~0 MB/s → 3.6 TB of credit-equivalent accrued
+   4 hours at 100 MB/s burst → 1.44 TB spent
+   Net: still 2.16 TB in credits after the burst period
+
+Result: bursts effectively free (credits regenerate) + no per-byte charge
+```
+
+Elastic charges per byte accessed — so for genuinely low-average workloads, **Bursting is cheaper**. Only if your credits routinely deplete faster than they regenerate should you switch to Elastic (or if you want the zero-thinking safety net).
+
+**Exam signal**: *"Average daily demand is relatively low"* + *"sporadic bursts"* + *"optimal cost"* = **Bursting** (its designed use case). *"Unpredictable spikes"* alone with no low-average qualifier = **Elastic** (safer default).
 
 *Performance mode:*
 
