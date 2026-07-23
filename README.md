@@ -17967,6 +17967,52 @@ Better than DLQ — destinations work for both success and failure, DLQ only han
 - *"canary deployment for a Lambda function"* → Aliases with traffic splitting
 - *"share dependencies across multiple Lambda functions"* → Lambda Layers
 
+#### Lambda Layers
+
+**Anchored against a shared `node_modules` folder or a common `requirements.txt`** — Layers are a way to DRY up dependencies across many functions instead of shipping the same libs in every function's zip.
+
+**What it is:** A `.zip` archive (libraries, custom runtime, or shared assets) that Lambda mounts into `/opt/` at invocation time. Each function references it by ARN + version.
+
+**Numbered runtime flow:**
+
+1. Invocation arrives → Lambda service pulls the function `.zip` + all attached layer `.zip`s.
+2. Layers extracted into `/opt/` (merged in the order you attach them — later layer wins on conflict).
+3. Function code loaded into `/var/task/`.
+4. Runtime resolves `import numpy` (or equivalent) against `/opt/python/` (or `/opt/nodejs/node_modules/`, etc.) — as if the lib were locally installed.
+5. Handler runs.
+
+**Hard limits (memorise for exam):**
+
+- **Up to 5 layers** attached per function.
+- **250 MB unzipped total** — function code + all layers combined. If you need more, switch to a **container image** (10 GB).
+- Layers are **per-region** — publish separately to each region.
+- Layers are **immutable versions** — v1, v2, v3… you can't edit v1, only publish a new version.
+- Can be **shared cross-account** or made **public** (AWS ships some, e.g. NumPy/SciPy).
+
+**What Lambda Layers is NOT:**
+
+- **NOT Lambda Extensions** — Extensions are sidecar processes (Datadog/CloudWatch/Secrets caching agents) that run *alongside* your function; Layers are just files on disk.
+- **NOT a cold-start reducer** — adding layers can slightly *increase* cold start (more to download/extract). Not a perf trick.
+- **NOT app business logic** — reserve them for stable shared deps (SDKs, ML libs, custom runtimes); versioning your business logic through Layers is an anti-pattern.
+- **NOT container images** — Layers = 250 MB cap; if deps are bigger (PyTorch, headless Chromium), containers are the answer.
+
+**Exam Triggers:**
+
+- *"20+ functions all use the same pandas/numpy version — deduplicate"* → **Layers**
+- *"Custom runtime for Rust / PHP / Bash"* → **Layers** (custom runtime layer)
+- *"Reduce deployment package size / speed up CI upload"* → move deps to a **Layer**
+- *"Bump numpy without redeploying every function"* → publish new **Layer version**, functions update ARN
+- *"Deps are > 250 MB"* → **container image**, not layers
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Use Layers to hot-swap function business logic"* → wrong; use function versions/aliases.
+- *"Layers reduce cold start"* → wrong; slight *increase* if anything.
+- *"Attach a layer once, applies to all functions in the account"* → wrong; must attach per-function.
+- *"Store 500 MB ML model in a Layer"* → wrong (250 MB cap); use **container image** or **EFS-for-Lambda**.
+
+> *Mental model: Layers = a versioned, immutable, shared `/opt/` mount. Up to 5 per function, 250 MB total including code. For shared deps and custom runtimes — not business logic, not cold-start magic. When deps blow past 250 MB, jump to container images.*
+
 ### DynamoDB
 
 Fully managed **NoSQL** database — serverless, single-digit millisecond latency at any scale.
