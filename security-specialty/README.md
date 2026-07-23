@@ -206,6 +206,105 @@ Big table of the SG/NACL differences, plus the **evaluation order** (NACL inboun
 - **Permission boundaries** — apply to an IAM user/role; used for delegation (dev creates roles but can't exceed the boundary).
 - **Session policies** — apply per-STS-session, further narrow the assumed-role permissions.
 
+#### `aws:PrincipalOrgID` vs `aws:ResourceOrgID` — the two-arrow model
+
+Both are global IAM condition keys carrying an AWS Organizations ID (`o-xxxxx`). Every S3 (and most other) API request stamps **both** into the request context — you pick which one to condition on based on which direction of leakage you're trying to prevent.
+
+**One-line difference:**
+
+- **`aws:PrincipalOrgID`** = *who is calling?* → org ID of the **IAM user/role making the request**
+- **`aws:ResourceOrgID`** = *what are they touching?* → org ID of the **AWS resource being acted on**
+
+```
+                ┌───────────────────┐         ┌───────────────────┐
+   Request  →   │  Calling identity │  ─────► │   Target resource │
+                │  (IAM user/role)  │         │   (S3 bucket etc) │
+                └───────────────────┘         └───────────────────┘
+                        ▲                                ▲
+                        │                                │
+                aws:PrincipalOrgID              aws:ResourceOrgID
+              ("who is asking?")               ("what are they touching?")
+```
+
+**Scenario A — external identity reading YOUR bucket (inbound leakage):**
+
+- `aws:PrincipalOrgID` = **their org** (or empty if no org)
+- `aws:ResourceOrgID` = **your org**
+- Block with a **bucket policy** using `aws:PrincipalOrgID != o-MY-ORG` → Deny
+
+**Scenario B — your IAM user writing to SOMEONE ELSE'S bucket (outbound leakage / data exfil):**
+
+- `aws:PrincipalOrgID` = **your org** (caller is one of yours)
+- `aws:ResourceOrgID` = **their org**
+- Block with an **SCP** using `aws:ResourceOrgID != o-MY-ORG` → Deny
+
+**Decoder table:**
+
+| You want to stop… | Use this key | Put it in… |
+|---|---|---|
+| External identities reading your data | `aws:PrincipalOrgID` | Resource-based policy (bucket policy, KMS key policy). SCPs also work but only govern your own principals. |
+| Your identities writing data out to external accounts | `aws:ResourceOrgID` | **SCP** at the org root. Also usable in identity-based IAM policies. |
+| Belt-and-suspenders on both directions | Both keys | SCP + bucket policy — the exam-favourite combo |
+
+**Concrete side-by-side:**
+
+| Perspective | Request context | Which key catches it |
+|---|---|---|
+| "Alice from Company B tried to read our-bucket" | PrincipalOrgID=**B**, ResourceOrgID=**A** | `aws:PrincipalOrgID != o-A` on our bucket policy |
+| "Bob from our company tried to write to their-bucket" | PrincipalOrgID=**A**, ResourceOrgID=**B** | `aws:ResourceOrgID != o-A` in our SCP |
+
+#### Canonical SCP: prevent S3 sharing with identities outside the Organization
+
+**The classic SCS-C03 exam SCP.** Apply at the org root (or the highest OU covering all accounts).
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyS3AccessOutsideOrg",
+      "Effect": "Deny",
+      "Action": "s3:*",
+      "Resource": "*",
+      "Condition": {
+        "StringNotEqualsIfExists": {
+          "aws:PrincipalOrgID": "o-abcd1234ef"
+        }
+      }
+    }
+  ]
+}
+```
+
+**Why each piece is load-bearing:**
+
+- **`aws:PrincipalOrgID`** — the only condition key that natively expresses "in my org / not in my org" at org scale (survives account add/remove).
+- **`StringNotEqualsIfExists`** — the `IfExists` variant evaluates the condition only when the key is present. Without it, service-principal calls (CloudTrail, Config) that don't populate the key get denied — breaks legitimate flows.
+- **`Deny` on `s3:*`** — SCPs work by bounding what identity policies can do; this Deny caps every S3 action.
+- **Pair with a bucket policy** using the same condition for the actual cross-org data-access denial; the SCP is the belt-and-suspenders governance layer.
+
+**Common Anti-patterns (wrong SCP statements to spot):**
+
+- **Using `aws:SourceAccount`** — only covers a single account, not the whole org. Doesn't scale as accounts are added/removed.
+- **Omitting `IfExists`** — strict `StringNotEquals` treats a missing key as *not equal*, so legitimate service calls get denied.
+- **Applying to `s3:PutObject` only** — misses `s3:PutBucketPolicy`, `s3:PutObjectAcl`, `s3:PutBucketAcl`, `s3:PutAccessPointPolicy` — the actions that actually create external sharing.
+- **`Deny` on `s3:GetObject` only** — doesn't stop the write side; someone in your org could still push objects to an external bucket a third party will later read.
+- **`aws:PrincipalOrgPaths` StringEquals to a full OU path** — brittle; breaks when OUs are restructured. `PrincipalOrgID` is stable across restructures.
+
+**Exam Triggers:**
+
+- *"Prevent S3 objects being shared with IAM identities outside the organization"* → SCP with **`aws:PrincipalOrgID` StringNotEqualsIfExists** on `s3:*`
+- *"Enforce across an organization / at scale"* → SCP with `aws:PrincipalOrgID`, not `aws:SourceAccount`
+- *"Prevent our users writing to external accounts"* → SCP with **`aws:ResourceOrgID`**
+- *"Belt-and-suspenders with BPA"* → BPA blocks public; SCP + bucket policy with `aws:PrincipalOrgID` blocks cross-org
+
+**Nuance — SCP vs the newer RCP:**
+
+- **Resource Control Policies (RCPs)** (late-2024) are the resource-side equivalent of SCPs: attach to the org and gate access to *resources in your org* regardless of who's calling. Cleaner deployment than repeating the same condition on every bucket policy.
+- SCP with `aws:PrincipalOrgID` is still the exam-correct answer to the classic question — RCPs are only starting to appear in newer material.
+
+> *Mental model: **Principal** = who's holding the request; **Resource** = what the request is aimed at. Every request has both sides. Pick your condition key based on which side of that arrow you're trying to lock down.*
+
 ### IAM Identity Center and Federation
 
 - **Successor to AWS SSO**. Integrates with external IdPs (Okta, Azure AD) via SAML or SCIM.
