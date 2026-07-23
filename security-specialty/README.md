@@ -37,6 +37,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [AWS Config](#aws-config)
   - [Trusted Advisor](#trusted-advisor)
   - [Audit Manager](#audit-manager)
+  - [Service Catalog](#service-catalog)
 - [Cross-cutting Traps and Anti-patterns](#cross-cutting-traps-and-anti-patterns)
 - [Study Order Recommendation](#study-order-recommendation)
 
@@ -283,6 +284,62 @@ Anchored against the SAA `README.md` S3 encryption section. Depth for SCS:
 ### Audit Manager
 
 Automates evidence collection against frameworks (SOC 2, PCI, HIPAA). Continuously pulls from Config, CloudTrail, Security Hub findings into audit-ready reports.
+
+### Service Catalog
+
+**Anchored against a curated internal app store** — Service Catalog is the answer whenever the exam says *"predefined template + third-party or restricted developers + must deploy through an approved path."*
+
+**Core objects:**
+
+- **Product** = a CloudFormation template (versioned — updates ship as new product versions).
+- **Portfolio** = a collection of products, plus who's allowed to see them, plus the launch constraints that govern how they deploy.
+- **Launch constraint** = an IAM role Service Catalog assumes when provisioning the product; lets end users deploy without holding the underlying resource permissions.
+- **Provisioned product** = an instance the user launched (backed by a CloudFormation stack under the hood).
+
+**Canonical multi-account setup (the retail-store exam question):**
+
+1. **Central account** — create a portfolio, add the CloudFormation template as a product.
+2. **Share the portfolio to the OU** via AWS Organizations sharing (supports Org root, OU, or specific accounts).
+3. **In each member account** — import the shared portfolio and grant portfolio access to only the specific IAM roles/groups the dev teams assume.
+4. **Attach a launch constraint** with a service role holding the resource permissions the template needs. Devs get `servicecatalog:ProvisionProduct` on the product; they do NOT need direct IAM permissions on EC2/S3/RDS/etc.
+5. Devs launch products from the Service Catalog console/CLI; every deploy is auditable, matches the template, and can be terminated by the same portal.
+
+**Numbered launch flow:**
+
+1. Dev browses portfolio → sees only products they have access to.
+2. Dev picks a product and launches it → Service Catalog assumes the **launch constraint** role.
+3. That role creates the CloudFormation stack in the dev's account with the dev's parameters.
+4. Resources come up in the dev's account; the dev sees them as a "provisioned product" in Service Catalog.
+
+**Constraints (memorise the types):**
+
+- **Launch constraint** — service role used to provision (the security win).
+- **Template constraint** — restricts parameter values (e.g. "only these instance types").
+- **Notification constraint** — pipe stack events to SNS.
+- **Tag update / stack set / resource update** — additional governance knobs.
+
+**What Service Catalog is NOT:**
+
+- **NOT CloudFormation StackSets** — StackSets fans a template out from a central admin; Service Catalog lets *end users* self-serve within limits. StackSets = push-from-centre; Service Catalog = pull-with-guardrails.
+- **NOT Systems Manager Automation** — SSM Automation runs runbooks (operational tasks); Service Catalog provisions resources.
+- **NOT a code repo** — the template lives inside the product; devs never see the raw template unless you grant it.
+- **NOT AWS Marketplace** — Marketplace = third-party AMIs/products for purchase; Service Catalog = *your* org's approved templates.
+
+**Exam Triggers:**
+
+- *"Third-party developers deploy per a predefined plan; restrict who can use the plan"* → **Service Catalog** with portfolio sharing + IAM access.
+- *"Developers must deploy without holding the underlying resource permissions"* → **launch constraint** with a service role.
+- *"Share pre-approved products across an Organization / OU"* → **Service Catalog Organization sharing**.
+- *"Restrict parameter values in a template (e.g. only t3.medium and below)"* → **template constraint**.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Give devs the CloudFormation template in S3 + `cloudformation:CreateStack` permission"* → devs also need every underlying resource permission; violates least privilege.
+- *"Use StackSets to give each team the deployment plan"* → StackSets is centrally driven; doesn't let per-store dev teams self-serve at their opening date.
+- *"Put the template in CodeCommit and let devs run a pipeline"* → repo access + pipeline permissions widen the surface; harder to restrict per-team access to just the plan.
+- *"Share the template on Confluence with a runbook"* → zero enforcement; devs can mutate.
+
+> *Mental model: Service Catalog = a curated app store for CloudFormation. Portfolio = an aisle. Product = an item on the shelf. Launch constraint = the item is installed by a robot with the right keys, not by the shopper.*
 
 ## Cross-cutting Traps and Anti-patterns
 
