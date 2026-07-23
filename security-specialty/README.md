@@ -257,6 +257,62 @@ Anchored against the SAA `README.md` S3 encryption section. Depth for SCS:
 - **Deny non-TLS:** bucket policy with `aws:SecureTransport: false → Deny`.
 - **Block Public Access** overrides everything — even a public bucket policy is neutered if BPA is on.
 
+#### Separation of duties — the two-lock pattern (SSE-KMS with a customer-managed CMK)
+
+**Anchored against the classic "vault needs two keys turned simultaneously" model.** SSE-KMS with a **customer-managed CMK** is the only S3 encryption mode where two independently-owned policies gate the plaintext path — a favourite SCS-C03 scenario.
+
+**The design:**
+
+- **Encryption:** every object stored with SSE-KMS using a customer-managed CMK (never `aws/s3`, never SSE-S3, never SSE-C).
+- **Bucket policy** — owned by the **operations team**; grants `s3:*` on the bucket. Grants **no** `kms:*`.
+- **KMS key policy** — owned by the **security team**; grants `kms:Decrypt / Encrypt / GenerateDataKey` only to the specific data-consuming principals. The ops team is not granted `kms:Decrypt`.
+
+**Numbered plaintext-download flow (the double lock):**
+
+1. Caller `GetObject` → S3 evaluates the **bucket policy / ACL** (ops-controlled).
+2. If allowed, S3 asks KMS to decrypt the object's stored DEK.
+3. KMS evaluates the **key policy** (security-controlled) — is the caller allowed `kms:Decrypt`?
+4. Only if both succeed does S3 return plaintext.
+
+**Failure-mode table:**
+
+| Mistake | Consequence |
+|---|---|
+| Ops team makes bucket world-readable | Attackers get **ciphertext only**; no `kms:Decrypt` → cannot obtain plaintext |
+| Security team over-grants `kms:Decrypt` | Extra principals still can't read objects unless bucket policy also allows them |
+| Both teams err simultaneously | Plaintext leak — the exact scenario the design prevents |
+
+**Two-team ownership rule of thumb (memorise):**
+
+| Resource | Owned by | Grants | Must NOT grant |
+|---|---|---|---|
+| S3 bucket policy | **Ops team** | `s3:*` to consumers | any `kms:*` |
+| KMS key policy | **Security team** | `kms:Decrypt/Encrypt/GenerateDataKey` to consumers | any `s3:*` |
+| IAM policies on the app | either | tie-breaker — cannot shortcut either lock | — |
+
+**Why the other S3 encryption modes fail this test:**
+
+- **SSE-S3** — S3-managed keys; no key policy exists to split. Bucket permissions alone gate plaintext.
+- **SSE-KMS with `aws/s3`** — the AWS-managed key policy is not editable by you; the security team has no independent lever.
+- **SSE-C** — key travels per-request in a header; no policy-driven team boundary.
+- **Client-side encryption (CSE)** — not "server-side" as the exam typically requires; also shifts the boundary to the app.
+
+**Exam Triggers:**
+
+- *"Separation of duties between bucket admins and key admins"* → **SSE-KMS + customer-managed CMK**, split policies.
+- *"One team's mistake must not expose plaintext"* → **double lock**: bucket policy AND key policy.
+- *"Encryption keys managed by the security team only"* → **customer-managed CMK**, never AWS-managed.
+- *"Server-side encryption of S3 with independent key control"* → **SSE-KMS + CMK**.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Use SSE-S3, security team owns the bucket policy"* → wrong; SSE-S3 has no separable key policy.
+- *"Use `aws/s3` and separate IAM policies"* → wrong; `aws/s3` key policy is not editable.
+- *"Use SSE-C and give the security team custody of the key material"* → wrong; SSE-C keys travel per-request, no policy split.
+- *"Encrypt client-side before upload"* → wrong; question typically specifies server-side.
+
+> *Mental model: SSE-KMS + CMK is the only S3 mode with **two independently-owned policies** on the plaintext path. Ops holds the bucket key, security holds the crypto key — plaintext requires both locks to open.*
+
 ### Certificate Manager (ACM) and Private CA
 
 - **ACM public certs** — free, auto-rotated. Only usable with AWS integrations (ALB, CloudFront, API Gateway, App Runner). **Cannot be exported.**
