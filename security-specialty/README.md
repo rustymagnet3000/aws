@@ -225,6 +225,38 @@ Only the following resources have them (memorise): **S3 buckets, KMS keys, SNS t
 - **Grants** — temporary programmatic permissions on a key (used by AWS services like RDS on your behalf); expire and can be retired.
 - **Multi-Region keys** — separate KMS keys with the same key material replicated across regions; app can encrypt in one region, decrypt in another.
 
+#### Customer-managed KMS key vs client-side encryption (disambiguation)
+
+Both terms contain "customer" — easy to conflate, favourite exam trap. They are **two orthogonal axes**:
+
+| Axis | Question it answers | Options |
+|---|---|---|
+| **Key ownership** | *Who controls the key policy, rotation, and lifecycle?* | AWS-managed, **customer-managed**, or customer-supplied |
+| **Where encryption happens** | *Does plaintext reach AWS before it's encrypted?* | **Server-side** (AWS encrypts) or **client-side** (your app encrypts first) |
+
+A **customer-managed KMS key (CMK)** answers ownership only. The key material still lives inside AWS KMS HSMs — you never see the bytes. You just own the *policy, alias, rotation schedule, and grants*.
+
+**Mode matrix (memorise for the exam):**
+
+| Mode | Key material lives | Encryption happens | Typical use |
+|---|---|---|---|
+| **SSE-S3** | AWS-owned, invisible | Server-side | Default S3 encryption |
+| **SSE-KMS with `aws/s3`** | AWS KMS HSM, AWS-controlled policy | Server-side | Zero-config KMS on S3 |
+| **SSE-KMS with a customer-managed CMK** | AWS KMS HSM, your policy | Server-side | The two-lock separation-of-duties design (above) |
+| **SSE-C** | You send the key in every request header | Server-side (AWS uses it in memory, discards) | Rare; niche compliance |
+| **CSE-KMS** | AWS KMS HSM (customer-managed CMK) | **Client-side** — app calls KMS for a DEK, encrypts locally | Pre-encrypt before `PutObject` |
+| **CSE-C** | You hold the key entirely, off AWS | **Client-side** | HYOK / BYOK |
+
+**The overlap that trips people up:** `CSE-KMS` uses a **customer-managed CMK** *and* is client-side encryption. So "customer-managed KMS key" can appear in either server-side or client-side modes — the term alone doesn't tell you where encryption happens.
+
+**Quick decision rule:**
+
+- Question says *"customer-managed KMS key"* → about **who owns the key policy**, not where encryption happens.
+- Question says *"client-side encryption"* → about **where encryption happens**, usually implies a KMS or externally-held key.
+- Both terms together → almost always **CSE-KMS** (client-side using a customer-managed CMK).
+
+> *Mental model: "Customer-managed" = **who holds the policy**. "Client-side" = **where the encryption code runs**. Two independent axes — always disambiguate before picking an answer.*
+
 ### Envelope Encryption
 
 **Numbered flow (SSE-KMS on S3):**
