@@ -128,6 +128,72 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
 4. **SNS** notifies the security team
 5. **Detective** used to investigate root cause after the fire is out
 
+#### Revoke compromised session credentials (the "stop exfil now" pattern)
+
+**The canonical SCS-C03 "attacker holds stolen temp creds, stop them immediately, minimise disruption" question.** GuardDuty raises `Exfiltration:S3/AnomalousBehavior` (or `UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration`); the attacker is downloading using STS creds harvested from a compromised EC2 instance profile.
+
+**The one right move:** attach an **inline Deny policy to the compromised IAM role** that revokes every session issued before "now" — the exact policy the IAM Console's **"Revoke sessions"** button generates:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RevokeOldSessions",
+      "Effect": "Deny",
+      "Action": "*",
+      "Resource": "*",
+      "Condition": {
+        "DateLessThan": {
+          "aws:TokenIssueTime": "2026-07-24T14:30:00Z"
+        }
+      }
+    }
+  ]
+}
+```
+
+**Why this is the surgical answer:**
+
+- STS creds live **~1 to 6 hours** — waiting them out means hours more exfil.
+- IAM stamps every STS session with a `TokenIssueTime`. A Deny that fires when `TokenIssueTime < NOW` kills **every existing session on that role instantly** — the stolen creds go dead mid-request.
+- **New sessions minted after the timestamp still work** — legitimate workloads that AssumeRole after the fix resume automatically.
+- **No bucket-policy change** — every other principal reading the bucket keeps working. Zero collateral disruption.
+
+**Numbered incident-response flow (memorise):**
+
+1. **Revoke sessions on the compromised role** — attach the inline `aws:TokenIssueTime` Deny → stops in-flight exfil in seconds.
+2. **Isolate the compromised EC2** — terminate, stop, or swap SG to deny-all-egress. Blocks new cred harvesting via IMDSv2.
+3. **Snapshot** the instance's EBS volume for forensics before termination.
+4. **Feed the finding** to Detective + Security Hub for blast-radius investigation (which objects were read? See S3 data events + CloudTrail).
+5. **Hand off** to dev team for the permanent fix (patch the vulnerability, tighten the role's `s3:GetObject` scope — was `Resource: *` too broad?).
+
+**The subtle IAM detail exam loves:**
+
+- **`aws:TokenIssueTime`** — condition key for revoking active sessions.
+- **Inline Deny wins** because IAM evaluates Deny before Allow — the role's Allow policy still grants `s3:GetObject`, but the explicit Deny short-circuits it.
+- **`aws:MultiFactorAuthPresent`** — different key, for requiring MFA, not revocation.
+- **`aws:SessionExpirationTime`** — when the session expires; not for revocation.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Terminate the EC2 instance"* alone → attacker already exfiltrated the creds; they keep working from the attacker's machine until natural expiry. Termination stops NEW cred harvesting but doesn't stop CURRENT exfil.
+- *"Attach a Deny statement to the S3 bucket policy blocking all access"* → too disruptive; blocks every legitimate consumer. Fails the "minimise disruption" requirement.
+- *"Rotate the IAM access keys"* → EC2 instance profiles don't use static access keys; there are no keys to rotate.
+- *"Delete the IAM role"* → nukes the role for every legitimate workload using it; breaks any trust relationships depending on the ARN. Overkill.
+- *"Enable S3 Object Lock"* → protects against *deletion*, not exfil / downloads.
+- *"Modify the role's trust policy so EC2 can't assume it"* → stops future AssumeRole calls but doesn't kill sessions already outstanding — stolen creds keep working until expiry.
+- *"Wait for the STS credentials to expire naturally"* → up to 6 hours of continued exfil. Not "immediate."
+
+**Exam Triggers:**
+
+- *"Attacker using compromised temp credentials"* + *"stop immediately"* → **revoke IAM role sessions via `aws:TokenIssueTime` inline Deny**
+- *"Minimise disruption to legitimate users"* → surgical revocation, **not** a bucket-policy blanket Deny
+- *"Compromised EC2 instance profile"* → dual action: revoke sessions + isolate the EC2
+- *"Immediate action while permanent fix is in progress"* → **inline policy on the role**, not architecture changes
+
+> *Mental model: the stolen creds are hostages. Deleting the role knocks down the whole building; a bucket-policy Deny cuts the water main. The **TokenIssueTime revocation** is a targeted taser — every session issued before the timestamp goes limp instantly, legitimate ones minted after keep working.*
+
 ## Domain 2 — Security Logging and Monitoring (18%)
 
 ### CloudTrail (deep dive)
