@@ -192,6 +192,65 @@ Severity scale: **Low 1.0–3.9, Medium 4.0–6.9, High 7.0–8.9**. Filter with
 - *"Enable CloudTrail to log S3 object reads"* → wrong; management events don't cover object-level. Enable **data events for S3**.
 - *"CloudTrail logs are always encrypted"* → wrong; S3 delivery uses SSE-S3 by default, but you can (and should) use SSE-KMS for stronger control.
 
+#### Federated-user forensics: identifying who took a destructive action
+
+**The canonical SCS-C03 forensics question** — "a federated user terminated an EC2 instance; find them." The audit trail is a **relay race** because federated users have no persistent IAM identity — every AWS action logs the *assumed role*, never the human's name.
+
+**The two events you must join:**
+
+1. **`AssumeRoleWithSAML`** (or `AssumeRoleWithWebIdentity` for OIDC) — the moment the human's IdP-issued assertion is exchanged for AWS creds:
+   - `userIdentity.principalId` — synthetic ID like `AROA1234:alice@company.com`
+   - `requestParameters.principalArn` (the IdP) + `roleArn` (the role assumed)
+   - **SAML NameID** (usually the email/UPN) — the "who" evidence
+2. **`TerminateInstances`** (or any subsequent action) — sees the assumed role only:
+   - `userIdentity.type` = `AssumedRole`
+   - `userIdentity.arn` = `arn:aws:sts::acct:assumed-role/RoleName/session-name`
+   - **`session-name`** (last path segment) — most IdPs set this to the user's email/UPN → often the shortcut
+
+**Numbered forensic flow:**
+
+1. Find the destructive event in CloudTrail Event History → `EventName = TerminateInstances`.
+2. Note `userIdentity.arn` → extract the **role session name** (last segment). Often that's already the username.
+3. If not, note the `eventTime` and `principalId` prefix (`AROAxxxx`).
+4. Filter CloudTrail for `EventName = AssumeRoleWithSAML` around that time, matching the same `principalId` prefix or `roleArn`.
+5. Read the SAML `NameID` in `requestParameters` → that's the federated user.
+
+**Join key across events (in order of preference):**
+
+- **`sts:sourceIdentity`** — immutable string the IdP passes at assume time; propagates to *every* downstream CloudTrail event. Requires `sts:SetSourceIdentity` in the trust policy + IdP configuration. Best possible attribution — collapses the two-event join to a single event.
+- **Role session name** — usually set by the IdP to the user's email/UPN; visible in every subsequent event's `userIdentity.arn`.
+- **`principalId` correlation** — fall back to matching `AROAxxxx:session-name` prefix between the destructive event and the `AssumeRoleWithSAML` event.
+
+**Federation-type variations:**
+
+| Federation type | Join event to look for |
+|---|---|
+| **SAML** (Okta / AD FS / PingFederate) | `AssumeRoleWithSAML` |
+| **OIDC** (GitHub Actions, Google, IIC via OIDC) | `AssumeRoleWithWebIdentity` |
+| **IAM Identity Center** | `AssumeRoleWithSAML` under the hood, but IIC's own logs give you the answer directly |
+| **IAM users** (no federation) | Single event — `userIdentity.userName` is already the human |
+
+**Modern one-step alternative — set it up before the incident:**
+
+- Turn on **`sts:sourceIdentity`** in the SAML/OIDC trust policy — every downstream event carries the human's identity in a single field.
+- **CloudTrail Lake** — SQL join of `TerminateInstances` to `AssumeRoleWithSAML` by `principalId` in a single query.
+- **Athena on the org trail in S3** — same story at scale.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Query IAM for the user"* → IAM has no user record for federated identities; nothing to query.
+- *"Check the IdP logs directly"* → the IdP knows who *logged in*, not what they did in AWS. Only useful if `AssumeRoleWithSAML` is missing (rare).
+- *"Enable CloudTrail after the incident"* → too late; CloudTrail management events are on by default anyway, but the write-side actions must already have been logged.
+- *"Use AWS Config to identify the actor"* → Config records resource state changes, not caller identity.
+
+**Exam Triggers:**
+
+- *"Federated user did X — identify them"* → **CloudTrail: destructive event → session name / `AssumeRoleWithSAML` join**
+- *"Ensure future forensics is one-step"* → **enable `sts:sourceIdentity`** in the trust policy
+- *"Attribute actions across an org trail"* → **CloudTrail Lake (SQL)** or **Athena on the S3-delivered trail**
+
+> *Mental model: for federated users, the audit trail is a **relay race** — the destructive event holds the baton (session name), and `AssumeRoleWithSAML` holds the runner (the human). Join by `principalId` or session name. Configure `sts:sourceIdentity` up front and the race collapses to a single leg.*
+
 ### VPC Flow Logs
 
 **Anchored against a firewall log** — records IP traffic in/out of an ENI. Three levels: **VPC**, **subnet**, **ENI**.
