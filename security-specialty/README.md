@@ -668,6 +668,59 @@ A **customer-managed KMS key (CMK)** answers ownership only. The key material st
 
 Result: every object gets a unique DEK; the CMK never touches the data.
 
+#### Client-side encryption + tamper detection for DynamoDB (AWS Database Encryption SDK)
+
+**The canonical SCS-C03 "protect from the point of creation + detect unauthorised changes" question.** Two phrases in the stem lock in the answer:
+
+- *"From the point of creation until it is stored and later read"* → **client-side encryption**. SSE-KMS starts at storage, not at creation, so it's out.
+- *"Detect whether anyone has changed the stored data without authorization"* → **cryptographic signing / integrity**, not audit logs. CloudTrail tells you *who* wrote; only a signature tells you whether the stored bytes have been altered.
+
+**The tool:** the **AWS Database Encryption SDK for DynamoDB** (formerly the *DynamoDB Encryption Client*), a client-side encryption library. It uses **KMS** as the master key provider and does two things in one call:
+
+1. **Encrypts** sensitive attributes on the client before `PutItem`.
+2. **Signs** each item with an HMAC (also derived via KMS). On `GetItem`, the SDK verifies the signature — tampered items fail verification and error out instead of returning silently bad data.
+
+**Numbered flow:**
+
+1. App calls `EncryptItem` with plaintext + table config specifying which attributes to encrypt vs sign vs leave plaintext.
+2. SDK asks KMS for a **data key** (envelope encryption): plaintext DEK + encrypted DEK.
+3. SDK encrypts the sensitive attributes with the DEK, computes an HMAC over the item, and stores encrypted DEK + signature as extra DynamoDB attributes alongside the ciphertext.
+4. App `PutItem` → DynamoDB stores the encrypted + signed item.
+5. On `GetItem`, `DecryptItem` retrieves the encrypted DEK, asks KMS to decrypt (KMS enforces its key policy here), verifies HMAC, decrypts attributes. **Signature failure = error, not silent bad data.**
+
+**Attribute-action model — memorise the three types:**
+
+- **ENCRYPT_AND_SIGN** — sensitive; encrypted and included in signature.
+- **SIGN_ONLY** — plaintext but tamper-detectable (primary/sort keys — DynamoDB needs them plaintext for lookups, but you still want to detect if someone rewires key ↔ payload).
+- **DO_NOTHING** — plaintext, not signed (GSI keys / non-sensitive searchable fields).
+
+**Client-side vs server-side decoder (memorise for the exam):**
+
+| Stem phrase | Encryption scope required |
+|---|---|
+| *"Encrypt data at rest"* | Server-side (SSE-KMS is enough) |
+| *"Encrypt in transit"* | TLS |
+| *"Encrypt from the point of creation"* / *"before data leaves the application"* / *"AWS should never see plaintext"* | **Client-side** (AWS Database Encryption SDK) |
+| *"Detect tampering / unauthorised modification of stored data"* | **Cryptographic signing** (SDK's HMAC), NOT audit logs |
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Enable SSE-KMS on the DynamoDB table"* → satisfies at-rest encryption only, starts at storage. Fails "from point of creation." Doesn't sign.
+- *"Enable DynamoDB Streams + CloudTrail to log changes"* → audit trail, not tamper detection. An attacker with a legitimate role writes normally-looking updates that Streams records as any other change.
+- *"Store hashes of each row in a separate table"* → home-grown; exam prefers managed. Loses per-attribute granularity, no key rotation help.
+- *"Use QLDB instead"* → cryptographic verifiability, but different service; the question specified DynamoDB.
+- *"TLS + SSE-KMS is enough"* → protects the pipe and the disk, not the item at the service boundary, and no signing.
+- *"Encrypt the whole item as one blob before PutItem"* → reinvents what the SDK gives you; no attribute-level granularity, no signing, no key rotation.
+
+**Exam Triggers:**
+
+- *"Highly sensitive data + protect from creation + detect tampering"* → **AWS Database Encryption SDK for DynamoDB** with KMS
+- *"Attribute-level encryption in DynamoDB"* → **Database Encryption SDK**, not SSE-KMS
+- *"AWS operators should never see plaintext"* → **client-side encryption** pattern
+- *"Cryptographically verify data has not been altered"* → SDK's **SIGN** actions
+
+> *Mental model: **SSE-KMS = door lock** on storage (keeps casual reads out). **Client-side encryption + signing = tamper-evident seal on the envelope itself** — the mailman never sees the letter, and if anyone slit the seal, you know on open. "From creation" + "detect tampering" → reach for the AWS Database Encryption SDK.*
+
 ### Secrets Manager vs Parameter Store
 
 | | Secrets Manager | Parameter Store (SSM) |
