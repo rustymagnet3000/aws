@@ -100,6 +100,53 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
 
 > *Mental model: GuardDuty = **eyes**. Wire it to EventBridge to get **hands** (auto-remediation).*
 
+#### Canonical detect-and-alert pipeline: GuardDuty → EventBridge → SNS
+
+The single most-tested "compromise detected, notify the team" flow on SCS-C03. Every "continuous, native, no extra infrastructure" scenario decomposes to this chain.
+
+**Numbered runtime flow:**
+
+1. GuardDuty analyses VPC Flow Logs + CloudTrail + DNS → detects an anomaly (e.g. EC2 instance C2 callback, cryptomining, unusual API from an instance role).
+2. GuardDuty emits a **finding event** (JSON) onto the **default EventBridge bus** — no configuration needed for the emit.
+3. EventBridge rule matches on `source = aws.guardduty` + a severity filter → targets an SNS topic.
+4. SNS pushes to every subscribed endpoint — email distribution list, Slack via Lambda, PagerDuty webhook, etc.
+5. Total wall-clock: seconds.
+
+**EventBridge event pattern (memorise the shape — high-severity only):**
+
+```json
+{
+  "source": ["aws.guardduty"],
+  "detail-type": ["GuardDuty Finding"],
+  "detail": { "severity": [ { "numeric": [ ">=", 7 ] } ] }
+}
+```
+
+Severity scale: **Low 1.0–3.9, Medium 4.0–6.9, High 7.0–8.9**. Filter with `>= 7` to catch High only; `>= 4` to catch Medium and above.
+
+**SNS gotchas the exam loves:**
+
+- **Email subscriptions must be confirmed** — first-time subscribers get a confirmation email; unconfirmed subscribers get nothing.
+- Distribution-list emails work — SNS treats the list address like any single subscriber and hands off to the mail server for fan-out.
+- SNS handles retries + delivery status; no custom code to write.
+
+**Why not the plausible alternatives:**
+
+- **CloudWatch Alarm on GuardDuty** — findings aren't metrics by default; you'd need a metric filter first. Indirect and lossy on severity.
+- **Lambda polling GuardDuty every N minutes** — pull-based, adds infra to manage, loses "continuous."
+- **SES for the notification** — SES is outbound *application* email; alerting fan-out = SNS.
+- **CloudTrail as detector** — CloudTrail records API calls; it doesn't detect malware or compromise patterns.
+- **Inspector as detector** — Inspector finds *vulnerabilities* (CVEs, network reachability); it doesn't spot compromise-in-progress.
+
+**Exam Triggers:**
+
+- *"Continuous, native, no extra agents, detect compromised EC2"* → **enable GuardDuty**
+- *"Notify by email on high-severity findings"* → **EventBridge rule → SNS topic → email subscription**
+- *"Filter findings by severity"* → **EventBridge event pattern with `severity` numeric matcher**
+- *"Compromise went undetected for N days"* → the question wants *detection* → **GuardDuty**, not CloudTrail
+
+> *Mental model: **GuardDuty is the eyes; EventBridge is the nerve; SNS is the mouth.** Every "detect + alert" question decomposes into this chain — anything else brings infra the question doesn't want.*
+
 ### Detective
 
 **Anchored against Splunk / graph-database forensics** — Detective ingests GuardDuty findings + VPC Flow Logs + CloudTrail and builds a **behavior graph** for investigation.
