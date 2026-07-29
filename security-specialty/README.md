@@ -147,6 +147,87 @@ Severity scale: **Low 1.0–3.9, Medium 4.0–6.9, High 7.0–8.9**. Filter with
 
 > *Mental model: **GuardDuty is the eyes; EventBridge is the nerve; SNS is the mouth.** Every "detect + alert" question decomposes into this chain — anything else brings infra the question doesn't want.*
 
+#### GuardDuty tuning — trusted IP list vs threat IP list vs suppression rules
+
+Three GuardDuty knobs sound similar and get confused on the exam. Each has a distinct effect on the finding pipeline:
+
+| Feature | Direction | Effect on findings | Hosted where |
+|---|---|---|---|
+| **Trusted IP list** | Allowlist | GuardDuty **skips analysis** — no findings generated for these IPs | S3 file, referenced by URI |
+| **Threat IP list** | Denylist (custom threat intel) | Any traffic to/from these IPs **generates** a new finding | S3 file, referenced by URI |
+| **Suppression rule** | Filter on generated findings | Findings **still generated** and billed, but auto-archived → hidden from Console | Configured inside GuardDuty (no S3 file) |
+
+**Question-phrasing decoder:**
+
+- *"No longer produces findings"* → **trusted IP list** (skips analysis entirely).
+- *"Hide known false-positive findings without stopping generation"* → **suppression rule**.
+- *"Add our own threat intel"* → **threat IP list**.
+
+**Trusted IP list — file format and example**
+
+Plain-text, one IP or CIDR per line. Blank lines and `#` comments allowed. Upload to S3, then reference the S3 URI from GuardDuty.
+
+```text
+# trusted-ips.txt — uploaded to s3://my-security-config/guardduty/trusted-ips.txt
+
+# Corporate egress (offices)
+203.0.113.42
+203.0.113.43
+198.51.100.0/24
+
+# Internal VPC CIDR (private subnets)
+10.0.0.0/8
+172.16.0.0/12
+192.168.0.0/16
+
+# Vendor SaaS callback ranges (e.g. Datadog synthetic monitors)
+54.94.142.0/23
+```
+
+**Rules the file must obey:**
+
+- One entry per line (IPv4/IPv6 address or CIDR).
+- Max **2,000 entries**; max object size **35 MB**.
+- Blank lines and lines starting with `#` treated as comments (plain-text format).
+- Must be in S3; GuardDuty reads it by S3 URI.
+
+**Register the file with GuardDuty (CLI):**
+
+```bash
+aws guardduty create-ip-set \
+  --detector-id 12abc34d567890 \
+  --name "CorporateTrustedIPs" \
+  --format TXT \
+  --location "s3://my-security-config/guardduty/trusted-ips.txt" \
+  --activate
+```
+
+**Refresh:** GuardDuty does **not** auto-refresh. Update the file in S3 → re-activate the IP set via `update-ip-set` (or the Console).
+
+**Limits and org-wide behaviour:**
+
+- **Trusted IP list:** one per account per region, up to 2,000 entries.
+- **Threat IP list:** up to six per account per region, up to 250,000 entries combined.
+- In an Organization, the **delegated GuardDuty administrator** manages a central trusted/threat IP list for member accounts.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Create a suppression rule to stop findings"* → wrong; findings are still generated (and billed) → doesn't match "no longer produces findings."
+- *"Upload trusted IPs directly through the GuardDuty Console form"* → wrong; there is no in-Console form for the list content. **Must** be in S3.
+- *"Use a threat IP list to whitelist internal IPs"* → wrong direction — that *increases* findings.
+- *"Disable the finding type globally"* → nukes it everywhere, not just for these IPs. Blind spot for real attackers.
+- *"Modify VPC Flow Logs to exclude those IPs"* → GuardDuty ingests Flow Logs *independently*; can't be filtered at that layer.
+- *"Mark findings as suppressed in Security Hub"* → hides in Security Hub only; GuardDuty still generates and bills.
+
+**Exam Triggers:**
+
+- *"Trusted IPs no longer produce findings"* → **trusted IP list** referenced from S3
+- *"Custom threat intel feed"* → **threat IP list**
+- *"Hide known false positives, keep generating for audit"* → **suppression rule**
+- *"Central IP list across the Org"* → GuardDuty **delegated administrator**
+
+> *Mental model: **trusted IP list = allowlist that skips analysis** (no findings, no cost); **threat IP list = your own denylist** (extra findings); **suppression rule = filter on the output** (findings still generated, just archived). The verb in the question — "produce" vs "hide" vs "flag" — is the tell.*
+
 ### Detective
 
 **Anchored against Splunk / graph-database forensics** — Detective ingests GuardDuty findings + VPC Flow Logs + CloudTrail and builds a **behavior graph** for investigation.
