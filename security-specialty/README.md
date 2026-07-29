@@ -228,6 +228,67 @@ aws guardduty create-ip-set \
 
 > *Mental model: **trusted IP list = allowlist that skips analysis** (no findings, no cost); **threat IP list = your own denylist** (extra findings); **suppression rule = filter on the output** (findings still generated, just archived). The verb in the question — "produce" vs "hide" vs "flag" — is the tell.*
 
+#### GuardDuty vs Security Hub — when to reach for each (org-wide detection questions)
+
+**A favourite SCS-C03 trap.** The stem describes multi-account monitoring, automatic remediation, and central visibility → the reflex is to reach for Security Hub. Often the leaner correct answer is **GuardDuty delegated administrator + EventBridge + Lambda + SNS** with no Security Hub involvement.
+
+**The decision framework — requirement → service:**
+
+| Stem phrase | Answer |
+|---|---|
+| *"Detect suspicious activity across all accounts"* | **GuardDuty** (delegated admin) |
+| *"Aggregate findings from multiple security services"* (GuardDuty + Inspector + Macie + Access Analyzer) | **Security Hub** |
+| *"Continuous compliance against CIS / PCI / AWS Foundational"* | **Security Hub standards** |
+| *"Auto-remediate a finding"* | **EventBridge → Lambda / SSM Automation** |
+| *"Notify on finding"* | **EventBridge → SNS** |
+| *"Single pane of glass across regions and accounts"* | **Security Hub** |
+| *"Centralize GuardDuty findings only"* | **GuardDuty delegated administrator** — no Security Hub needed |
+
+**Requirement-to-service mapping table for the classic question:**
+
+| Requirement | Leanest service | Does Security Hub help here? |
+|---|---|---|
+| Detect suspicious activity | **GuardDuty** | No — Security Hub *consumes* GuardDuty findings, doesn't add detection |
+| Across all production accounts | **GuardDuty delegated admin** (org-wide auto-enable) | No — GuardDuty has native multi-account model |
+| Auto-remediate | **EventBridge → Lambda** | No — Security Hub doesn't remediate |
+| SNS notify on critical finding | **EventBridge → SNS** (or Lambda → SNS) | No |
+| Centralise findings in a dedicated account | **GuardDuty delegated admin account** | No — GuardDuty centralises natively |
+
+Every row resolves to GuardDuty + EventBridge + Lambda + SNS. Adding Security Hub is unnecessary indirection.
+
+**GuardDuty multi-account org setup (memorise cold):**
+
+1. **Delegated administrator** — nominate one account (usually the dedicated security/audit account) as GuardDuty delegated admin via AWS Organizations.
+2. **Auto-enable on all accounts + all regions** — one toggle in the delegated admin account; new accounts added to the Org get GuardDuty enabled automatically.
+3. **Findings centralise** in the delegated admin account by default — no cross-account plumbing.
+4. **EventBridge rule in the delegated admin account** matches GuardDuty findings by severity → invokes Lambda.
+5. **Lambda** runs remediation (quarantine SG, revoke sessions via `aws:TokenIssueTime`, snapshot EBS) *and* publishes to SNS.
+
+**Numbered runtime flow:**
+
+1. GuardDuty in a member account detects e.g. `UnauthorizedAccess:EC2/InstanceCredentialExfiltration` → generates finding.
+2. Finding replicates to the delegated admin account (default behaviour once delegated admin is set up).
+3. EventBridge rule in the delegated admin account matches on `source = aws.guardduty` + severity ≥ 7 → invokes Lambda.
+4. Lambda takes remediation action + publishes to SNS.
+5. SNS fans out to email / Slack / PagerDuty.
+
+**When Security Hub IS the correct answer:**
+
+- *"Aggregate findings from GuardDuty AND Inspector AND Macie AND IAM Access Analyzer"* → multi-source dashboard.
+- *"Continuously check compliance against CIS / PCI / AWS Foundational Security Best Practices"* → Security Hub standards (this is Security Hub's *own* detection).
+- *"Single pane of glass for security posture across all accounts AND regions"* → Security Hub with cross-region aggregation.
+- *"Compare compliance scores between environments over time"* → Security Hub.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Enable Security Hub, aggregate GuardDuty findings, use Security Hub Custom Actions to trigger Lambda"* → works but adds an unnecessary layer for a pure remediation + notify workflow. Wrong when the stem doesn't ask for multi-source aggregation or compliance standards.
+- *"Enable GuardDuty in each account, then manually copy findings to the audit account"* → wrong; delegated admin + auto-enable does this natively.
+- *"Use CloudTrail Insights instead of GuardDuty"* → CloudTrail Insights is API-rate anomaly detection only; doesn't cover GuardDuty's threat range.
+- *"Route findings from GuardDuty to Kinesis Firehose to S3 for the dedicated account"* → works for archival, not real-time remediation + notify.
+- *"Enable Security Hub in each account and it will detect suspicious activity"* → Security Hub doesn't detect suspicious activity; it aggregates findings from services that do.
+
+> *Mental model: **GuardDuty = generator**, **Security Hub = aggregator/scorecard**. Pick Security Hub only when the question asks you to combine multiple detection sources or run compliance-standard scoring. Otherwise **GuardDuty + EventBridge + Lambda + SNS** is the leanest correct answer — and the exam rewards leanness.*
+
 ### Detective
 
 **Anchored against Splunk / graph-database forensics** — Detective ingests GuardDuty findings + VPC Flow Logs + CloudTrail and builds a **behavior graph** for investigation.
