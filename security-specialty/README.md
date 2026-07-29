@@ -6,6 +6,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
 
 - [Exam Overview](#exam-overview)
 - [Domain Map (SCS-C03 blueprint)](#domain-map-scs-c03-blueprint)
+- [AWS Organizations — foundational structure](#aws-organizations--foundational-structure)
 - [Domain 1 — Threat Detection and Incident Response (14%)](#domain-1--threat-detection-and-incident-response-14)
   - [GuardDuty](#guardduty)
   - [Detective](#detective)
@@ -71,6 +72,76 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
 | 4. Identity and Access Management | 16% | *"Who is allowed to do what, and how do I prove least privilege?"* | IAM, STS, Identity Center, SCPs, Permission Boundaries |
 | 5. Data Protection | 18% | *"How do I keep data confidential in-transit and at-rest?"* | KMS, ACM, Secrets Manager, Macie, S3 encryption |
 | 6. Management and Security Governance | 14% | *"How do I enforce security across many accounts?"* | Organizations, Control Tower, Config, Audit Manager |
+
+## AWS Organizations — foundational structure
+
+Nearly every domain of this exam assumes you can picture the Org tree. Delegated admins for GuardDuty / Config / Security Hub, SCPs and RCPs, cross-account CloudTrail, KMS grants across accounts — all sit on top of this shape.
+
+```text
+                        ┌───────────────────────────┐
+                        │   MANAGEMENT ACCOUNT      │  ← pays the bills, sets policy
+                        │   (also called "master")  │     billing, SCPs, RCPs, delegation
+                        └────────────┬──────────────┘
+                                     │
+                                     ▼
+                        ┌───────────────────────────┐
+                        │        ROOT               │  ← always exactly one; the top OU
+                        │        (Org root)         │
+                        └────────────┬──────────────┘
+                     ┌───────────────┼──────────────┐
+                     ▼               ▼              ▼
+              ┌────────────┐  ┌────────────┐  ┌────────────┐
+              │  OU: Prod  │  │  OU: Dev   │  │ OU: Audit  │  ← Organizational Units
+              └─────┬──────┘  └─────┬──────┘  └─────┬──────┘     (up to 5 levels deep)
+             ┌─────┼─────┐          │               │
+             ▼     ▼     ▼          ▼               ▼
+        ┌──────┐┌──────┐┌──────┐┌───────┐   ┌──────────────┐
+        │ Acct ││ Acct ││ Acct ││ Acct  │   │  Log Archive │  ← MEMBER ACCOUNTS
+        │  A1  ││  A2  ││  A3  ││  D1   │   │   Security   │     (real AWS accounts,
+        └──────┘└──────┘└──────┘└───────┘   └──────────────┘      one root user each)
+```
+
+**What lives at each level:**
+
+| Level | What it is | What you attach here |
+|---|---|---|
+| **Management account** | The one account that created the Org. Payer + admin. Never run workloads here — blast radius is the whole Org. | Delegate admin for services (GuardDuty, Config, Security Hub, IAM Access Analyzer, etc.) |
+| **Root** | The invisible top-of-tree OU. Only one, always exists. | SCPs / RCPs / Backup / Tag policies that apply to *every* account |
+| **OU** | A folder that groups accounts. Nestable up to 5 levels. | SCPs / RCPs scoped to that branch (e.g. "Prod OU denies s3 outside org") |
+| **Account** | A real AWS account. Isolated blast radius, own IAM realm, own root user. | Directly-attached SCPs (rare — usually via OU) |
+
+**Policy types you can attach (memorise the four):**
+
+- **SCP** (Service Control Policy) — bounds what **IAM principals** in the account can do.
+- **RCP** (Resource Control Policy, 2024+) — bounds who can access **resources** in the account (the resource-side counterpart to SCPs).
+- **Tag policy** — enforces which tag keys/values may be used.
+- **Backup policy** — mandates AWS Backup plans across the tree.
+
+All four inherit down: a policy on the Root applies to every OU + account beneath.
+
+**Classic multi-account landing zone (what Control Tower builds):**
+
+```text
+Root
+├── Security OU
+│   ├── Log Archive account   ← receives central CloudTrail, Config, GuardDuty findings
+│   └── Audit account         ← read-only for security engineers to investigate
+├── Sandbox OU                ← ephemeral dev/experimentation, SCP-locked to cheap regions
+├── Workloads OU
+│   ├── Prod OU
+│   └── NonProd OU
+└── Suspended OU              ← quarantine for compromised or deprecated accounts
+```
+
+**Rules the exam tests:**
+
+- **One Org root, one management account.** You cannot have two.
+- **An account can be in only one Org.** Moving between Orgs requires leaving + rejoining.
+- **SCPs don't grant** — they only bound. They cap what identity policies could otherwise allow.
+- **The management account is exempt from SCPs.** This is why you don't run workloads there.
+- ***"All features"* mode** vs consolidated-billing-only: SCPs, RCPs, delegation, and Config aggregation require **All features**.
+
+> *Mental model: an Org is a **tree of nested folders**, each folder a policy boundary. Accounts are the leaves. The management account is the root gardener — pays the water bill, plants and prunes, but doesn't itself hold the flowers.*
 
 ## Domain 1 — Threat Detection and Incident Response (14%)
 
