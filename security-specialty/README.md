@@ -264,6 +264,54 @@ Severity scale: **Low 1.0–3.9, Medium 4.0–6.9, High 7.0–8.9**. Filter with
 - **Metric filters** convert log patterns into CloudWatch metrics — e.g. count `"Root user access"` occurrences in CloudTrail logs → alarm on ≥1.
 - **Contributor Insights** — top-N reports over log streams (top IPs, top failing users).
 
+#### Durable log capture on Auto Scaling / stateless EC2
+
+**The canonical SCS-C03 "logs lost on scale-in" question.** Whenever the stem says instance-local logs got lost during termination and asks for the "most efficient" durable solution → the answer is **CloudWatch Agent → CloudWatch Logs**, not a periodic S3 upload.
+
+**Why continuous streaming beats periodic batch:**
+
+- Any `s3 sync` on a cron / every-N-hours schedule still loses **up to N hours** of logs if the instance dies mid-cycle — the exact failure mode the question is punishing.
+- CloudWatch Agent flushes every **~5 seconds** by default; worst-case loss on termination is that 5-second buffer.
+- The agent is a single AMI install + one JSON config; no upload script, no cron, no S3 lifecycle policy, no IAM plumbing for the app.
+
+**What CloudWatch Logs gives you natively:**
+
+- **Retention per log group** — 1 day to 10 years, or `NEVER_EXPIRE`. Set once, done. No S3 lifecycle needed for the audit-retention part.
+- **Encryption** — SSE-KMS with a customer-managed CMK on the log group for separation-of-duties (see Domain 5).
+- **Metric filters + alarms** — free pattern-matching without setting up Athena.
+- **Cross-account central log account** — via subscription filter → destination in the audit account.
+
+**The real-world hybrid pattern (also appears in exam questions):**
+
+- **CloudWatch Logs** for hot / queryable logs (last 30–90 days).
+- **Subscription filter → Kinesis Data Firehose → S3** for long-term cheap archive (Glacier after N days via S3 lifecycle).
+- Best of both: near-real-time capture *and* cheap multi-year retention.
+
+**A corrected S3-based answer (if the exam ever asks the reverse):**
+
+- **ASG lifecycle hook** on `EC2_INSTANCE_TERMINATING` → holds instance in `Terminating:Wait` up to an hour so shutdown scripts finish.
+- **Shutdown script** (systemd unit or lifecycle-hook consumer) → `aws s3 sync /var/log/app s3://…` before completion.
+- Or **Fluent Bit / Firehose agent** streaming continuously to S3.
+- Plus an **S3 lifecycle policy** for retention.
+- Works but has more moving parts than CloudWatch Agent → why the exam rejects it as "most efficient."
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Periodic S3 upload every N hours/days"* → still loses up to N hours on termination. Wrong for any "durability on scale-in" question.
+- *"Persist EBS volumes past termination"* → creates orphan volumes to track; ASG default is delete-on-termination anyway.
+- *"Mount EFS as shared log storage"* → works but adds a network FS to every worker, ties cost/throughput to fleet size, no native retention story.
+- *"Use SSM Session Manager to grab logs before termination"* → manual, doesn't scale, doesn't cover unexpected terminations.
+- *"Enable CloudTrail to capture the logs"* → CloudTrail is for API calls, not application logs.
+
+**Exam Triggers:**
+
+- *"Instance-local logs lost on termination"* + *"most efficient"* → **CloudWatch Agent → CloudWatch Logs**
+- *"Retain for N years"* → **CloudWatch Logs retention policy** (native)
+- *"Cheap long-term archive of logs"* → **Subscription filter → Firehose → S3** with S3 lifecycle to Glacier
+- *"Encrypt application logs with a customer-managed key"* → **CloudWatch Logs SSE-KMS on the log group**
+
+> *Mental model: CloudWatch Agent is a **fire hose that never sleeps**; any "every N minutes/hours" upload is a **bucket brigade** — buckets get dropped when the runner (instance) trips.*
+
 ### Athena on Security Logs
 
 Common SCS pattern: **CloudTrail → S3 → Athena** for ad-hoc "who did what when" queries. Same for VPC Flow Logs. Use **partition projection** on `year=/month=/day=` prefixes to keep query cost low.
