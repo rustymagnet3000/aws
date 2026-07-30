@@ -322,6 +322,64 @@ aws guardduty create-ip-set \
 
 > *Mental model: the stolen creds are hostages. Deleting the role knocks down the whole building; a bucket-policy Deny cuts the water main. The **TokenIssueTime revocation** is a targeted taser — every session issued before the timestamp goes limp instantly, legitimate ones minted after keep working.*
 
+#### Isolate a compromised EC2 for live forensics — NACL beats Security Group
+
+**The canonical SCS-C03 "isolate but preserve memory" question.** Stem hints:
+
+- *"Keep the instance running for investigation / memory preservation"* → not `StopInstances` / `TerminateInstances`.
+- *"Blocks traffic as quickly as possible"* → kill **existing** connections, not just new ones.
+- *"Only resource in the subnet"* → the enabling constraint that makes NACL safe here.
+
+**Answer:** create a **new NACL with explicit Deny for all inbound + outbound** and associate it with the subnet.
+
+**Why NACL beats Security Group for immediate containment:**
+
+| | Security Group | NACL |
+|---|---|---|
+| Stateful? | **Yes** — established connections tracked | **No** — every packet evaluated independently |
+| Effect on *existing* TCP flows when rule changes | **Continue** until the connection-tracking entry expires (can be hours) | **Killed on the next packet** (blocked immediately) |
+| Deny rules | No — SGs are allowlist-only | Yes — explicit Deny available |
+| Scope | Attached per ENI/instance | Attached per subnet |
+| Fit for "kill traffic now" | ❌ new flows blocked, old flows persist | ✅ everything drops immediately |
+
+The critical exam nuance: **SG rule changes do not terminate existing connections.** Because the attacker has *active* network connections in the stem, an SG change would leave them running until their TCP state ages out. NACL-level Deny stops every packet on the next hop.
+
+**Why the "only resource in the subnet" phrase matters:** NACLs are subnet-wide — a Deny NACL would kill traffic for every instance in that subnet. When only the compromised instance is there, associating a Deny NACL has zero collateral impact. In shared subnets you'd fall back to an isolation SG on the ENI (accepting the "existing connections linger" trade-off) or move the ENI, but this question deliberately rules that out.
+
+**Numbered isolation flow:**
+
+1. **Create a new NACL** in the same VPC with `Deny` on `0.0.0.0/0` for both inbound and outbound (all protocols, all ports).
+2. **Associate the NACL with the subnet** → replaces whatever NACL was there (a subnet has exactly one NACL). Every existing packet flow drops.
+3. **Do not stop/terminate the instance** — RAM contents survive only in a running instance; memory forensics requires the process still to be live.
+4. **Snapshot the EBS volume(s)** for disk forensics.
+5. **Preserve memory** — capture via EC2 Instance Connect (if the isolation NACL still allows the specific security-team CIDR — usually you'd allow a jump-box IP explicitly in the NACL rules) or via SSM Session Manager **only if you carved a narrow allow rule for the SSM endpoints** before locking down. Otherwise memory capture must happen via console-mounted tooling on a rescue instance.
+6. **Tag the instance** as `IncidentResponse:Quarantined` for downstream audit.
+7. Hand off to Detective + Security Hub for blast-radius investigation.
+
+**Order-of-operations warning:** a fully deny-all NACL cuts off SSM Session Manager, IMDSv2 access from remote tooling, and any other AWS-service call from the instance. If your runbook needs SSM connectivity for memory dumping, either:
+
+- Add a narrow allow rule for the SSM VPC endpoint IPs before the Deny becomes total, or
+- Accept that further work will be console/EBS-driven.
+
+**Why the plausible-looking alternatives are wrong:**
+
+- *"Change the instance's Security Group to a deny-all SG"* → SGs are stateful; **existing connections continue**. Fails "as quickly as possible."
+- *"Modify the SG on the ENI to remove the current inbound rule"* → same trap; new inbound blocked, established flows persist.
+- *"Stop or terminate the EC2 instance"* → destroys RAM state; fails the "memory preservation" requirement.
+- *"Detach the ENI"* → drops network but is disruptive and doesn't preserve the connections in a state investigators can trace; also, some instance types don't support ENI detach on the primary interface.
+- *"Add an outbound-deny rule to the route table"* → route tables don't have Deny; you can only remove routes (which affects only new lookups).
+- *"Use AWS Network Firewall to block traffic"* → adds a component that isn't already present; slower than an NACL swap.
+- *"Delete the VPC / subnet"* → nukes everything, disruptive, and can't delete a subnet with a running instance anyway.
+
+**Exam Triggers:**
+
+- *"Isolate an EC2 but keep it running for memory forensics"* → **NACL with Deny rules on the subnet** (assuming instance is alone in the subnet)
+- *"Block traffic as quickly as possible"* + active existing connections → **NACL**, not SG
+- *"Only resource in the subnet"* → the enabling constraint for the NACL answer
+- *"Isolate compromised EC2 in a shared subnet"* → different question — use an **isolation SG on the ENI** (accepts existing-connection lag) or move the ENI to a quarantine subnet
+
+> *Mental model: **SG = doorman with a memory** (once a guest is in, changing the guest list doesn't kick them out until they leave). **NACL = airport security scanner** (every packet re-screened, ban list applied instantly). For "kill traffic now, keep the box running" — NACL every time.*
+
 ## Domain 2 — Security Logging and Monitoring (18%)
 
 ### CloudTrail (deep dive)
