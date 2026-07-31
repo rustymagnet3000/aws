@@ -464,6 +464,79 @@ Consequence: an ECR image pushed six months ago still gets re-evaluated the mome
 4. **SNS** notifies the security team
 5. **Detective** used to investigate root cause after the fire is out
 
+#### SSM Automation runbooks — the auto-remediation engine
+
+**Anchored against a serverless YAML workflow engine (like GitHub Actions or a Step Functions state machine, but scoped to AWS-API sequences).** A runbook is a JSON or YAML document defining an ordered list of steps; SSM executes them for you — no compute to run, no Lambda to package.
+
+**Two flavours:**
+
+- **AWS-managed runbooks** — hundreds pre-built and pre-tested, prefix `AWS-*` or `AWSSupport-*`. Free to use (you pay only for the underlying API calls or Lambda invocations, not the orchestration).
+- **Custom runbooks** — you author your own for org-specific workflows.
+
+**Step types (the SDK of runbooks):**
+
+| Step type | What it does |
+|---|---|
+| `aws:executeAwsApi` | Call any AWS API directly (e.g. `ec2:StopInstances`, `s3:PutBucketEncryption`) |
+| `aws:executeScript` | Run Python or PowerShell inline (fallback for logic not expressible as one API call) |
+| `aws:invokeLambdaFunction` | Call an existing Lambda |
+| `aws:runCommand` | Send an SSM Run Command to one or more EC2/on-prem instances |
+| `aws:approve` | **Pause for manual approval** — a human clicks "approve" before workflow continues |
+| `aws:branch` | Conditional branching on prior step outputs |
+| `aws:sleep` / `aws:waitForAwsResourceProperty` | Wait for a resource to reach a state |
+
+**AWS-managed runbooks worth knowing for SCS-C03:**
+
+| Runbook | What it does |
+|---|---|
+| `AWSSupport-IsolateEC2Instance` | Swaps the instance's SG to a deny-all quarantine SG |
+| `AWS-StopEC2Instance` | Stops an instance |
+| `AWS-EnableS3BucketEncryption` | Turns on default encryption on a bucket |
+| `AWS-DisablePublicAccessForSecurityGroup` | Removes `0.0.0.0/0` inbound rules |
+| `AWS-EnableCloudTrail` | Creates/enables a trail with sensible defaults |
+| `AWS-UpdateCFNStackWithApproval` | Pushes a CFN change but pauses for human approval |
+| `AWS-PatchInstanceWithRollback` | Patches with automatic rollback on failure |
+
+Browse them in the console under **Systems Manager → Documents → Owned by Amazon**.
+
+**Why the exam prefers runbooks over "just write a Lambda":**
+
+- **Pre-tested + AWS-supported** — the `AWS-*` runbooks are what AWS themselves use in Config auto-remediation, Security Hub Custom Actions, and Support tooling. Battle-hardened.
+- **Retry + error handling built in** — each step has retry, timeout, and onFailure branches without you writing them.
+- **Approval steps** — `aws:approve` gives you human-in-the-loop for high-blast-radius actions (approve before deleting a snapshot). A Lambda has to build this via SNS + custom flow.
+- **Cross-account / cross-region built in** — one runbook execution can act on resources in many accounts/regions if the service role permits.
+- **Cleaner CloudTrail audit** — one Automation execution ID ties every downstream API call together.
+- **No code to maintain** — YAML instead of a Lambda function; easier to review in change control.
+
+**Where SCS-C03 questions plug them in:**
+
+1. **Config auto-remediation** — a non-compliant Config rule triggers a specified Automation runbook to fix it (e.g. `AWS-EnableS3BucketEncryption` on any bucket the `s3-bucket-server-side-encryption-enabled` rule flags).
+2. **EventBridge → runbook** — GuardDuty finding fires EventBridge, which invokes an Automation runbook as the target (`AWSSupport-IsolateEC2Instance`) — native alternative to `EventBridge → Lambda`.
+3. **Security Hub Custom Actions** — analyst clicks "Isolate Instance" on a finding; Security Hub fires an EventBridge event that triggers an Automation runbook.
+4. **Maintenance Windows / State Manager** — scheduled runbook execution for routine hardening/patching.
+
+**What SSM Automation runbooks is NOT:**
+
+- **NOT SSM Run Command** — Run Command sends a single shell command to instances (`sudo apt-get update` across a fleet). Runbooks are workflows that can *include* a Run Command step but do more.
+- **NOT Step Functions** — Step Functions is a general-purpose state machine for your own apps. Runbooks are specialised for AWS-resource orchestration.
+- **NOT Lambda** — no code deployment; you author YAML/JSON. A runbook may *call* Lambda as a step.
+- **NOT SSM Session Manager** — that's for shell access to instances.
+
+**Exam Triggers:**
+
+- *"Auto-remediate an unencrypted S3 bucket"* → **Config rule + Automation runbook** (`AWS-EnableS3BucketEncryption`)
+- *"Automatically isolate an EC2 flagged by GuardDuty"* → **EventBridge → Automation runbook** (`AWSSupport-IsolateEC2Instance`)
+- *"Change requires human approval before executing"* → **Automation runbook with `aws:approve` step**
+- *"Serverless workflow to orchestrate several AWS API calls in response to a finding"* → **Automation runbook**, not Lambda
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Write a Lambda function to remediate S3 encryption"* → works but reinvents `AWS-EnableS3BucketEncryption`; exam prefers the managed runbook.
+- *"Use Step Functions for auto-remediation"* → Step Functions is for application state machines, not AWS-resource remediation.
+- *"Use SSM Run Command to fix a Config non-compliance"* → Run Command sends OS-level commands to instances; it can't call AWS APIs like `s3:PutBucketEncryption` directly.
+
+> *Mental model: **Automation runbooks = a serverless "if this then AWS API call, wait, next AWS API call" pipeline** with retries, human approval, and rollback built in. Whenever the exam says "auto-remediate" or "orchestrate a sequence of AWS actions in response to X," they're the AWS-native answer — leaner than Lambda, more governance-friendly than a bash script.*
+
 #### Revoke compromised session credentials (the "stop exfil now" pattern)
 
 **The canonical SCS-C03 "attacker holds stolen temp creds, stop them immediately, minimise disruption" question.** GuardDuty raises `Exfiltration:S3/AnomalousBehavior` (or `UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration`); the attacker is downloading using STS creds harvested from a compromised EC2 instance profile.
