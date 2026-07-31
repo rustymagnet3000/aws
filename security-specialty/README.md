@@ -16,6 +16,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [VPC Flow Logs](#vpc-flow-logs)
   - [CloudWatch Logs + Metrics + Alarms](#cloudwatch-logs--metrics--alarms)
   - [Athena on Security Logs](#athena-on-security-logs)
+  - [ELB Access Logs and Connection Logs (ALB / NLB)](#elb-access-logs-and-connection-logs-alb--nlb)
 - [Domain 3 — Infrastructure Security (20%)](#domain-3--infrastructure-security-20)
   - [VPC Security (SG vs NACL deep dive)](#vpc-security-sg-vs-nacl-deep-dive)
   - [AWS WAF, Shield, Firewall Manager](#aws-waf-shield-firewall-manager)
@@ -462,6 +463,90 @@ aws guardduty create-ip-set \
 ### Athena on Security Logs
 
 Common SCS pattern: **CloudTrail → S3 → Athena** for ad-hoc "who did what when" queries. Same for VPC Flow Logs. Use **partition projection** on `year=/month=/day=` prefixes to keep query cost low.
+
+### ELB Access Logs and Connection Logs (ALB / NLB)
+
+**Canonical exam question: "centralize load balancer logs for audit + create metrics on TLS ciphers used by clients."** The trap is picking the wrong destination or the wrong query engine for one of the two halves.
+
+**Two log types on ALB (know the difference):**
+
+| Log type | Records | Availability |
+|---|---|---|
+| **Access logs** | Per-**request** metadata: URI, HTTP status, elb_status_code, target, latency, user agent, `ssl_cipher`, `ssl_protocol`, matched rule | ALB + NLB |
+| **Connection logs** (added ~2023) | Per-**TLS handshake** metadata: client cert info, TLS version, negotiated cipher, connection outcome | ALB only |
+
+For the "which ciphers are clients using?" question, either log type has the cipher field; **connection logs** are more focused if you don't need per-request detail.
+
+**Three delivery destinations (updated 2024+ via unified vended-logs delivery):**
+
+| Destination | Use case | What you pair with it |
+|---|---|---|
+| **Amazon S3** | Cheap long-term archive, compliance retention | **Athena** for SQL search (partition projection on `year=/month=/day=`) |
+| **CloudWatch Logs** | Real-time search + native metric creation | **Logs Insights** for ad-hoc queries; **metric filters** or **Contributor Insights** for TLS-cipher metrics |
+| **Amazon Data Firehose** | Stream to Splunk / OpenSearch / third-party SIEM, or S3 with transformation | Firehose delivery role + downstream sink config |
+
+You pick the destination in the LB's Attributes tab when you enable the feature. Multiple destinations can be enabled simultaneously.
+
+**Which destination for the "audit search + TLS cipher metrics" question:**
+
+- **Cleanest single-destination answer (current AWS reality):** deliver to **CloudWatch Logs** → **Logs Insights** for audit search + **metric filter on `ssl_cipher`** for the cipher metrics. Single pipeline covers both halves.
+- **Classic S3-based answer (older exam bank):** deliver to **S3** → **Athena** for audit search + **Contributor Insights** for cipher metrics (which requires bridging S3 → CloudWatch Logs via Firehose or Lambda, adding a moving part).
+- **Modern hybrid for scale:** S3 (cheap archive + Athena for compliance) *and* CloudWatch Logs (real-time queries + metrics) enabled simultaneously.
+
+If the exam is up-to-date on vended-logs delivery, the CW Logs answer wins on efficiency. If the answer choices still describe the classic pattern, S3 + Athena + Contributor Insights is the fallback.
+
+**Data flow diagram:**
+
+```text
+┌──────────────┐    ┌─────────────┐   ┌──────────────┐
+│     ALB      │───►│  S3 Bucket  │──►│    Athena    │  ← audit / archive
+│ access +     │    │  (central)  │   │    (SQL)     │
+│ connection   │    └─────────────┘   └──────────────┘
+│    logs      │
+│              │    ┌─────────────┐   ┌──────────────┐
+│  (choose 1+  │───►│ CloudWatch  │──►│  Logs        │  ← real-time search
+│ destination) │    │    Logs     │   │  Insights    │
+│              │    │             │──►│  Metric      │  ← TLS cipher metrics
+│              │    └─────────────┘   │  filter /    │
+│              │                      │  Contributor │
+│              │                      │  Insights    │
+│              │                      └──────────────┘
+│              │    ┌─────────────┐   ┌──────────────┐
+│              │───►│  Firehose   │──►│  Splunk /    │  ← third-party SIEM
+└──────────────┘    │             │   │  OpenSearch  │
+                    └─────────────┘   └──────────────┘
+```
+
+**TLS listener security policy — the "restrict" side of the same question class:**
+
+- Listener security policy (`ELBSecurityPolicy-TLS13-1-2-2021-06`, etc.) controls **which ciphers the LB will negotiate** — server-side enforcement.
+- Logging/metrics tell you **what clients actually used** — audit / observation.
+- Exam decoder: *"restrict clients to modern TLS"* → **listener security policy**. *"prove no client uses weak ciphers"* → **logs + metrics**.
+
+**What ELB logging is NOT:**
+
+- **NOT CloudTrail** — CloudTrail captures API calls (CreateLoadBalancer, ModifyListener), not per-request or per-connection data.
+- **NOT VPC Flow Logs** — Flow Logs are network 5-tuples + bytes/packets. No HTTP or TLS metadata.
+- **NOT the built-in ALB CloudWatch metrics** — those count aggregates per LB (`RequestCount`, `HTTPCode_Target_5XX_Count`, `ClientTLSNegotiationErrorCount`) but don't break down by *which cipher* clients used.
+- **NOT Classic ELB access logs only** — Classic ELB is legacy; assume ALB/NLB on the exam unless stated.
+
+**Exam Triggers:**
+
+- *"Centralize ALB / NLB access logs, searchable"* → **S3 + Athena** (classic) or **CloudWatch Logs + Logs Insights** (modern)
+- *"Metrics on which TLS ciphers clients use"* → **metric filter / Contributor Insights on `ssl_cipher`** field
+- *"Restrict clients to modern TLS versions/ciphers"* → **ALB listener security policy**
+- *"Per-TLS-handshake details including client cert"* → **connection logs** (ALB only)
+- *"Ship LB logs to Splunk"* → **Firehose** destination
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Use CloudTrail to audit ALB TLS ciphers"* — wrong log type; CloudTrail is API-level.
+- *"Use VPC Flow Logs for TLS cipher analysis"* — wrong; Flow Logs have no L7 metadata.
+- *"Use built-in ALB CloudWatch metrics for cipher breakdown"* — the built-ins don't break down by cipher; you need log-derived metrics.
+- *"Send logs to EFS for centralization"* — regional, not native audit, not searchable at scale.
+- *"Enable CloudTrail data events on the ALB"* — CloudTrail data events cover S3 objects and Lambda invokes, not ALB requests.
+
+> *Mental model: ALB has **three logging destinations** — pick by downstream tool. **S3 → Athena** for cheap archival SQL; **CloudWatch Logs → Logs Insights / metric filters** for real-time search + native metrics; **Firehose → SIEM** for streaming into your existing security stack. The listener security policy is the *lock*; the logs are the *camera*.*
 
 ## Domain 3 — Infrastructure Security (20%)
 
