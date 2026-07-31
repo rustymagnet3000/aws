@@ -1012,6 +1012,64 @@ Automates evidence collection against frameworks (SOC 2, PCI, HIPAA). Continuous
 - *"Put the template in CodeCommit and let devs run a pipeline"* → repo access + pipeline permissions widen the surface; harder to restrict per-team access to just the plan.
 - *"Share the template on Confluence with a runbook"* → zero enforcement; devs can mutate.
 
+##### Security lens — the "approved AMIs only, in this account only" pattern
+
+**The canonical SCS-C03 "developers launching non-approved software" question.** Service Catalog is the answer whenever the stem says:
+
+- *"Developers launched EC2 instances with unapproved software"*
+- *"Restrict launches to company-approved images"*
+- *"Only inside a specific account / OU"*
+
+Why it's a *security* tool, not just a deployment tool:
+
+1. **Devs never touch `ec2:RunInstances` directly.** They only get `servicecatalog:ProvisionProduct` on approved products. The launch constraint role has EC2 permissions — the human doesn't. This is real least-privilege delegation.
+2. **The AMI (or CFN template referencing an approved AMI) is baked into the product.** Devs can't substitute a random public AMI or one with unapproved packages — they pick a product, not an image ID.
+3. **Portfolio sharing is account-scoped.** Share only to the software-development account (or its OU). HR and Finance accounts never see the product, so devs can't accidentally launch there and vice versa.
+4. **Template constraints cap the parameter surface.** Even inside an approved product, you can constrain instance types, regions, tags, or encryption settings — devs pick from a whitelist, not a free-text field.
+5. **Every provisioning is a first-class CloudTrail event** (`ProvisionProduct` + the downstream CFN + EC2 events under the launch-role identity). Full audit trail.
+
+**Belt-and-suspenders: pair Service Catalog with an SCP** that denies direct `ec2:RunInstances` unless the call is made *via* Service Catalog. Uses `aws:CalledVia`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyDirectEC2Launches",
+      "Effect": "Deny",
+      "Action": "ec2:RunInstances",
+      "Resource": "*",
+      "Condition": {
+        "ForAllValues:StringNotEquals": {
+          "aws:CalledVia": ["servicecatalog.amazonaws.com"]
+        }
+      }
+    }
+  ]
+}
+```
+
+Now even a dev with `ec2:*` in their identity policy can only launch via Service Catalog — the SCP short-circuits any bypass attempt.
+
+**Numbered enforcement flow (memorise for the exam):**
+
+1. Ops team publishes an approved product (CFN template baking in an approved AMI ID + hardening) into a portfolio in the security/shared-services account.
+2. **Portfolio shared to the software-development account** (or OU) via AWS Organizations sharing — HR/Finance never see it.
+3. Dev-account admin grants developer roles `servicecatalog:ProvisionProduct` on the product only.
+4. **Launch constraint** attached with a role that holds `ec2:RunInstances` — the dev's role does not.
+5. Optional: **SCP with `aws:CalledVia`** denies any direct `ec2:RunInstances` bypass.
+6. Dev launches → Service Catalog assumes the launch role → CFN creates EC2 with the approved AMI. Deviation is impossible.
+
+**Why the other options fail this class of question:**
+
+- *"IAM policy with Deny on ec2:RunInstances unless AMI is one of these"* → brittle; the AMI list rots. Doesn't stop devs from creating other unapproved resources.
+- *"AWS Config rule to detect non-compliant AMIs"* → detection *after* launch. Doesn't prevent.
+- *"SCP denying ec2:RunInstances entirely"* → devs can't do their job at all.
+- *"Custom AMI baked with approved software + trust that devs will use it"* → no enforcement; devs pick freely from the AMI catalog.
+- *"CloudFormation Guard / OPA on the template"* → catches template drift but doesn't stop imperative `RunInstances` calls.
+
+> *Mental model: Service Catalog turns "please use the approved image" from a policy document into a **mechanical impossibility**. The dev's IAM identity lacks EC2 permissions; the launch role has them but can only be invoked via the product. No path around it exists.*
+
 > *Mental model: Service Catalog = a curated app store for CloudFormation. Portfolio = an aisle. Product = an item on the shelf. Launch constraint = the item is installed by a robot with the right keys, not by the shopper.*
 
 ## Cross-cutting Traps and Anti-patterns
