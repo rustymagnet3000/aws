@@ -7,6 +7,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
 - [Exam Overview](#exam-overview)
 - [Domain Map (SCS-C03 blueprint)](#domain-map-scs-c03-blueprint)
 - [AWS Organizations — foundational structure](#aws-organizations--foundational-structure)
+- [Preventive vs Detective vs Responsive — the three-tier framework](#preventive-vs-detective-vs-responsive--the-three-tier-framework)
 - [Domain 1 — Threat Detection and Incident Response (14%)](#domain-1--threat-detection-and-incident-response-14)
   - [GuardDuty](#guardduty)
   - [Detective](#detective)
@@ -144,6 +145,105 @@ Root
 - ***"All features"* mode** vs consolidated-billing-only: SCPs, RCPs, delegation, and Config aggregation require **All features**.
 
 > *Mental model: an Org is a **tree of nested folders**, each folder a policy boundary. Accounts are the leaves. The management account is the root gardener — pays the water bill, plants and prunes, but doesn't itself hold the flowers.*
+
+## Preventive vs Detective vs Responsive — the three-tier framework
+
+Every SCS-C03 "how do I enforce X?" question maps to one of three tiers. The exam picks the tier by keyword — get the keyword right and the answer set collapses to one or two options.
+
+```text
+┌───────────────────────────────────────────────────────────────┐
+│  PREVENTIVE   → the bad action never happens                  │
+│                 (API call blocked at IAM/SCP/policy layer)    │
+├───────────────────────────────────────────────────────────────┤
+│  DETECTIVE    → the bad state is seen, after the fact         │
+│                 (finding raised, log entry captured)          │
+├───────────────────────────────────────────────────────────────┤
+│  RESPONSIVE   → the bad state is auto-corrected               │
+│  (corrective)   (Lambda/SSM Automation flips config back)     │
+└───────────────────────────────────────────────────────────────┘
+```
+
+**Which AWS services live in each tier:**
+
+| Tier | Services / mechanisms | Fires at… |
+|---|---|---|
+| **Preventive** | SCPs, RCPs, IAM identity policies, IAM permission boundaries, session policies, KMS key policies, S3 bucket policies, resource-based policies, Security Groups, NACLs, S3 Block Public Access, Lambda resource policies, VPC endpoint policies | **API request time** — before state changes |
+| **Detective** | AWS Config (rules, conformance packs), GuardDuty, Inspector, Macie, IAM Access Analyzer, Security Hub standards, CloudTrail, VPC Flow Logs, Trusted Advisor | **After the fact** — non-compliant state exists during the observation window |
+| **Responsive / corrective** | EventBridge → Lambda auto-remediation, SSM Automation runbooks (`AWS-*` remediation documents), Config auto-remediation, Security Hub Custom Actions | **After detection** — closes the window but doesn't eliminate it |
+
+**Keyword decoder (memorise cold):**
+
+| Stem phrase | Tier the question wants |
+|---|---|
+| *"Prevent…"* / *"Ensure that…cannot"* / *"Block…"* / *"Enforce that…"* | **Preventive** |
+| *"Detect…"* / *"Report on…"* / *"Identify non-compliant…"* / *"Continuously assess…"* | **Detective** |
+| *"Auto-remediate…"* / *"Automatically restore compliant state"* / *"Respond to non-compliance"* | **Responsive** |
+| *"Prevent insecure configurations"* (**the tell**) | **Preventive**, not detective — the exam is punishing anyone who picks Config here |
+| *"Without requiring developers to take extra steps"* | **Preventive** (passive guardrail, not a workflow) |
+
+**Worked example — Lambda function-URL `AuthType = NONE`:**
+
+The classic stem contained two preventive keywords: *"prevent insecure configurations"* and *"without requiring developers to perform extra deployment steps."*
+
+| Tier | Solution | Why the exam rejects it (except preventive) |
+|---|---|---|
+| **Preventive** ✅ | **SCP** with `lambda:FunctionUrlAuthType = NONE` Deny on Create + Update | API request refused; no bad state ever exists |
+| Detective | AWS Config rule flagging `AuthType = NONE` | Fires *after* creation — public URL exists during the evaluation window |
+| Responsive | EventBridge → Lambda that flips `AuthType` back to `AWS_IAM` | Reactive; still exposes a live public endpoint before remediation |
+
+The preventive SCP shape:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyUnauthenticatedFunctionUrls",
+      "Effect": "Deny",
+      "Action": ["lambda:CreateFunctionUrlConfig", "lambda:UpdateFunctionUrlConfig"],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": { "lambda:FunctionUrlAuthType": "NONE" }
+      }
+    }
+  ]
+}
+```
+
+**Why the exam almost always rewards preventive when both are available:**
+
+- **No exposure window** — an SCP-blocked request never creates the bad resource. A Config rule + auto-remediation combo still has a window (Config evaluates on ~15-min intervals for periodic rules, seconds-to-minutes on ChangeTracked events).
+- **No extra services to run** — SCP is a policy attached to the Org. Config + Lambda auto-remediation is another service, another IAM role, another Lambda to maintain.
+- **No developer-side change** — passive guardrail; devs get `AccessDenied` and immediately do the right thing.
+
+**When detective *is* the correct answer:**
+
+- *"Continuously check that all S3 buckets have encryption enabled"* → **Config rule** `s3-bucket-server-side-encryption-enabled`
+- *"Report on IAM users without MFA"* → **Config rule** / **IAM credential report**
+- *"Identify EC2 instances with unpatched CVEs"* → **Inspector**
+- *"Score our account against CIS / PCI"* → **Security Hub standards**
+- *"Alert on suspicious API activity across all accounts"* → **GuardDuty + EventBridge + SNS**
+
+**When responsive is the correct answer:**
+
+- *"Auto-quarantine an EC2 flagged by GuardDuty"* → **EventBridge → SSM Automation / Lambda**
+- *"Automatically re-encrypt any bucket that becomes non-compliant"* → **Config auto-remediation** via SSM
+- *"Trigger a runbook when a finding severity ≥ 7 arrives"* → **EventBridge rule → Lambda**
+
+**SCP condition-key quick lookup (for preventive-tier questions):**
+
+| Guardrail you want | Condition key |
+|---|---|
+| Unauthenticated Lambda function URL | `lambda:FunctionUrlAuthType` |
+| S3 uploads must be encrypted | `s3:x-amz-server-side-encryption` |
+| Force TLS on S3 | `aws:SecureTransport` |
+| Region restriction | `aws:RequestedRegion` |
+| Deny actions outside the org | `aws:PrincipalOrgID` |
+| Enforce MFA on sensitive actions | `aws:MultiFactorAuthPresent` |
+| Restrict EC2 instance types | `ec2:InstanceType` |
+| Block untagged resource creation | `aws:RequestTag/<key>` + `aws:TagKeys` |
+
+> *Mental model: SCPs, RCPs, IAM/bucket/key policies, Security Groups = **the door lock** (preventive). Config, GuardDuty, Inspector, Macie = **the CCTV** (detective). EventBridge → Lambda / SSM Automation = **the alarm-triggered response** (responsive). "Prevent" wants a lock; "detect" wants a camera; "auto-fix" wants the alarm-and-response. Match the verb, then the service tier picks itself.*
 
 ## Domain 1 — Threat Detection and Incident Response (14%)
 
