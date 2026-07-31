@@ -10,6 +10,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [GuardDuty](#guardduty)
   - [Detective](#detective)
   - [Security Hub](#security-hub)
+  - [Amazon Inspector](#amazon-inspector)
   - [Incident Response Playbooks](#incident-response-playbooks)
 - [Domain 2 — Security Logging and Monitoring (18%)](#domain-2--security-logging-and-monitoring-18)
   - [CloudTrail (deep dive)](#cloudtrail-deep-dive)
@@ -245,6 +246,81 @@ aws guardduty create-ip-set \
 
 - **NOT a detection engine** — it consumes findings, doesn't generate its own (except from its enabled standards checks).
 - **NOT the same as Config** — Config tracks resource state; Security Hub tracks security findings.
+
+### Amazon Inspector
+
+**Anchored against a continuous vulnerability scanner (like Qualys / Tenable / Snyk).** Inspector is the **known-vulnerability layer** of the SCS-C03 detection stack — CVE-based, static analysis, agentless registration. Broader than "image scanning": it covers three resource types.
+
+**Three resource types Inspector scans:**
+
+| Resource | What Inspector scans for | How it discovers work |
+|---|---|---|
+| **EC2 instances** | OS-level CVEs + application-language CVEs + network reachability findings | Via the **SSM agent** — enabling Inspector auto-installs / auto-registers it |
+| **ECR container images** | OS package CVEs + programming-language package CVEs (Python, Node.js, Java, .NET, Go, etc.) | Automatic on **push**; also re-scans on new CVE data |
+| **Lambda functions** | CVEs in the function's code + dependencies (both zip and container-image Lambdas) | Automatic on **deploy**; also re-scans on new CVE data |
+
+One-toggle-per-region to enable. No per-resource setup, no manual scan trigger.
+
+**The continuous "new + re-scan old" model (favourite exam property):**
+
+1. **Push a new image / launch a new EC2 / deploy a new Lambda** → immediate scan.
+2. **A new CVE is published in the NIST NVD (or AWS's vulnerability database)** → Inspector automatically **re-scans every previously scanned resource** to check whether the new CVE applies. Findings appear without you doing anything.
+3. **Update an existing image / patch an instance** → re-scan on the next event.
+
+Consequence: an ECR image pushed six months ago still gets re-evaluated the moment a fresh Log4j-style CVE lands. This is what "continuously assess for new vulnerabilities" means on the exam.
+
+**What Inspector is NOT (favourite exam confusions):**
+
+- **NOT GuardDuty** — Inspector finds *known unpatched flaws* (static, CVE-based). GuardDuty finds *active malicious behaviour* (dynamic, behavioural). "You're vulnerable" vs "you're being attacked."
+- **NOT Macie** — Macie scans **S3 objects for sensitive-data classification** (PII, PHI). Completely different job.
+- **NOT AWS Config** — Config tracks resource *configuration* over time. Inspector tracks *vulnerabilities* in software running on those resources.
+- **NOT Security Hub** — Security Hub is an aggregator/scorecard. It *consumes* Inspector findings; it doesn't do the scanning itself.
+- **NOT the older Inspector Classic (v1)** — Inspector v2 (current, exam-relevant) is agentless-registration, continuous, multi-resource. Classic was agent-based and only did EC2.
+- **NOT a runtime IDS** — no traffic inspection, no signature matching on live packets. Static analysis of installed packages.
+
+**Threat + vulnerability stack — where Inspector sits:**
+
+```text
+                  ┌─────────────────────────────────────────┐
+                  │       "What could go wrong?"           │
+                  │        (vulnerability layer)           │
+                  │              INSPECTOR                 │
+                  └─────────────────────────────────────────┘
+                  ┌─────────────────────────────────────────┐
+                  │      "Is something wrong right now?"   │
+                  │          (threat layer)                │
+                  │             GUARDDUTY                  │
+                  └─────────────────────────────────────────┘
+                  ┌─────────────────────────────────────────┐
+                  │        "Where is sensitive data?"      │
+                  │          (data-classification layer)   │
+                  │              MACIE                     │
+                  └─────────────────────────────────────────┘
+                  ┌─────────────────────────────────────────┐
+                  │      "Show me all findings, scored"    │
+                  │          (aggregator layer)            │
+                  │           SECURITY HUB                 │
+                  └─────────────────────────────────────────┘
+```
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Use Inspector to detect active attacks on EC2"* → wrong; that's GuardDuty. Inspector finds unpatched CVEs, not attackers.
+- *"Inspector needs a manual scan schedule"* → wrong; it's continuous on both event (push/deploy) and CVE-database updates.
+- *"Inspector requires you to install and manage an agent on every EC2"* → wrong; v2 uses the SSM agent, and Inspector auto-registers it.
+- *"Use Inspector to classify sensitive data in S3"* → wrong; that's Macie.
+- *"Inspector alone gives you compliance scoring against CIS/PCI"* → wrong; Inspector is a source. Compliance scoring against standards lives in **Security Hub**.
+
+**Exam Triggers:**
+
+- *"Continuously assess EC2 / ECR / Lambda for known vulnerabilities"* → **Inspector**
+- *"Scan container images on push AND when new CVEs are published"* → **Inspector for ECR**
+- *"Find CVEs in Lambda function dependencies"* → **Inspector for Lambda**
+- *"Detect if the instance is being actively attacked / cryptomining"* → **GuardDuty**, not Inspector
+- *"Classify sensitive data in S3"* → **Macie**, not Inspector
+- *"Aggregate findings from Inspector + GuardDuty + Macie in one dashboard"* → **Security Hub**, consuming Inspector's output
+
+> *Mental model: Inspector = **doctor doing a checkup for known diseases** (CVEs). GuardDuty = **security camera watching for break-ins** (behaviour). Both continuous, different jobs. ECR image scanning is one of Inspector's three arms, not its whole body.*
 
 ### Incident Response Playbooks
 
