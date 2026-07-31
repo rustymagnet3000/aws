@@ -42,6 +42,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [Trusted Advisor](#trusted-advisor)
   - [Audit Manager](#audit-manager)
   - [Service Catalog](#service-catalog)
+  - [CloudFormation Service Role (deploy least privilege)](#cloudformation-service-role-deploy-least-privilege)
 - [Cross-cutting Traps and Anti-patterns](#cross-cutting-traps-and-anti-patterns)
 - [Study Order Recommendation](#study-order-recommendation)
 
@@ -1463,6 +1464,91 @@ Now even a dev with `ec2:*` in their identity policy can only launch via Service
 > *Mental model: Service Catalog turns "please use the approved image" from a policy document into a **mechanical impossibility**. The dev's IAM identity lacks EC2 permissions; the launch role has them but can only be invoked via the product. No path around it exists.*
 
 > *Mental model: Service Catalog = a curated app store for CloudFormation. Portfolio = an aisle. Product = an item on the shelf. Launch constraint = the item is installed by a robot with the right keys, not by the shopper.*
+
+### CloudFormation Service Role (deploy least privilege)
+
+**The canonical SCS-C03 "some team members can deploy CFN stacks, others get permission errors even though they have `cloudformation:*`" question.** The trap: without a service role, CloudFormation uses the *caller's* credentials to provision resources — inconsistent by design.
+
+**The three-action sequence (the multi-select answer):**
+
+1. **Create an IAM service role for CloudFormation** with all resource permissions the stack templates need (`ec2:*`, `s3:*`, `rds:*`, etc., scoped to what the stacks actually create). Trust policy allows `cloudformation.amazonaws.com` to assume it.
+2. **Grant the team-member roles `iam:PassRole`** on the service-role ARN — nothing more. They keep `cloudformation:*` on the stacks but can now hand the role to CFN.
+3. **Update each existing stack to use the service role** — this is the step people miss. Creating the role and granting PassRole isn't enough; **CFN records the RoleARN on the stack itself**. Existing stacks won't retroactively adopt it; you must run `UpdateStack --role-arn <arn>` (or set it in a Change Set / the console) on each stack. From that point every future update uses that role.
+
+**Why this fixes the "some succeed, some fail" symptom:**
+
+- Without a service role, CFN uses the caller's credentials to call `ec2:RunInstances`, `s3:CreateBucket`, etc. A team member with `cloudformation:CreateStack` but no `ec2:*` gets `AccessDenied` on the EC2 resource inside the template — even though they "have permission on CloudFormation."
+- With a service role attached, CFN assumes the service role via STS and uses ITS permissions for every resource action. The caller's role no longer needs any resource permissions — just `cloudformation:*` on the stack and `iam:PassRole` on the role ARN.
+- Every team member now deploys with identical effective resource permissions.
+
+**Numbered flow:**
+
+1. Dev calls `aws cloudformation update-stack --stack-name X --role-arn arn:aws:iam::<acct>:role/cfn-deployer --template-body file://...`.
+2. IAM checks the dev's role: `cloudformation:UpdateStack` allowed? `iam:PassRole` on `cfn-deployer` allowed? → yes.
+3. CFN assumes `cfn-deployer` via STS.
+4. CFN uses `cfn-deployer`'s credentials for every `ec2:RunInstances`, `s3:CreateBucket`, etc. inside the template.
+5. Stack update succeeds regardless of what the dev's own role holds.
+
+**Least-privilege math — before vs after:**
+
+Before (the failing state):
+
+```text
+Every team member's role needs: cloudformation:* + ec2:* + s3:* + rds:* + … (drift-prone, inconsistent)
+```
+
+After (the target state):
+
+```text
+Every team member's role needs: cloudformation:* on the stack + iam:PassRole on the service role
+The single CFN service role holds: ec2:* + s3:* + rds:* + … (one place to audit)
+```
+
+Every resource permission collapses to a single reviewable role. No human role holds those permissions directly.
+
+**Condition keys worth knowing for CFN questions:**
+
+- **`iam:PassedToService`** — condition on `iam:PassRole` restricting *which service* the role can be passed to. Prevents devs from repurposing the CFN deployer role for Lambda / EC2:
+
+```json
+"Condition": {
+  "StringEquals": {
+    "iam:PassedToService": "cloudformation.amazonaws.com"
+  }
+}
+```
+
+- **`cloudformation:RoleArn`** — condition on stack operations to force devs to use *only* the approved service role and no other:
+
+```json
+"Condition": {
+  "StringEquals": {
+    "cloudformation:RoleArn": "arn:aws:iam::<acct>:role/cfn-deployer"
+  }
+}
+```
+
+- **Stack policies** — completely different feature. Governs *update-time resource protection* (e.g. "don't replace this RDS instance during update"), not who can deploy.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Grant Administrator access to all team members"* — violates least privilege; also doesn't scale.
+- *"Have each team member create their own CFN service role"* — divergent permissions, exactly the inconsistency you're trying to remove.
+- *"Grant `cloudformation:*` to every team member"* — they already have this per the stem; not the missing piece.
+- *"Create the service role, grant PassRole, but forget to update existing stacks"* — **the trap** — the role is only in effect once the stack's `RoleARN` field is set.
+- *"Use CloudFormation StackSets"* — StackSets is for fanning stacks across accounts/regions; doesn't address per-user permission drift.
+- *"Add a resource-based policy to each stack"* — CFN stacks don't have resource-based policies.
+- *"Enable a stack policy"* — governs update-time resource protection, not deploy-time permissions.
+
+**Exam Triggers:**
+
+- *"Some team members deploy successfully, others fail with permission errors"* → **CFN service role** (caller-credentials trap)
+- *"Deploy CloudFormation with least privilege"* → **service role + `iam:PassRole`** on the caller
+- *"Ensure every stack update uses the approved deployer role only"* → **`cloudformation:RoleArn`** condition on stack actions
+- *"Prevent devs from passing the deployer role to Lambda/EC2"* → **`iam:PassedToService`** condition
+- *"Update each stack to use the CloudFormation service role"* → the completion step people miss
+
+> *Mental model: without a service role, CFN is a **wrapper around whatever perms the caller has** — inconsistent by design. With a service role, CFN is a **contract**: "I will use this exact role's permissions for every deployment, no more, no less." Creating the role isn't enough — each stack has to be updated so CFN **records** the role on the stack itself. Missing that last step is why "some team members can deploy" persists.*
 
 ## Cross-cutting Traps and Anti-patterns
 
