@@ -868,6 +868,37 @@ The critical exam nuance: **SG rule changes do not terminate existing connection
 - **Metric filters + alarms** — free pattern-matching without setting up Athena.
 - **Cross-account central log account** — via subscription filter → destination in the audit account.
 
+**CloudWatch Logs retention values (memorise — the exam uses these exact periods):**
+
+| Period | Days |
+|---|---|
+| 1, 3, 5, 7, 14 days | 1 / 3 / 5 / 7 / 14 |
+| 30, 60, 90, 120, 150 days | monthly increments |
+| 12, 18, 24 months | 365 / 545 / 731 |
+| 3, 5, **6**, 8, 10 years | 1096 / 1827 / **2192** / 2922 / 3653 |
+| Never expire | ∞ |
+
+**6 years = 2192 days is a first-class option.** If the stem asks for a specific retention period like 5, 6, 7, 8, or 10 years, CloudWatch Logs supports it natively — no custom automation needed.
+
+**Retention vs lifecycle policy — the terminology decoder (exam trap):**
+
+The exam punishes anyone who conflates "delete after N years" across services. Two similar-sounding features, different owners:
+
+| Feature | Service | What it does |
+|---|---|---|
+| **Retention** (per log group) | **CloudWatch Logs** | Deletes log events older than N days. First-class support for 6, 8, 10 years. |
+| **Lifecycle policy** (per bucket + prefix) | **Amazon S3** | Transitions objects between storage classes (Standard → IA → Glacier) *and/or* deletes them after N days. |
+| **Object Lock** (compliance / governance mode) | **Amazon S3** | Prevents deletion for a fixed period (WORM / legal hold). Different primitive — retention, not expiry. |
+
+**One-line decoder:**
+
+- *"Retain log events for N years"* + CloudWatch Logs stem → **retention setting** (never "lifecycle policy")
+- *"Delete S3 objects after N years"* → **S3 lifecycle expiration action**
+- *"Transition S3 objects to Glacier after N days"* → **S3 lifecycle transition action**
+- *"Prevent deletion for N years (legal hold / WORM)"* → **S3 Object Lock**
+
+**Why picking "lifecycle policy" in a CloudWatch-Logs stem is wrong:** the words *"lifecycle policy"* don't apply to CloudWatch Logs — there's no such setting there. Choosing that answer signals you also picked the wrong storage backend (S3 instead of CW Logs), which fails the "no data loss on scale-in" half of the requirement.
+
 **The real-world hybrid pattern (also appears in exam questions):**
 
 - **CloudWatch Logs** for hot / queryable logs (last 30–90 days).
@@ -893,11 +924,22 @@ The critical exam nuance: **SG rule changes do not terminate existing connection
 **Exam Triggers:**
 
 - *"Instance-local logs lost on termination"* + *"most efficient"* → **CloudWatch Agent → CloudWatch Logs**
-- *"Retain for N years"* → **CloudWatch Logs retention policy** (native)
+- *"Retain for N years"* → **CloudWatch Logs retention** (never "lifecycle policy" — that's S3 vocabulary)
+- *"Retain for exactly 6 years"* → CloudWatch Logs retention **= 2192 days** (first-class option)
 - *"Cheap long-term archive of logs"* → **Subscription filter → Firehose → S3** with S3 lifecycle to Glacier
 - *"Encrypt application logs with a customer-managed key"* → **CloudWatch Logs SSE-KMS on the log group**
+- *"Prevent deletion of logs for legal-hold period"* → **S3 Object Lock**, not CloudWatch Logs retention
+
+**More anti-patterns for the retention half:**
+
+- *"Set CloudWatch Logs lifecycle policy to 6 years"* → the words "lifecycle policy" don't apply to CW Logs; there's only **retention**. The wording itself is the trap.
+- *"Upload logs to S3 and configure a lifecycle policy to expire objects after 6 years"* → reintroduces the durability problem (S3 sync loses data on scale-in) even if the delete-after-6-years part is correct in isolation.
+- *"Use S3 Object Lock for 6-year retention"* → Object Lock **prevents deletion** (WORM); it's a legal-hold primitive, not an expiry mechanism.
+- *"Never Expire + Lambda that deletes old logs manually"* → drift-prone, reinventing native retention.
 
 > *Mental model: CloudWatch Agent is a **fire hose that never sleeps**; any "every N minutes/hours" upload is a **bucket brigade** — buckets get dropped when the runner (instance) trips.*
+
+> *Terminology mental model: "**Retention**" is CloudWatch Logs vocabulary. "**Lifecycle policy**" is S3 vocabulary. "**Object Lock**" is S3 WORM/legal-hold. Picking the wrong term reveals you chose the wrong storage backend — even if your instinct about "delete after N years" was correct.*
 
 ### Athena on Security Logs
 
