@@ -24,6 +24,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [VPC Security (SG vs NACL deep dive)](#vpc-security-sg-vs-nacl-deep-dive)
   - [AWS WAF, Shield, Firewall Manager](#aws-waf-shield-firewall-manager)
   - [Network Firewall](#network-firewall)
+  - [VPC Traffic Mirroring](#vpc-traffic-mirroring)
   - [PrivateLink, VPC Endpoints, Endpoint Policies](#privatelink-vpc-endpoints-endpoint-policies)
 - [Domain 4 — Identity and Access Management (16%)](#domain-4--identity-and-access-management-16)
   - [IAM Policy Evaluation Logic](#iam-policy-evaluation-logic)
@@ -1002,6 +1003,78 @@ Big table of the SG/NACL differences, plus the **evaluation order** (NACL inboun
 ### Network Firewall
 
 **Anchored against a Palo Alto / on-prem network firewall** — stateful L3/L4/L7 with **Suricata rules**, deployed inline in a dedicated firewall subnet. Deep-packet inspection between VPCs (via Transit Gateway) or between VPC + internet.
+
+### VPC Traffic Mirroring
+
+**Anchored against a network tap in software.** Copies inbound + outbound packets from a source ENI to a target ENI / NLB / GWLB endpoint so an **out-of-band IDS/IPS/SIEM** can inspect the full packet contents. Not inline — mirroring is passive, so the IDS analysing packets can never break production traffic.
+
+**When the exam wants Traffic Mirroring — the two phrases:**
+
+- *"Full packet contents"* / *"deep packet inspection"* / *"inspect payload, not just metadata"* — rules out VPC Flow Logs (5-tuple metadata only, no payload).
+- *"Third-party IDS / IPS / SIEM on a dedicated EC2 instance"* — you need somewhere to pipe the packets. Network Firewall doesn't distribute to your own instance; Traffic Mirroring does.
+
+**The four objects (memorise this vocabulary):**
+
+| Object | What it is |
+|---|---|
+| **Mirror source** | The **ENI** whose ingress + egress traffic you want to copy (attached to the app EC2s) |
+| **Mirror target** | The **ENI** on the IDS instance, or an **NLB / GWLB endpoint** if fanning out to a fleet |
+| **Mirror filter** | Rules selecting which packets to mirror (protocol, port range, CIDR, direction). Common start: all IPv4+IPv6, both directions |
+| **Mirror session** | Ties source + target + filter together; has a **session number** used for priority when multiple sessions target the same source |
+
+Traffic is copied via **VXLAN encapsulation** (UDP 4789). The IDS decapsulates before analysis.
+
+**Numbered configuration flow:**
+
+1. Deploy the IDS on a Nitro-based EC2 (m5n / c5n / r5n for high network throughput).
+2. Create a **Mirror Target** pointing at the IDS instance's ENI (or an NLB fronting an IDS fleet).
+3. Create a **Mirror Filter** — "all IPv4 + IPv6, both directions" to catch every packet, or scoped filters to reduce cost.
+4. Create a **Mirror Session** per source ENI, pointing at the target + filter.
+5. IDS receives VXLAN-encapsulated packets → decapsulates → inspects payloads → alerts.
+
+**Constraints worth memorising:**
+
+- **Source must be Nitro-based** (m5, c5, r5, m5n, c5n, r5n, and later). Older instance families can't be mirror sources — this is a common trap when the stem specifies a specific instance type.
+- **Cross-VPC / cross-account mirroring** works via VPC peering, Transit Gateway, or AWS RAM sharing — useful for a central inspection VPC.
+- **VXLAN overhead** ≈ 54 bytes per packet on the wire between source and target — plan bandwidth (the "m5n" hint in the exam scenario is about this).
+- **Per-session per-hour cost** — filter aggressively if you don't need to mirror every byte.
+
+**Inspection primitives — cheat-sheet:**
+
+| Requirement | Answer |
+|---|---|
+| *"Full packet contents to a third-party IDS/SIEM"* | **VPC Traffic Mirroring** |
+| *"L3/L4 metadata only, cheap"* | **VPC Flow Logs** |
+| *"Inline stateful firewall with Suricata rules"* | **AWS Network Firewall** |
+| *"Centralised inspection VPC for many VPCs, using third-party appliances"* | **Gateway Load Balancer (GWLB)** + partner appliances + Transit Gateway |
+| *"Behavioural threat detection natively"* | **GuardDuty** |
+| *"CVE / vulnerability scanning of packages"* | **Amazon Inspector** |
+
+**Traffic Mirroring vs Network Firewall vs GWLB (the trio that gets confused):**
+
+- **Traffic Mirroring** — passive out-of-band copy to *your own* IDS. Zero risk to production traffic. Best when you already own an IDS/IPS you want packets fed to.
+- **Network Firewall** — inline stateful firewall AWS runs for you. Suricata rules. Enforcement, not just inspection. Best when you want AWS to do the L7 filtering.
+- **Gateway Load Balancer (GWLB)** — inline transparent load balancer for a fleet of third-party firewall / IDS / IPS appliances. Best for scaling a *vendor* appliance (Palo Alto, Check Point, Fortinet) inline across many VPCs.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Enable VPC Flow Logs"* → 5-tuple metadata only; fails "full packet contents."
+- *"Enable AWS Network Firewall"* → inline enforcement, doesn't pipe packets to *your* IDS instance.
+- *"Route all traffic through the IDS as a NAT/inspection hop"* → turns monitoring into an availability bottleneck; disables source/dest check; complex route-table gymnastics.
+- *"Install the IDS agent on each application instance"* → agent-based, misses attacks between hops and network-level anomalies. Also violates the *"dedicated IDS instance"* stipulation.
+- *"Enable EC2 detailed monitoring"* → CloudWatch metrics only.
+- *"Use GuardDuty as the IDS"* → GuardDuty is AWS-native behavioural detection; the stem specifies a *third-party* IDS running on the EC2.
+
+**Exam Triggers:**
+
+- *"Full packet contents / inspect payload / deep packet inspection"* → **VPC Traffic Mirroring**
+- *"Third-party IDS on a dedicated EC2"* → **Traffic Mirroring** (mirror target = IDS instance ENI)
+- *"Fanning out to a fleet of IDS instances"* → Traffic Mirroring target = **NLB or GWLB endpoint**
+- *"Centralised inspection VPC for many source VPCs"* → **Traffic Mirroring + Transit Gateway + RAM sharing**
+- *"Inline stateful firewall managed by AWS"* → **Network Firewall** (different question)
+- *"Scale a vendor firewall appliance inline"* → **GWLB** (different question)
+
+> *Mental model: Traffic Mirroring = **a network tap in software**, passive and out-of-band. Flow Logs give you the receipt (5-tuple); Traffic Mirroring gives you the entire package (payload). Whenever the stem says "full packet contents" or names a third-party IDS/SIEM on an EC2, it's Traffic Mirroring — pair it with a Nitro-based `n`-suffixed instance for the throughput.*
 
 ### PrivateLink, VPC Endpoints, Endpoint Policies
 
