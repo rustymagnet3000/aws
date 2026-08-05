@@ -1341,6 +1341,106 @@ Anchored against the SAA `README.md` S3 encryption section. Depth for SCS:
 - **Conformance Packs** = bundles of rules for a compliance framework (CIS, PCI, HIPAA).
 - **Aggregator** = collect Config data from all accounts in an org into a central account.
 
+#### Canonical recipe: Config rule + auto-remediation + SNS email
+
+**The single most-tested detective+responsive pipeline on SCS-C03.** Whenever the stem describes:
+
+- *A specific compliance rule* (e.g. "no unencrypted RDS", "no public S3", "no untagged EC2")
+- *+ email alert on violation*
+- *+ auto-terminate / auto-fix the non-compliant resource*
+- *+ "most operationally efficient"*
+
+…the answer is a three-service, zero-code pipeline. No Lambda, no polling, no glue.
+
+**The pipeline diagram:**
+
+```text
+┌───────────────────┐   ┌───────────────────┐   ┌───────────────────┐
+│  AWS Config       │──►│  Compliance-change│──►│   SNS topic       │
+│  managed rule     │   │  event on         │   │   (email alerts)  │
+│                   │   │  EventBridge      │   └───────────────────┘
+└─────────┬─────────┘   └───────────────────┘
+          │
+          ▼
+┌───────────────────┐
+│  Auto-remediation │
+│  via SSM          │
+│  Automation       │
+│  runbook          │
+└───────────────────┘
+```
+
+**Numbered runtime flow:**
+
+1. Someone creates / modifies a resource → the service emits a Configuration Item Change to Config.
+2. Config evaluates the relevant managed rule → **NON_COMPLIANT**.
+3. Config emits a **Compliance Change event** onto the default EventBridge bus (`source: aws.config`, `detail-type: Config Rules Compliance Change`).
+4. EventBridge rule matches → SNS topic → email fires to the security-team distribution list.
+5. Config auto-remediation kicks off the associated **SSM Automation runbook** → terminates / fixes the resource.
+6. Wall-clock: minutes at most; entirely native, no maintenance overhead.
+
+**Requirement → service mapping:**
+
+| Stem phrase | Service |
+|---|---|
+| *"Prohibit unencrypted / public / non-compliant…"* | **AWS Config managed rule** |
+| *"Email alert whenever a non-compliant resource is created"* | **EventBridge → SNS** (or Config's native SNS destination) |
+| *"Automatically terminate / remediate"* | **Config auto-remediation → SSM Automation runbook** |
+
+**Managed rules worth memorising (the exam-favourite compliance angles):**
+
+| Rule | What it evaluates |
+|---|---|
+| `rds-storage-encrypted` | DB instance encryption at rest |
+| `rds-cluster-encryption-at-rest-enabled` | Aurora cluster encryption |
+| `rds-snapshots-public-prohibited` | No public RDS snapshots |
+| `rds-instance-public-access-check` | No `PubliclyAccessible = true` |
+| `s3-bucket-server-side-encryption-enabled` | S3 default encryption |
+| `s3-bucket-public-read-prohibited` / `s3-bucket-public-write-prohibited` | No public S3 |
+| `ec2-ebs-encryption-by-default` | Region-level EBS default encryption on |
+| `restricted-ssh` / `restricted-common-ports` | No SG rules exposing SSH / RDP / DB ports to `0.0.0.0/0` |
+| `iam-user-mfa-enabled` | Every IAM user has MFA |
+| `root-account-mfa-enabled` | Root user has MFA |
+| `cloud-trail-enabled` | CloudTrail is on in every region |
+
+Managed rules exist for every common security control — reach for them before authoring a custom rule.
+
+**Why this beats hand-rolled alternatives (the "operationally efficient" ranking):**
+
+| Approach | Operational effort | Fit |
+|---|---|---|
+| **Config managed rule + auto-remediation runbook + SNS** | Very low — all native | ✅ **best** |
+| CloudTrail event → EventBridge → Lambda to check + Lambda to terminate | Higher — you author + maintain two Lambdas | works but not "most efficient" |
+| Custom Config rule (Lambda-backed) | Higher — you write the eval logic | wasted effort when a managed rule exists |
+| SCP alone | Low, but prevents creation — no alert about a "created" non-compliant resource | wrong tier when the stem asks for alert + terminate |
+| Security Hub standards + Custom Actions | Detects, but Custom Actions require analyst clicks | not "automatic" |
+| Trusted Advisor + report | No auto-remediation, delayed detection | ❌ |
+
+**Preventive-vs-detective decision (see [[preventive-vs-detective-vs-responsive--the-three-tier-framework]]):**
+
+- If the stem *only* says *"prohibit unencrypted RDS across the org"* → **SCP** (preventive). Nothing is created.
+- If the stem adds *"alert + terminate"* → **Config + auto-remediation** (detective + responsive). Something is created, evaluated, and auto-fixed.
+
+The verb in the stem picks the tier.
+
+**Common Anti-patterns (exam wrong answers for this class of question):**
+
+- *"CloudTrail event → Lambda that checks encryption + Lambda that terminates"* — works but requires you to author + operate the code + IAM. Higher effort than Config.
+- *"Enable Security Hub and use Custom Actions to delete non-compliant instances"* — Custom Actions require analyst clicks. Not "automatic."
+- *"Enable GuardDuty to detect unencrypted RDS"* — wrong service; GuardDuty is behavioural threat detection, not compliance evaluation.
+- *"SCP denying resource creation unless compliant"* — preventive; wrong tier for "alert + terminate" wording.
+- *"Trusted Advisor + weekly report"* — no auto-remediation; delayed detection.
+- *"Write a Lambda that scans resources every hour"* — polling; slower + heavier than event-driven Config.
+
+**Exam Triggers:**
+
+- *"Specific compliance rule + email alert + auto-remediate + operationally efficient"* → **this recipe** (Config managed rule + auto-remediation runbook + SNS)
+- *"Delete non-compliant RDS automatically"* → **Config auto-remediation → SSM Automation runbook**
+- *"Continuously score compliance across many standards"* → **Security Hub standards** (different question)
+- *"Prevent creation entirely so no non-compliant resource ever exists"* → **SCP** (preventive, different tier)
+
+> *Mental model: the Config-rule-plus-remediation-plus-SNS recipe is the **three-service, zero-code detective+responsive pipeline** — swap the managed rule and the runbook for any resource type (RDS, S3, EC2, IAM, SGs). Whenever the stem says "specific compliance rule + alert + auto-fix + most efficient," this shape wins over hand-rolled Lambda, SCP, or Security Hub Custom Actions.*
+
 ### Trusted Advisor
 
 - Security checks (open SG ports, S3 public buckets, root MFA, IAM key rotation).
