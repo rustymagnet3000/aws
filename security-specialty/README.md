@@ -1266,6 +1266,78 @@ Anchored against the SAA `README.md` S3 encryption section. Depth for SCS:
 - **Deny non-TLS:** bucket policy with `aws:SecureTransport: false → Deny`.
 - **Block Public Access** overrides everything — even a public bucket policy is neutered if BPA is on.
 
+#### Enforce encryption on `PutObject` — the bucket-policy Deny (memorise cold)
+
+**The canonical "enforce SSE at rest" answer the exam picks over "enable default encryption on the bucket."** Since 2023 S3 defaults to SSE-S3 on every new bucket, so uploads are technically encrypted regardless — but the exam still rewards the bucket-policy Deny because it's a **codified guardrail** that survives future bucket-setting drift.
+
+**Two condition-key variants (know when each applies):**
+
+- **`Null`** — deny uploads that omit the encryption header entirely:
+
+  ```json
+  {
+    "Sid": "DenyUnencryptedObjectUploads",
+    "Effect": "Deny",
+    "Principal": "*",
+    "Action": "s3:PutObject",
+    "Resource": "arn:aws:s3:::my-bucket/*",
+    "Condition": {
+      "Null": { "s3:x-amz-server-side-encryption": "true" }
+    }
+  }
+  ```
+
+- **`StringNotEquals` with `"aws:kms"`** — force **SSE-KMS specifically** (not SSE-S3, not SSE-C):
+
+  ```json
+  "Condition": {
+    "StringNotEquals": { "s3:x-amz-server-side-encryption": "aws:kms" }
+  }
+  ```
+
+When the stem pairs "KMS for key management" with "encrypt at rest," pick the **`StringNotEquals` = `aws:kms`** variant.
+
+**Common Anti-patterns for this specific "enforce encryption" ask:**
+
+- *"Just enable default encryption on the bucket"* — true but weaker; a future admin can flip the toggle off. The bucket-policy Deny is what the exam rewards.
+- *"Enable AWS Config rule to detect unencrypted objects"* — detective, not preventive; too late.
+- *"Trust clients to always include the encryption header"* — no enforcement.
+
+#### The "encrypt everything + monitor endpoints + minimal effort" three-action recipe
+
+**A recurring exam pattern** across EC2 + ELB + S3 workloads. Each requirement resolves to one native action; nothing is redundant.
+
+| Requirement | Answer |
+|---|---|
+| Encrypt at rest (S3) | **KMS + bucket policy denying `s3:PutObject` without `x-amz-server-side-encryption`** |
+| Encrypt at rest (EBS) | **Enable EBS default encryption at the region level** (one Console toggle; uses KMS) |
+| Encrypt in transit (client → LB) | **ACM certificate + HTTPS listener on the ELB** |
+| Encrypt in transit (LB → target) | **HTTPS target group** (or SSL passthrough) |
+| Monitor endpoints for anomalous traffic | **Enable Amazon GuardDuty** — agentless, one toggle, natively analyses VPC Flow Logs + CloudTrail + DNS |
+
+**Why each is the "minimal effort" pick:**
+
+- The S3 bucket-policy Deny is **one policy statement** — no code, no infra.
+- ACM is **free + auto-rotating** — no cert management overhead.
+- GuardDuty is **agentless + regional toggle** — no per-instance install, no rule authoring.
+
+**Common Anti-patterns for the whole recipe:**
+
+- *"Install antivirus / IDS agent on every EC2"* — high operational effort; fails "minimal implementation effort."
+- *"Configure VPC Flow Logs + author your own CloudWatch anomaly detection"* — reinvents GuardDuty.
+- *"Use CloudFront in front of ELB for TLS"* — over-engineered; the requirement is on the ELB itself.
+- *"Enable AWS Config to detect unencrypted S3 uploads"* — detective, not preventive.
+- *"Enable AWS Network Firewall for anomaly detection"* — inline enforcement; more setup than GuardDuty for pure detection.
+
+**Exam Triggers:**
+
+- *"Encrypt at rest + minimal effort + S3"* → **KMS + bucket policy denying unencrypted PutObject** (`StringNotEquals` on `aws:kms` if forcing KMS)
+- *"Encrypt in transit + ELB"* → **ACM cert + HTTPS listener**
+- *"Monitor endpoints for anomalous traffic, native, no agents"* → **GuardDuty**
+- *"Encryption at rest for EBS across the region"* → **EBS default encryption** (regional toggle)
+
+> *Mental model: for the classic "encrypt everything + monitor + minimal effort" trio, each requirement has exactly **one native answer** — **KMS+bucket-policy Deny** for S3 at-rest, **ACM+HTTPS** for in-transit, **GuardDuty** for anomaly detection. The bucket-policy Deny is what turns "we default to encryption" into "we refuse anything else" — that's why the exam picks it over "just enable default encryption."*
+
 #### Separation of duties — the two-lock pattern (SSE-KMS with a customer-managed CMK)
 
 **Anchored against the classic "vault needs two keys turned simultaneously" model.** SSE-KMS with a **customer-managed CMK** is the only S3 encryption mode where two independently-owned policies gate the plaintext path — a favourite SCS-C03 scenario.
