@@ -1113,6 +1113,83 @@ Both sound like "how long a session lasts" — they solve different problems. Ge
 
 > *Mental model: **`aws:MultiFactorAuthPresent`** = "did you use MFA?" (yes/no). **`aws:MultiFactorAuthAge`** = "how long ago?" (seconds). Combine them for the *"MFA required + session ≤ N hours"* requirement. **`MaxSessionDuration`** answers a completely different question ("what's the max lifetime of a role's STS token?") and lives on the role, not in the policy — anyone who picks it in an MFA question has fallen for the plausible-name trap.*
 
+#### The Allow-vs-Deny inversion trap (favourite MFA exam wrong-answer)
+
+**Two policy shapes both seem to enforce MFA — only one actually does.** The trap: an *Allow with `BoolIfExists: true`* silently leaks when the MFA context key is absent. The correct idiom is a *Deny with `BoolIfExists: false`*.
+
+**The wrong shape (the trap):**
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "s3:*",
+  "Resource": "*",
+  "Condition": {
+    "BoolIfExists": { "aws:MultiFactorAuthPresent": "true" }
+  }
+}
+```
+
+Two things break:
+
+- **Doesn't block other Allow policies.** IAM eval is "Deny beats Allow; a conditional Allow that fails is just an inactive Allow." Any *other* policy granting `s3:*` without an MFA condition still fires. Your conditional Allow doesn't invalidate the unconditional one.
+- **`BoolIfExists: true` leaks on absent context.** Some request paths don't populate `aws:MultiFactorAuthPresent` at all (certain service-principal calls, AWS-internal automation). `IfExists` treats a missing key as "condition doesn't apply" → the Allow still fires without MFA.
+
+**The correct shape (exam-canonical):**
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "DenyIfNoMFA",
+    "Effect": "Deny",
+    "Action": "s3:*",
+    "Resource": ["arn:aws:s3:::my-bucket", "arn:aws:s3:::my-bucket/*"],
+    "Condition": {
+      "BoolIfExists": { "aws:MultiFactorAuthPresent": "false" }
+    }
+  }]
+}
+```
+
+Two things this fixes:
+
+- **Deny short-circuits everything** — cross-account grants, group policies, resource-based bucket policies. Nothing gets through.
+- **`BoolIfExists: false` catches missing context.** Requests where the MFA key is absent are treated as "the condition applies and is false" → Deny fires → request blocked.
+
+**The `BoolIfExists` truth table (memorise the bottom row — that's the leak):**
+
+| Context state | `BoolIfExists: MFA = true` on **Allow** | `BoolIfExists: MFA = false` on **Deny** |
+|---|---|---|
+| MFA present, value = true | Allow fires ✅ | Deny doesn't fire ✅ (correct) |
+| MFA present, value = false | Allow blocked ❌ | Deny fires ❌ (correct — blocks) |
+| MFA context absent entirely | **Allow fires ❌ — LEAK** | **Deny fires ❌ — BLOCKS (correct)** |
+
+Same operator, opposite framing, opposite security outcome.
+
+**Why the exam favours the Deny variant every time:**
+
+- **Composability** — works alongside existing Allow policies without modifying them.
+- **Leak-proof** — `IfExists: false` catches the missing-context case.
+- **Short-circuits** — explicit Deny beats any Allow anywhere.
+- **Auditor-friendly** — reads as "deny anything without MFA," obvious in policy review.
+
+**`Bool` vs `BoolIfExists` — when to use each:**
+
+- **`Bool`** (strict) — condition evaluates only when the key is present. Missing key → condition doesn't apply.
+- **`BoolIfExists`** — evaluates when the key is present *and* when it's missing. Use this for **security guardrails** you want always applied.
+
+For MFA enforcement: **always `BoolIfExists`**, never bare `Bool` — the missing-context case is exactly where you don't want to accidentally allow.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Allow if `aws:MultiFactorAuthPresent = true`"* — the classic trap; leaks when MFA context is missing and doesn't block sibling Allow policies.
+- *"`Bool: MultiFactorAuthPresent = false` on Deny"* — strict; doesn't fire when the key is absent, so paths without MFA context aren't blocked. Use `BoolIfExists` instead.
+- *"`Null: aws:MultiFactorAuthPresent = true` on Deny"* — denies when the key is null; conflicts with legitimate service-principal calls. Overbroad.
+- *"Add the MFA Allow condition to every existing policy"* — you'd need to modify every policy that grants access. A single Deny guardrail is cleaner.
+
+> *Mental model: **MFA enforcement is a Deny problem, not an Allow problem.** An Allow with a condition says "I grant access when X" — it doesn't revoke access another Allow already granted. A Deny with the inverse says "I refuse access when NOT X" — and Deny short-circuits. Reach for **Deny + `BoolIfExists: false`** every time.*
+
 ### SCPs, Permission Boundaries, Session Policies
 
 - **SCPs** — apply to an account/OU/root; do NOT grant permissions, only bound them.
