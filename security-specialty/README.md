@@ -815,6 +815,53 @@ The stem's *"before responding to AWS Support"* is the tell. AWS Support flagged
 
 > *Mental model: an AWS-issued abuse notification puts you on the hook to prove containment before you reply. The **containment triangle** is: **cut off access** (rotate/delete keys) + **scope what happened** (CloudTrail review) + **remove backdoors** (delete rogue resources). Support is Step 5, hardening is Step 6 — neither is a substitute for the triangle. This is distinct from a GuardDuty-finding IR flow, where the trigger is internal AWS detection, not an external abuse report.*
 
+##### The full AWS Knowledge Center recipe (11 actions, not 6)
+
+**The 6-step summary above is an abstraction.** The actual [AWS Knowledge Center article on potential account compromise](https://aws.amazon.com/premiumsupport/knowledge-center/potential-account-compromise/) lists **11 discrete actions**. Different exam variants pull **any three** — the correct trio depends on the stem's wording:
+
+| # | Action | Phase |
+|---|---|---|
+| 1 | Rotate + delete root and IAM access keys | **Containment** |
+| 2 | Change root password + IAM user passwords | **Containment** |
+| 3 | **Check your AWS bill** for unfamiliar charges / Regions / services | **Damage assessment** |
+| 4 | Verify running EC2 instances / EBS volumes / snapshots / IAM users are yours | **Containment / assessment** |
+| 5 | Delete resources you didn't create | **Containment** |
+| 6 | Delete API keys and IAM users you didn't create | **Containment** |
+| 7 | Review CloudTrail for unauthorised activity | **Investigation** |
+| 8 | **Use AWS `git-secrets` to scan repos for leaked credentials** | **Root-cause analysis** |
+| 9 | Enable MFA on root + all IAM users | **Hardening** |
+| 10 | Respond to AWS Support with what you've done | **Follow-up** |
+| 11 | Root-cause analysis + preventive controls | **Follow-up** |
+
+**Two important ones that get missed on the exam:**
+
+- **#3 Check the AWS bill.** Attackers show up on the bill — unusual services (Bedrock/SageMaker/GPU instances they don't normally use), unfamiliar Regions (attackers pick Regions where monitoring is weakest), a spike right at the compromise time. The bill often surfaces the *entire footprint* of the attack in one page. It's the fastest scoping tool most people ignore.
+- **#8 `git-secrets`.** [github.com/awslabs/git-secrets](https://github.com/awslabs/git-secrets) is the AWS-published open-source tool that scans repos for AWS access key patterns. The leading cause of AWS account compromise is a developer committing an access key to a public GitHub repo — so *"scan for evidence of unauthorized use"* on the exam maps to running `git-secrets` against your codebase to find the leak source.
+
+**Which trio does the exam pick? — depends on the stem's wording:**
+
+| Stem phrase | Trio the exam wants |
+|---|---|
+| *"Before responding to AWS Support"* / *"immediate steps to contain"* | **Containment triangle** — #1 (rotate keys) + #7 (CloudTrail review) + #5 (delete rogue resources) |
+| *"Handle this issue"* / *"actions to take"* (unqualified — broader read) | **Immediate + assess + prevent** — #1 (rotate keys) + #3 (bill check) + #8 (git-secrets scan) |
+| *"Prevent recurrence after the incident"* / *"harden after cleanup"* | **Hardening** — #9 (MFA on root/users) + #8 (git-secrets in CI) + IAM Access Analyzer |
+| *"How did they get in?"* | **Root-cause** — #8 (git-secrets scan) + #7 (CloudTrail review of AssumeRole / login events) |
+
+The single most-common miss: **assuming every variant of this question wants the containment triangle.** It doesn't. Unqualified "handle the issue" wording invites the broader "one from each phase" trio (#1, #3, #8) — the same three the AWS Knowledge Center article itself leads with.
+
+**Both trios are correct in their respective variants.** If the stem picks one over the other, it's telling you which phase to weight — read the verb.
+
+**Anti-patterns still valid across every variant:**
+
+- *"Contact AWS Support first and let them investigate"* → Support flagged the compromise; Step 10, not Step 1.
+- *"Enable GuardDuty / Config / CloudTrail after the notification"* → should already be on; enabling now doesn't investigate the past compromise.
+- *"Terminate the entire AWS account"* → nuclear.
+- *"Enable AWS Shield Advanced"* → DDoS, unrelated.
+- *"Restore from backup"* → premature; may restore over the attack pathway.
+- *"Change the AWS Region for all resources"* → makes no sense.
+
+> *Updated mental model: **AWS's own compromise playbook has 11 actions, not 6, spread across five phases** (containment → assessment → investigation → root-cause → hardening → follow-up). The exam picks any three. The stem's verb tells you which phase to prioritise — *"immediate containment"* picks Phase 1; *"handle the issue"* invites one from each phase; *"prevent recurrence"* picks hardening. The **bill check** (#3) and **`git-secrets` scan** (#8) are the two most commonly-missed actions — memorise them alongside the containment triangle.*
+
 ## Domain 2 — Security Logging and Monitoring (18%)
 
 ### CloudTrail (deep dive)
