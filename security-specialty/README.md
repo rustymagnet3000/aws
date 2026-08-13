@@ -838,6 +838,66 @@ The critical exam nuance: **SG rule changes do not terminate existing connection
 
 > *Mental model: for federated users, the audit trail is a **relay race** — the destructive event holds the baton (session name), and `AssumeRoleWithSAML` holds the runner (the human). Join by `principalId` or session name. Configure `sts:sourceIdentity` up front and the race collapses to a single leg.*
 
+#### Auditing configuration changes — the CloudTrail + Config + EventBridge trio
+
+**The canonical "select three" pattern for any "review changes to resource X" question.** Whether the exam names security groups, NACLs, S3 bucket policies, IAM roles, or KMS keys — the three-layer audit trio is always the answer. Each layer covers a different flavour of "review."
+
+| Layer | What it answers | Where you look |
+|---|---|---|
+| **CloudTrail** | *"Which API call caused this change? Who called it, from where, with what parameters?"* | Event History (last 90 days) or the S3-delivered trail; `userIdentity` field names the caller |
+| **AWS Config** | *"What state was this resource in at time T? What changed between T and T+1?"* | Config Configuration Timeline for the resource, or Config Rules for continuous compliance |
+| **EventBridge rule** on the CloudTrail event | *"Notify me the moment anyone modifies this."* | Real-time alert to SNS/Lambda; can also trigger auto-remediation |
+
+The trio covers **history + state-over-time + real-time detection**. Missing any one is a partial answer.
+
+**Generalised EventBridge event pattern (swap the `eventName` list for whichever resource type):**
+
+```json
+{
+  "source": ["aws.ec2"],
+  "detail-type": ["AWS API Call via CloudTrail"],
+  "detail": {
+    "eventSource": ["ec2.amazonaws.com"],
+    "eventName": [
+      "AuthorizeSecurityGroupIngress",
+      "AuthorizeSecurityGroupEgress",
+      "RevokeSecurityGroupIngress",
+      "RevokeSecurityGroupEgress",
+      "CreateSecurityGroup",
+      "DeleteSecurityGroup",
+      "ModifySecurityGroupRules"
+    ]
+  }
+}
+```
+
+Target: SNS topic → email/Slack, or a Lambda that auto-remediates.
+
+**What each layer gives you that the others don't:**
+
+- **CloudTrail** is the audit-trail-of-record — the only layer that captures the exact API-call payload (parameters, source IP, user agent) and the *who* (calling principal ARN).
+- **Config** is the *state* view — shows the resource as a whole across time. CloudTrail says "AuthorizeSecurityGroupIngress was called with these params"; Config says "the SG's rules were X before and Y after." Diff-over-time is easier to reason about here.
+- **EventBridge + SNS/Lambda** is the *push* layer — CloudTrail and Config are historical/pull; alone they don't page anyone. Wire an EventBridge rule to make change detection push-based.
+
+**Common Anti-patterns (exam wrong answers for "audit changes to resource X"):**
+
+- *"VPC Flow Logs"* → traffic, not configuration. Common trap when the resource is SG/NACL/subnet.
+- *"GuardDuty"* → behavioural threat detection, not config-change auditing.
+- *"Amazon Inspector"* → CVE scanning, not change tracking.
+- *"Trusted Advisor"* → best-practice snapshot (weekly cadence); doesn't track changes over time.
+- *"Security Hub alone"* → aggregator; not itself a source of change history.
+- *"IAM Access Analyzer"* → finds cross-account/public exposure, not change tracking.
+
+**Exam Triggers:**
+
+- *"Audit history of changes to \<resource\>"* → **CloudTrail** (API history) + **AWS Config** (state timeline)
+- *"Real-time alert on modifications to \<resource\>"* → **EventBridge on CloudTrail events → SNS/Lambda**
+- *"Continuous compliance check (e.g. no SG allows `0.0.0.0/0:22`)"* → **AWS Config managed rule** (`restricted-ssh`, etc.)
+- *"What state was this resource in yesterday at 3pm?"* → **AWS Config Configuration Timeline**
+- *"Who made this change and when?"* → **CloudTrail** `userIdentity` + `eventTime`
+
+> *Mental model: **three complementary layers**. **CloudTrail = the API call log** (who did what), **Config = the state timeline** (what the resource looked like at time T), **EventBridge = the notifier** (tell me now). Any "audit / history / real-time notify" question resolves to picking one, two, or all three of these — and every alternative (Flow Logs, GuardDuty, Inspector, Trusted Advisor, Access Analyzer) answers a different question entirely.*
+
 ### VPC Flow Logs
 
 **Anchored against a firewall log** — records IP traffic in/out of an ENI. Three levels: **VPC**, **subnet**, **ENI**.
