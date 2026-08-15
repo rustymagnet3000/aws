@@ -27,6 +27,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [PrivateLink, VPC Endpoints, Endpoint Policies](#privatelink-vpc-endpoints-endpoint-policies)
 - [Domain 4 — Identity and Access Management (16%)](#domain-4--identity-and-access-management-16)
   - [IAM Policy Evaluation Logic](#iam-policy-evaluation-logic)
+  - [MFA Enforcement — MultiFactorAuthPresent + MultiFactorAuthAge](#mfa-enforcement--multifactorauthpresent--multifactorauthage)
   - [SCPs, Permission Boundaries, Session Policies](#scps-permission-boundaries-session-policies)
   - [IAM Identity Center and Federation](#iam-identity-center-and-federation)
   - [Resource-based Policies](#resource-based-policies)
@@ -1127,6 +1128,93 @@ Big table of the SG/NACL differences, plus the **evaluation order** (NACL inboun
 7. If any layer says DENY → DENY. Only if all layers ALLOW → ALLOW.
 
 **Key rule:** cross-account access requires an ALLOW in **both** the resource policy *and* the identity policy (in the calling account).
+
+### MFA Enforcement — MultiFactorAuthPresent + MultiFactorAuthAge
+
+**The canonical SCS-C03 "require MFA on these actions AND cap session validity to N hours" question.** Two policy conditions used together, one for each half:
+
+- **`aws:MultiFactorAuthPresent`** — Boolean. `"true"` means the caller authenticated with MFA in this session. Answers *"did you use MFA?"*
+- **`aws:MultiFactorAuthAge`** — Numeric (seconds). Answers *"how long ago was MFA validated?"* Filter with `NumericLessThan` to enforce freshness.
+
+**Combined statement (add to `Condition` block):**
+
+```json
+"Condition": {
+  "Bool": {
+    "aws:MultiFactorAuthPresent": "true"
+  },
+  "NumericLessThan": {
+    "aws:MultiFactorAuthAge": "10800"
+  }
+}
+```
+
+Both keys are AND-ed within a single statement — the request must satisfy every key for Allow to fire. Fail either → no Allow → implicit Deny.
+
+**Seconds cheat-sheet (memorise cold — the exam uses these):**
+
+| Duration | Seconds |
+|---|---|
+| 1 hour | 3600 |
+| 2 hours | 7200 |
+| **3 hours** | **10800** |
+| 4 hours | 14400 |
+| 8 hours | 28800 |
+| 12 hours | 43200 |
+| 24 hours | 86400 |
+
+**MaxSessionDuration vs `aws:MultiFactorAuthAge` — the exam trap:**
+
+Both sound like "how long a session lasts" — they solve different problems. Getting this wrong is the classic multi-select miss.
+
+| | `MaxSessionDuration` | `aws:MultiFactorAuthAge` |
+|---|---|---|
+| Type | **Role attribute** | **IAM policy condition key** |
+| Where set | On the role itself (`aws iam update-role`) | Inside a policy statement's `Condition` block |
+| Values | 1–12 hours (3600–43200 s) | 0–∞ seconds, filter with `NumericLessThan` |
+| Enforces MFA usage? | ❌ No — pure lifetime cap | ✅ Yes (paired with `MultiFactorAuthPresent`) |
+| Applies to IAM users? | ❌ No — assumed roles only | ✅ Yes — users and roles |
+| Evaluated when? | Once at AssumeRole | On every API call |
+| Fits *"add to the policy"* wording? | ❌ No | ✅ Yes |
+
+**Why `MaxSessionDuration` is wrong for the "add to the IAM policy" style question:**
+
+1. It's not a condition key — it's a role property. Wouldn't fit inside `"Condition": { ... }`.
+2. It doesn't enforce MFA freshness — someone could complete an unauthenticated session and still get the full duration.
+3. It only applies to assumed roles — IAM users with long-lived access keys aren't governed by it.
+4. It fires once at AssumeRole, not on every API call — no rolling per-request check.
+
+**When `MaxSessionDuration` *is* the correct answer:**
+
+- *"Cap how long a role's STS credentials remain valid"* → **MaxSessionDuration**
+- *"Prevent long-lived assumed-role tokens"* → **MaxSessionDuration**
+- Nothing about MFA or per-request policy conditions in the stem → **MaxSessionDuration**
+
+**Other adjacent condition keys worth knowing (and why they're not this):**
+
+- **`aws:TokenIssueTime`** — datetime, not age. Used to *revoke* sessions issued before a timestamp (the compromised-creds pattern in Domain 1). Wrong for rolling age caps.
+- **`aws:CurrentTime`** — request time. Used for business-hours restrictions ("Mon–Fri 9–5"). Not for session age.
+- **`aws:SessionExpirationTime`** — read-only artifact of the STS session; not settable in a Condition.
+- **`aws:SecureTransport`** — TLS enforcement, not MFA.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Set MaxSessionDuration on the role to 3 hours"* — wrong tool + wrong layer + wrong scope (see the four reasons above).
+- *"Use `aws:TokenIssueTime` to cap session age"* — that's for absolute-time revocation, not rolling freshness.
+- *"Use `aws:CurrentTime NumericLessThan 10800`"* — mixes up "current time" (Unix timestamp) with "seconds since MFA."
+- *"Add `Effect: Deny` with `Bool: aws:MultiFactorAuthPresent: false`"* — works as a Deny statement but the exam asks what to add as **conditions on the existing Allow**, not a separate statement.
+- *"`NumericGreaterThan aws:MultiFactorAuthAge`"* — inverted; that would say "only allow after N hours since MFA," the opposite of what's needed.
+
+**Exam Triggers:**
+
+- *"Require MFA for these actions"* → **`aws:MultiFactorAuthPresent: true`** (Bool)
+- *"Session valid for no longer than N hours"* → **`aws:MultiFactorAuthAge < N × 3600`** (NumericLessThan)
+- *"Revoke sessions issued before a timestamp"* → **`aws:TokenIssueTime`** (compromised-creds pattern)
+- *"Only allow during business hours"* → **`aws:CurrentTime`** with `DateGreaterThan` / `DateLessThan`
+- *"Cap the lifetime of an assumed-role token"* → **`MaxSessionDuration`** role attribute (not a policy condition)
+- *"Reject non-TLS requests"* → **`aws:SecureTransport`**
+
+> *Mental model: **`aws:MultiFactorAuthPresent`** = "did you use MFA?" (yes/no). **`aws:MultiFactorAuthAge`** = "how long ago?" (seconds). Combine them for the *"MFA required + session ≤ N hours"* requirement. **`MaxSessionDuration`** answers a completely different question ("what's the max lifetime of a role's STS token?") and lives on the role, not in the policy — anyone who picks it in an MFA question has fallen for the plausible-name trap.*
 
 ### SCPs, Permission Boundaries, Session Policies
 
