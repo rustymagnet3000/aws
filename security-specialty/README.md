@@ -36,6 +36,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [Envelope Encryption](#envelope-encryption)
   - [Secrets Manager vs Parameter Store](#secrets-manager-vs-parameter-store)
   - [S3 Encryption + Bucket Policies](#s3-encryption--bucket-policies)
+  - [AWS Backup](#aws-backup)
   - [Certificate Manager (ACM) and Private CA](#certificate-manager-acm-and-private-ca)
 - [Domain 6 — Management and Security Governance (14%)](#domain-6--management-and-security-governance-14)
   - [Organizations, SCPs, Control Tower](#organizations-scps-control-tower)
@@ -1512,6 +1513,106 @@ Anchored against the SAA `README.md` S3 encryption section. Depth for SCS:
 - *"Encrypt client-side before upload"* → wrong; question typically specifies server-side.
 
 > *Mental model: SSE-KMS + CMK is the only S3 mode with **two independently-owned policies** on the plaintext path. Ops holds the bucket key, security holds the crypto key — plaintext requires both locks to open.*
+
+### AWS Backup
+
+**Anchored against a central backup product (like Veeam or Rubrik).** One managed control plane that schedules + retains backups across many AWS resource types, replacing per-service snapshot mechanisms with a single policy surface.
+
+**Why the exam reaches for it:** whenever the stem says *"scheduled backups + retention management"* — especially spanning more than one resource type or with a cross-account/compliance requirement — Backup wins over the per-service alternatives (DynamoDB on-demand backups, RDS automated snapshots, EBS snapshot lifecycle manager, etc.).
+
+**Resource types Backup covers:**
+
+| Category | Resources |
+|---|---|
+| Compute | EC2 instances, EBS volumes |
+| Databases | RDS, Aurora, DynamoDB, DocumentDB, Neptune, RDS on Outposts, Timestream |
+| Storage | EFS, FSx (Windows / Lustre / NetApp ONTAP / OpenZFS), S3 (via Backup for S3) |
+| Hybrid | Storage Gateway volumes |
+| Directories | AWS Managed Microsoft AD |
+| SAP | SAP HANA on EC2 |
+
+**Building blocks (memorise the vocabulary):**
+
+- **Backup plan** — schedule (cron) + lifecycle (delete after N days, transition to cold after M days) + destination vault + optional cross-region / cross-account copy.
+- **Backup vault** — encrypted container for recovery points. Each vault has its own KMS key + access policy.
+- **Backup selection** — which resources this plan protects, chosen by resource ARN or by tag.
+- **Recovery point** — one backup instance. Immutable metadata, encrypted contents.
+
+**Three exam-worthy features:**
+
+#### 1. Vault Lock (WORM / compliance mode) — the most-tested Backup feature
+
+Analogous to S3 Object Lock:
+
+- **Compliance mode** — recovery points cannot be deleted until their retention expires, **not even by the root user or AWS Support**. Set a Lock cooling-off period; once past that, it's immutable.
+- **Governance mode** — softer; can be overridden by principals with the right permissions.
+- Used for regulatory retention (HIPAA, PCI, FINRA 17a-4, SEC).
+
+Exam trigger: *"backups that even the root user cannot delete"* → **Vault Lock in compliance mode**.
+
+#### 2. Cross-region + cross-account copy
+
+- Backup plans can automatically **copy** each recovery point to a vault in another region and/or another account (typically a dedicated backup/archive account).
+- Meets DR requirements AND ransomware defence (production account can't destroy the DR copy).
+
+Exam trigger: *"ransomware-resistant offline copy in a separate account"* → **cross-account copy to a locked vault**.
+
+#### 3. Organizations-wide Backup policies (central management)
+
+- Delegated Backup admin account (like GuardDuty / Config / Security Hub).
+- **Backup policies** attached at Org / OU / account — the fourth policy type alongside SCPs, RCPs, and Tag policies (see [[aws-organizations--foundational-structure]]).
+- Enforce baseline backup plans across the whole Org — accounts can't opt out.
+
+Exam trigger: *"enforce consistent backup posture across all accounts"* → **AWS Backup + Organizations Backup policies**.
+
+**Backup Audit Manager (bonus):**
+
+Continuous compliance reporting on your backup posture:
+
+- Have all required resources been backed up in the last 24 h?
+- Do recovery points meet the retention requirement?
+- Are backups copied cross-region as required?
+
+Feeds evidence into **AWS Audit Manager** frameworks (PCI, HIPAA, NIST).
+
+**When Backup wins vs when the per-service feature wins:**
+
+| Stem asks for… | Winner |
+|---|---|
+| *"Scheduled backups + retention management"* (any resource) | **AWS Backup** |
+| *"Backups across multiple resource types with a single policy"* | **AWS Backup** |
+| *"Backups even root cannot delete"* | **AWS Backup + Vault Lock** |
+| *"Ransomware-resistant offline copy in a separate account"* | **AWS Backup cross-account copy** |
+| *"Enforce backups across all Org accounts"* | **Backup + Organizations Backup policies** |
+| *"Restore DynamoDB to any point in the last 35 days"* | **DynamoDB PITR** (native, not Backup) |
+| *"On-demand snapshot before a risky RDS migration"* | **RDS manual snapshot** (native, not Backup) |
+| *"S3 versioning + Object Lock for compliance"* | **S3-native features**, not Backup |
+
+**What AWS Backup is NOT:**
+
+- **NOT PITR (point-in-time recovery)** — PITR is continuous rewind (DynamoDB, RDS/Aurora have their own). Backup is scheduled snapshots.
+- **NOT S3 Object Lock** — Object Lock is per-object WORM in S3. Vault Lock is analogous but scoped to Backup vaults.
+- **NOT AWS Backup for S3 = a replacement for S3 versioning** — S3 has its own protection stack (versioning + replication + Object Lock); Backup for S3 exists but the exam usually favours the S3-native tools.
+- **NOT a DR failover service** — Backup gives you recovery points; failing over to another region is orchestration you do on top (Route 53, warm standby, etc.).
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Write a Lambda cron to call DynamoDB CreateBackup"* — reinvents Backup for a single resource; no central retention, no vault lock, no cross-account copy.
+- *"Use PITR for scheduled backups"* — PITR is continuous rewind, not scheduled snapshots. Different feature.
+- *"Use S3 lifecycle rules to expire recovery-point objects"* — Backup manages retention in the vault; you don't touch the underlying S3 storage directly.
+- *"Rely on RDS automated backups for compliance retention"* — max 35 days, no Vault Lock, no cross-region orchestration, no tag-based selection.
+- *"Copy backups manually via CLI to a second region for DR"* — Backup plans automate this via copy actions.
+
+**Exam Triggers:**
+
+- *"Scheduled backups + retention management"* → **AWS Backup**
+- *"Backups even root cannot delete"* → **Vault Lock (compliance mode)**
+- *"Immutable backups for HIPAA / PCI / FINRA / SEC 17a-4"* → **Vault Lock compliance mode**
+- *"Ransomware-resistant offline copy in a separate account"* → **cross-account copy to a locked vault**
+- *"Enforce backups across all Org accounts"* → **Backup policies via Organizations**
+- *"Compliance report proving backups happened"* → **Backup Audit Manager**
+
+> *Mental model: AWS Backup = **one control plane for backups across many services**, with Vault Lock for immutability, cross-account copy for ransomware defence, and Org-wide policies for scale. Whenever the stem says "scheduled + retention + centralised" — especially with more than one resource type or a compliance / immutability angle — it's Backup, not the per-service snapshot feature.*
 
 ### Certificate Manager (ACM) and Private CA
 
