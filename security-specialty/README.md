@@ -1317,6 +1317,119 @@ Traffic is copied via **VXLAN encapsulation** (UDP 4789). The IDS decapsulates b
 
 **Key rule:** cross-account access requires an ALLOW in **both** the resource policy *and* the identity policy (in the calling account).
 
+**Visual — the evaluation gauntlet (memorise this shape):**
+
+```text
+              ┌─────────────────────┐
+              │   API request       │
+              │   (from principal)  │
+              └──────────┬──────────┘
+                         ▼
+              ┌─────────────────────┐   any layer with an
+              │  Explicit DENY?     │─── explicit Deny stops
+              │  (any layer)        │    the whole chain
+              └──────────┬──────────┘         │
+                       no│                    ▼
+                         ▼                  DENY
+              ┌─────────────────────┐
+              │  SCP allows?        │─── no ──►  DENY
+              │  (org / OU / acct)  │
+              └──────────┬──────────┘
+                       yes│
+                         ▼
+              ┌─────────────────────┐
+              │  VPC endpoint       │─── no ──►  DENY
+              │  policy allows?     │    (only if request
+              │  (if request routes │     goes via endpoint)
+              │   through one)      │
+              └──────────┬──────────┘
+                       yes│
+                         ▼
+              ┌─────────────────────┐
+              │  Resource-based     │─── allow? ──► short-circuit ALLOW
+              │  policy?            │              (for same-account,
+              │  (S3 bucket, KMS,   │               resource-policy alone
+              │   Lambda, ECR, …)   │               can grant access)
+              └──────────┬──────────┘
+                 no policy│    ────────────────►
+                    or no │
+                    match │
+                         ▼
+              ┌─────────────────────┐
+              │  Identity policy    │─── no ──►  DENY
+              │  allows?            │
+              └──────────┬──────────┘
+                       yes│
+                         ▼
+              ┌─────────────────────┐
+              │  Permission         │─── no ──►  DENY
+              │  boundary allows?   │
+              │  (if attached)      │
+              └──────────┬──────────┘
+                       yes│
+                         ▼
+              ┌─────────────────────┐
+              │  Session policy     │─── no ──►  DENY
+              │  allows?            │
+              │  (if STS AssumeRole │
+              │   with --policy)    │
+              └──────────┬──────────┘
+                       yes│
+                         ▼
+                       ALLOW
+```
+
+Rules the picture encodes:
+
+- **Any Deny short-circuits** — a single Deny at any layer wins over every Allow beneath.
+- **Every non-Deny layer must produce an Allow** (or be absent) — evaluation is AND-based across identity + boundary + session + SCP + VPC-endpoint layers.
+- **Resource-based policies are the one asymmetry** — for same-account access, a resource policy allow can grant even without an identity-policy allow. For cross-account, both sides must allow.
+- **VPC endpoint policy** only matters if the request actually routes through an endpoint (check the VPC route table). Public-internet-routed requests skip this gate.
+
+#### Troubleshooting checklist — "admin permissions but AccessDenied"
+
+**The most-tested SCS-C03 troubleshooting question class.** When an entity holds `AdministratorAccess` but still gets `AccessDenied`, adding more to the identity policy can't help — the ceiling is a *different layer*. Work down this six-item checklist:
+
+| # | Layer | How to check | Common miss? |
+|---|---|---|---|
+| 1 | **Explicit Deny anywhere** in the chain | `simulate-principal-policy`; CloudTrail `errorMessage` names the layer | Occasionally |
+| 2 | **SCP** at Org / OU / account | Organizations Console; `simulate-principal-policy` includes SCP eval | Rarely — first thing engineers check |
+| 3 | **Resource-based policy** on the target (S3 bucket policy, KMS key policy, Lambda policy, ECR policy, Secrets Manager policy) | Read the resource's policy directly | Sometimes |
+| 4 | **Permission boundary** on the entity | `aws iam get-role/get-user` → look for `PermissionsBoundary` | Sometimes |
+| 5 | **Session policy** (only if creds came from STS AssumeRole with `--policy` / `--policy-arns`) | Inspect the `AssumeRole` CloudTrail event's `requestParameters` | **★ Very common miss** |
+| 6 | **VPC endpoint policy** (if request routes through a VPC endpoint) | VPC → Endpoints → the specific endpoint → Policy tab; verify route table sends the request there | **★ Very common miss** |
+
+**Session policy and VPC endpoint policy are the two the exam loves** because they're per-session / per-network-path — invisible when you only look at the entity's attached policies + boundary. Both cap admin permissions silently.
+
+**CloudTrail is the fastest diagnostic.** The `errorMessage` field on a failed call names the responsible policy layer verbatim:
+
+- *"…with an explicit deny in a service control policy"* → SCP
+- *"…with an explicit deny in a permissions boundary"* → Permission boundary
+- *"…because no session policy allows the action"* → Session policy
+- *"…because no VPC endpoint policy allows the action"* → VPC endpoint policy
+- *"…with an explicit deny in a resource-based policy"* → Resource policy
+
+Read this string first before spelunking policies.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Attach `AdministratorAccess` to the user"* — already has it.
+- *"Reset the user's password / rotate access keys"* — auth is fine; authorisation is failing.
+- *"Add the user to a group with more permissions"* — same problem; identity policy isn't the ceiling.
+- *"Enable MFA on the user"* — MFA doesn't grant permissions.
+- *"Wait for eventual consistency"* — IAM propagates in seconds; not the issue.
+- *"Restart the CLI / clear cached credentials"* — session-side, not policy-side.
+
+**Exam Triggers:**
+
+- *"Admin but AccessDenied"* → check the **six ceilings**, not the identity policy
+- *"Worked for one user, fails for another with the same role"* → **session policy** on one of the assume calls
+- *"Works from public internet, fails from inside VPC"* → **VPC endpoint policy** on the route
+- *"Cross-account access fails"* → resource policy in the target account + identity policy in the caller account must **both** allow
+- *"Denied via SCP"* → check org / OU / account SCPs
+
+> *Mental model: IAM policy evaluation is a **ceiling stack**, not an addition. Identity policy sets intent; SCP, resource policy, permission boundary, session policy, and VPC endpoint policy each cap it below their own limit. When admin gets AccessDenied, don't add to the identity policy — look **up** the stack for the ceiling. The two the exam favours (session policy + VPC endpoint policy) are invisible in the entity's own config.*
+
 ### MFA Enforcement — MultiFactorAuthPresent + MultiFactorAuthAge
 
 **The canonical SCS-C03 "require MFA on these actions AND cap session validity to N hours" question.** Two policy conditions used together, one for each half:
