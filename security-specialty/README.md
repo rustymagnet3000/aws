@@ -826,6 +826,59 @@ The critical exam nuance: **SG rule changes do not terminate existing connection
 
 > *Mental model: **SG = doorman with a memory** (once a guest is in, changing the guest list doesn't kick them out until they leave). **NACL = airport security scanner** (every packet re-screened, ban list applied instantly). For "kill traffic now, keep the box running" — NACL every time.*
 
+#### AWS-notified-you-of-compromise — the 6-step account-compromise playbook
+
+**Distinct from a GuardDuty finding.** When *AWS itself* (Trust & Safety / Abuse Response) notifies you of suspicious activity — usually because an access key leaked publicly, cryptomining was detected on your fleet, or unusual API activity fired their internal alarms — a specific containment procedure kicks in. The exam tests this as a "before responding to AWS Support" question.
+
+**The containment triangle (the three actions the exam usually picks):**
+
+1. **Rotate and delete exposed IAM access keys.** Deactivate + delete any static credentials that could be compromised. Create new keys and update wherever they're used. Also rotate console passwords for potentially affected IAM users.
+2. **Review CloudTrail logs for unauthorized activity.** Look for API calls from unfamiliar IPs / regions / user agents, unusual timestamps, `iam:Create*` calls (attacker persistence), `sts:AssumeRole` from external principals, resource creation you don't recognise.
+3. **Delete any resources you did not create.** Rogue EC2 instances (often cryptomining), unfamiliar IAM users / roles / access keys (backdoors), unauthorised security groups, snapshots, S3 buckets, Lambda functions. Attackers plant persistence + monetise.
+
+**The full six-step AWS-documented playbook (memorise all six to spot the correct three in variants):**
+
+| # | Step | Why |
+|---|---|---|
+| 1 | **Change the root user password + enable MFA on root** | Root is the ultimate backdoor — take it out of the attacker's hands first |
+| 2 | **Rotate and delete exposed IAM access keys** | Kill the static credentials the attacker likely used |
+| 3 | **Delete unauthorized IAM users; rotate legitimate IAM user credentials** | Remove backdoors + refresh compromised auth |
+| 4 | **Delete resources you did not create** (EC2, snapshots, SGs, roles, buckets, Lambdas) | Attackers plant persistence + revenue-generating resources |
+| 5 | **Respond to the AWS Support case** with what you've done | Support may lift throttles / share more details |
+| 6 | **Follow up with root-cause analysis** — how did they get in? | Prevent recurrence (leaked key on GitHub, phished user, exposed CI credential, etc.) |
+
+**Why the containment steps come *before* responding to Support:**
+
+The stem's *"before responding to AWS Support"* is the tell. AWS Support flagged the compromise — they expect *you* to have contained it before you reply. Support isn't going to fix the compromise for you; they've told you what's wrong and are waiting for confirmation you've cut the attacker off. Responding without containing first is the anti-pattern.
+
+**Post-containment hardening (Step 6 territory — the exam's follow-up-question pool):**
+
+- Enable **MFA on root and all IAM users** if not already.
+- Enable **GuardDuty** across all regions (future behavioural detection).
+- Enable **CloudTrail** across all regions + log file integrity validation.
+- Add an **SCP denying root usage** in member accounts (org-wide guardrail).
+- **Scan public repos** (GitHub secret scanning) for leaked keys — the leading cause of AWS account compromise.
+- **Rotate KMS keys, Secrets Manager secrets, Parameter Store SecureStrings** the attacker may have accessed.
+- Enable **IAM Access Analyzer** to find any resources exposed externally.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Contact AWS Support first and let them investigate on your behalf"* → Support triggered the notification; they won't do the investigation for you.
+- *"Wait to see if the activity continues"* → indefinite exposure; the whole point is "before responding."
+- *"Terminate your entire AWS account"* → nuclear; loses legitimate workloads.
+- *"Enable AWS Shield Advanced"* → DDoS protection, unrelated to compromise.
+- *"Enable GuardDuty after the notification arrives"* → helpful for future, doesn't investigate the past compromise. Should already have been on.
+- *"Restore all resources from the latest backup"* → premature; without root-cause you may restore over the attack pathway.
+- *"Ignore the notification if users can still log in"* → the notification is about a specific principal / key, not overall availability.
+
+**Exam Triggers:**
+
+- *"AWS notified you of suspicious activity"* → **6-step compromised-account playbook**
+- *"Before responding to AWS Support"* → **containment triangle** (rotate keys, review CloudTrail, delete rogue resources)
+- *"After containment — how do we prevent recurrence?"* → **hardening: root MFA, GuardDuty, scan repos, IAM Access Analyzer, SCP denying root**
+
+> *Mental model: an AWS-issued abuse notification puts you on the hook to prove containment before you reply. The **containment triangle** is: **cut off access** (rotate/delete keys) + **scope what happened** (CloudTrail review) + **remove backdoors** (delete rogue resources). Support is Step 5, hardening is Step 6 — neither is a substitute for the triangle. This is distinct from a GuardDuty-finding IR flow, where the trigger is internal AWS detection, not an external abuse report.*
+
 ## Domain 2 — Security Logging and Monitoring (18%)
 
 ### CloudTrail (deep dive)
