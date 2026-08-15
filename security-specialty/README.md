@@ -465,12 +465,72 @@ Every row resolves to GuardDuty + EventBridge + Lambda + SNS. Adding Security Hu
 
 ### Detective
 
-**Anchored against Splunk / graph-database forensics** — Detective ingests GuardDuty findings + VPC Flow Logs + CloudTrail and builds a **behavior graph** for investigation.
+**Anchored against Splunk / graph-database forensics** — Detective ingests GuardDuty findings + VPC Flow Logs + CloudTrail and builds a **behavior graph** covering the last 12 months. Purpose-built for the "GuardDuty raised a finding — investigate without touching anything" phase.
 
-**When to reach for Detective vs Security Hub:**
+**Two properties that make Detective the exam-canonical investigation tool:**
 
-- **Security Hub** = summary dashboard of many findings ("what's wrong?")
-- **Detective** = investigation tool for a single finding ("*why* is this wrong, what's the blast radius?")
+- **Read-only** — no remediation actions, no config changes. Zero risk to production during investigation.
+- **Pre-built behavioural context** — no SQL to write. Detective already knows which principals + resources + flows are related and surfaces them via graph pivots.
+
+**Numbered investigation flow (memorise for the "analyse in context without changes" question):**
+
+1. GuardDuty raises a finding (e.g. `Impact:IAMUser/AnomalousBehavior`).
+2. Analyst clicks **"Investigate in Detective"** directly on the finding — native cross-service link.
+3. Detective opens the **entity page** for the IAM principal / instance / role.
+4. Analyst pivots through built-in views:
+   - **API call volume over time** (spikes vs baseline)
+   - **Newly-observed API calls** (things this principal never did before)
+   - **Geolocation history** (login sources)
+   - **Resource interactions** (what did they touch?)
+   - **Related principals** (roles they assumed, who assumed them)
+5. Analyst confirms blast radius — all read-only.
+6. Findings feed the incident report; remediation is a **separate phase** using tools like the `aws:TokenIssueTime` inline Deny (see IR playbooks below).
+
+**The investigation vs remediation split (exam framing):**
+
+SCS-C03 loves testing whether you separate the two phases:
+
+- **Phase 1 — investigate** (Detective) — no changes, understand what happened.
+- **Phase 2 — remediate** (only after investigation) — revoke sessions, rotate creds, isolate compute.
+
+If the stem says *"analyse without making changes that could affect production"* → you're squarely in Phase 1. Any answer that touches IAM, EC2, or bucket config is wrong for that stem.
+
+**Detective vs Security Hub vs Athena — the three "investigation" tools compared:**
+
+| Tool | Strength | Weakness | When it's the answer |
+|---|---|---|---|
+| **Detective** | Pre-built graph + behavioural context; one-click from GuardDuty; read-only | Only useful once GuardDuty flags something | *"Analyse in context / behaviour graph / investigate without making changes"* |
+| **Security Hub** | Cross-account aggregation, compliance scoring, dashboard of many findings | Doesn't drill into *why* / *how* a single finding happened | *"Aggregate findings from multiple services"* / *"single pane across accounts"* |
+| **Athena on CloudTrail** | Arbitrary SQL over years of logs | Slower to set up, no pre-built graph, requires SQL | *"Ad-hoc SQL over historical logs"* / *"custom query with joins"* |
+
+**What Detective is NOT:**
+
+- **NOT Security Hub** — Security Hub is the scorecard/dashboard; Detective is the microscope on a single finding.
+- **NOT a detection engine** — it consumes GuardDuty/Flow Logs/CloudTrail. Doesn't generate its own findings.
+- **NOT for remediation** — read-only by design.
+- **NOT a SIEM replacement** — no custom rule authoring, no alerting. Investigation-focused.
+- **NOT the same as Access Analyzer** — Access Analyzer finds *public/cross-account access* on resources; Detective investigates *behaviour* of principals + resources.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Use Security Hub to investigate the specific GuardDuty finding"* — dashboard, not investigation. Wrong tool for "in context."
+- *"Query CloudTrail with Athena to gather evidence"* — works but slow to set up and no pre-built graph. Fails "quickly."
+- *"Enable CloudTrail Insights on the user"* — Insights is a *detection* mechanism (API-rate anomaly), not investigation. Also can't retroactively analyse.
+- *"Delete or disable the IAM user first"* → violates "without making changes." Also removes forensic breadcrumbs.
+- *"Attach a Deny-all IAM policy"* — same trap.
+- *"Deploy a Lambda to query CloudTrail and email findings"* — requires code + deployment; not "quickly."
+- *"Snapshot every EBS volume"* — massively overbroad for an IAM-user finding.
+
+**Exam Triggers:**
+
+- *"Analyse activity in context / behaviour graph"* → **Detective**
+- *"Investigate a GuardDuty finding without remediating"* → **Detective**
+- *"One-click pivot from GuardDuty to investigation"* → **Detective**
+- *"Collect evidence quickly without affecting production"* → **Detective**, not Athena
+- *"Aggregate findings from multiple services into one dashboard"* → **Security Hub** (different question)
+- *"Ad-hoc SQL over months of CloudTrail data"* → **Athena** (different question)
+
+> *Mental model: **GuardDuty raises the flag; Detective is the microscope you use before you touch anything**. Detective's behaviour graph is pre-built, read-only, and one click from any GuardDuty finding. When the exam says "analyse in context without making changes," it's Detective every time. Remediation is a separate phase using separate tools.*
 
 ### Security Hub
 
