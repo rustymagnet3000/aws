@@ -39,6 +39,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [Secrets Manager vs Parameter Store](#secrets-manager-vs-parameter-store)
   - [S3 Encryption + Bucket Policies](#s3-encryption--bucket-policies)
   - [AWS Backup](#aws-backup)
+  - [S3 Access Points](#s3-access-points)
   - [Certificate Manager (ACM) and Private CA](#certificate-manager-acm-and-private-ca)
 - [Domain 6 — Management and Security Governance (14%)](#domain-6--management-and-security-governance-14)
   - [Organizations, SCPs, Control Tower](#organizations-scps-control-tower)
@@ -2129,6 +2130,94 @@ Feeds evidence into **AWS Audit Manager** frameworks (PCI, HIPAA, NIST).
 - *"Compliance report proving backups happened"* → **Backup Audit Manager**
 
 > *Mental model: AWS Backup = **one control plane for backups across many services**, with Vault Lock for immutability, cross-account copy for ransomware defence, and Org-wide policies for scale. Whenever the stem says "scheduled + retention + centralised" — especially with more than one resource type or a compliance / immutability angle — it's Backup, not the per-service snapshot feature.*
+
+### S3 Access Points
+
+**Anchored against "named views on the same bucket, each with its own DNS + policy."** The AWS-native answer to *"our bucket policy has become unmanageable across many consumers."* Split access by consumer: each app / department / tenant gets its own access point with its own scoped policy, own DNS hostname, and optionally a VPC restriction. The bucket policy stays small — it just delegates to access points.
+
+**Three exam-canonical characteristics (the "select three" pattern):**
+
+1. **Each access point has its own DNS hostname (and ARN).** Format: `<name>-<account-id>.s3-accesspoint.<region>.amazonaws.com`. Applications hit the access point instead of the bucket — each consumer talks to its own endpoint.
+2. **Each access point has its own access policy (resource-based).** Evaluated *together with* the bucket policy — both must allow (unless the bucket policy delegates access-point authority via `s3:DataAccessPointAccount` / `s3:DataAccessPointArn` condition).
+3. **Each access point can be restricted to a specific VPC (network origin).** Set `NetworkOrigin: VPC` at creation and the access point is reachable only from that VPC — internet traffic denied *before IAM evaluates*. Immutable once set.
+
+**Diagram — one bucket, three access points, three consumer patterns:**
+
+```text
+                        ┌──────────────────────────────┐
+                        │       S3 Bucket              │
+                        │       my-business-data       │
+                        │                              │
+                        │       Bucket policy:         │
+                        │       delegates to           │
+                        │       access points in       │
+                        │       this account           │
+                        └───────────┬──────────────────┘
+                    ┌───────────────┼───────────────────┐
+                    │               │                   │
+      ┌─────────────▼──────┐  ┌─────▼──────────┐  ┌─────▼──────────────┐
+      │ Access Point:      │  │ Access Point:  │  │ Access Point:      │
+      │ customer-portal    │  │ analytics-team │  │ internal-etl       │
+      │                    │  │                │  │                    │
+      │ Origin: Internet   │  │ Origin: VPC-A  │  │ Origin: VPC-B      │
+      │ Policy: customers  │  │ Policy: read-  │  │ Policy: write-only │
+      │  can Get their own │  │  only, prefix  │  │  to /raw prefix    │
+      │  prefix            │  │  = /processed  │  │                    │
+      │                    │  │                │  │                    │
+      │ DNS: customer-     │  │ DNS: analytics-│  │ DNS: internal-etl- │
+      │  portal-*.s3-ap.…  │  │  team-*.s3-ap.…│  │  *.s3-ap.…         │
+      └────────────────────┘  └────────────────┘  └────────────────────┘
+```
+
+Same storage, three isolated access surfaces.
+
+**Bucket-policy delegation idiom (memorise):**
+
+```json
+{
+  "Effect": "Allow",
+  "Principal": { "AWS": "*" },
+  "Action": "s3:*",
+  "Resource": ["arn:aws:s3:::my-bucket", "arn:aws:s3:::my-bucket/*"],
+  "Condition": {
+    "StringEquals": {
+      "s3:DataAccessPointAccount": "123456789012"
+    }
+  }
+}
+```
+
+The bucket allows access through *any* access point in the same account; each access point's own policy does the narrow scoping.
+
+**What access points are NOT:**
+
+- **NOT a bucket-policy replacement.** Both still evaluate together; access points *simplify*, they don't remove.
+- **NOT S3 Object Lambda access points.** Object Lambda APs transform data on read (via a Lambda function). Standard access points just gate access.
+- **NOT cross-region.** An access point lives in a specific region; the bucket must be in the same region.
+- **NOT renamable.** Access point name is immutable after creation.
+- **NOT multi-bucket.** One access point maps to exactly one bucket.
+- **NOT a Block Public Access bypass.** BPA still applies; access points also support their own BPA settings.
+- **NOT a KMS bypass.** SSE-KMS still requires `kms:Decrypt` on the CMK from callers.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Access points replace the bucket policy"* — no; both evaluate together.
+- *"Access points transform data on retrieval"* — that's **Object Lambda access points**, a separate feature.
+- *"Access points can be renamed"* — no; immutable name.
+- *"Access points span multiple buckets"* — no; one bucket each.
+- *"Access points share across regions"* — no; region-scoped.
+- *"Access points make buckets public"* — no; BPA still applies.
+- *"Network origin can be changed after creation"* — no; immutable.
+
+**Exam Triggers:**
+
+- *"Simplify complicated bucket policies + many consumers"* → **S3 access points** with per-endpoint policies
+- *"Restrict specific consumers to a VPC while others use the internet"* → **access points with `NetworkOrigin: VPC` vs `Internet`**
+- *"Different DNS endpoints on the same bucket per app"* → access points' unique hostnames
+- *"Transform data per-consumer on retrieval"* → **S3 Object Lambda access points** (different feature)
+- *"Grant temporary consumer access without editing the bucket policy"* → **create a new access point** with a scoped policy, delete when done
+
+> *Mental model: **S3 access points = named views on the same bucket** — each with its own DNS hostname, its own policy, and optionally its own VPC restriction. The bucket policy shrinks to a delegation statement; the real access scoping lives in per-consumer access-point policies. Different from Object Lambda access points, which additionally *transform* the data as it's read. When the exam says "simplify one giant bucket policy across many consumers," reach for access points.*
 
 ### Certificate Manager (ACM) and Private CA
 
