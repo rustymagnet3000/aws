@@ -32,6 +32,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [SCPs, Permission Boundaries, Session Policies](#scps-permission-boundaries-session-policies)
   - [IAM Identity Center and Federation](#iam-identity-center-and-federation)
   - [Resource-based Policies](#resource-based-policies)
+  - [IAM Access Analyzer](#iam-access-analyzer)
 - [Domain 5 — Data Protection (18%)](#domain-5--data-protection-18)
   - [KMS Deep Dive](#kms-deep-dive)
   - [Envelope Encryption](#envelope-encryption)
@@ -1516,6 +1517,150 @@ Both are global IAM condition keys carrying an AWS Organizations ID (`o-xxxxx`).
 ### Resource-based Policies
 
 Only the following resources have them (memorise): **S3 buckets, KMS keys, SNS topics, SQS queues, Lambda functions, ECR repos, EFS file systems, Secrets Manager secrets, API Gateway (resource policy), IAM roles (trust policy)**.
+
+### IAM Access Analyzer
+
+**Anchored against `strace` for IAM.** Access Analyzer has grown from a single feature into an **umbrella of five related capabilities**. The exam distinguishes each one — pick the wrong feature from the family and you fail the question.
+
+**The five features under the Access Analyzer umbrella (memorise all five):**
+
+| Feature | What it does | Exam trigger |
+|---|---|---|
+| **External access analysis** (the original) | Finds resources shared *outside your zone of trust* — buckets, KMS keys, IAM roles, Lambda functions, SQS queues, Secrets Manager secrets, EBS/EFS/RDS snapshots exposed publicly or cross-account | *"Find resources shared externally"* / *"identify cross-account access"* |
+| **Policy generation** | Ingests 90 days of CloudTrail management events and generates a **least-privilege policy** listing the actions the role actually used | *"Generate a policy from actual usage history"* / *"replace AWS-managed with customer-managed, most efficient"* |
+| **Unused access analysis** | Identifies unused IAM roles, unused permissions on used roles, unused access keys | *"Find unused IAM roles or permissions"* |
+| **Custom policy checks** | Validates a policy against a reference — e.g., *"is my new policy more permissive than the previous version?"* — for CI gates | *"Block PR from merging if it grants broader access"* |
+| **Policy validation** | Checks a policy for syntax, security warnings, best-practice violations before you attach it | *"Validate a policy before deploying"* |
+
+#### Policy generation — the "least-privilege replacement for AWS-managed policies" workflow
+
+**The canonical SCS-C03 "replace broad AWS-managed policies with a customer-managed least-privilege policy, most operationally efficient" question.** The workflow is deliberately counterintuitive:
+
+**Numbered flow:**
+
+1. **Create a CloudTrail trail for management events** (or verify one exists). Access Analyzer needs CloudTrail data as input.
+2. **Keep the existing broad AWS-managed policies attached** while you observe the workload. Critical: the script must run *successfully* so CloudTrail records the full set of API calls. Removing permissions first causes the script to fail on the first denial and you never see the rest.
+3. **Run the workload for a representative period** — days if it's periodic. Enough to cover every code path (regular runs, edge cases, retries, error handlers).
+4. **IAM → Access Analyzer → Generate policy** → select the role → specify the CloudTrail trail + time window → click Generate.
+5. Access Analyzer produces a **JSON policy** listing the actions the role actually called, with resource ARNs where inferable.
+6. **Review + tighten** — sanity-check against your knowledge of the workload; replace remaining `*` resources with specific ARNs where possible; add conditions (MFA, region, tag) which the generator doesn't infer.
+7. **Attach the generated policy as a customer-managed policy** and **detach the broad AWS-managed policies**.
+8. **Run the workload again to validate.** Any `AccessDenied` → extend the observation window or add the missing action manually.
+
+**Why "keep broad policies attached first" is the subtle correct move:**
+
+Counterintuitive — leaving overly-permissive policies attached during observation *feels* wrong. But it's necessary. The workload has to *succeed at every code path* so every API call ends up in CloudTrail. If you strip permissions first, the script fails at the first `AccessDenied` and Access Analyzer sees an incomplete picture. This is the exam's specific test — you either understand the observe-then-narrow pattern or you don't.
+
+**What policy generation is NOT:**
+
+- **NOT Access Advisor.** Access Advisor shows *services* accessed (coarse); policy generation shows *actions* (fine-grained) and generates the JSON for you.
+- **NOT real-time.** Reads historical CloudTrail data; management events must have been recorded during the window.
+- **NOT capable of inferring conditions.** The generator emits Allow statements only; conditions (MFA, region, tag, encryption) added by hand.
+- **NOT complete for every resource.** Some API calls don't include the resource ARN in the CloudTrail event → the generator uses `*` and you tighten manually.
+- **NOT capable of inferring Deny statements.** Add `Deny` for anti-patterns by hand.
+- **NOT data-event-aware by default.** Reads management events; won't catch S3-object-level or Lambda-invoke actions unless you've enabled data events *and* the generator can process them.
+
+#### External access analysis — the original feature
+
+Point Access Analyzer at your account (or the Org) and it identifies **resources shared externally** — beyond the *zone of trust* (the account or the org). Reports include:
+
+- **S3 buckets** with public or cross-account access via bucket policy / ACL / access point
+- **KMS keys** granting external principals `Decrypt` / `Encrypt`
+- **IAM roles** whose trust policy allows external principals to assume
+- **Lambda functions** with cross-account permissions on the function
+- **SQS queues / SNS topics** with cross-account subscribe/receive
+- **Secrets Manager secrets** with cross-account resource policies
+- **EFS file systems** shared cross-account
+- **EBS / RDS / RDS-cluster snapshots** shared with other accounts
+
+Continuous — new findings appear as resources change. Wire to EventBridge → SNS for real-time alerting.
+
+**Zone-of-trust configuration:** you specify what counts as "trusted" — usually the AWS account itself, or the AWS Organization. Anything outside that boundary is a finding.
+
+#### Unused access analysis — permission-hygiene feature
+
+Flags:
+
+- **IAM roles that haven't been assumed** in the last N days
+- **Unused permissions** on used roles (actions granted but never called)
+- **Unused access keys** on IAM users
+
+Feeds directly into policy-generation workflows — remove unused permissions first, then generate.
+
+#### Custom policy checks — for CI/CD gates
+
+Programmatic checks that answer questions like:
+
+- *"Does this new policy grant more permissions than the previous version?"* — regression prevention
+- *"Does this policy grant access to the resources I listed?"* — targeted check
+- *"Does this policy grant access outside my zone of trust?"* — external-access precheck before deploy
+
+Callable from CI pipelines — block PRs that fail the check.
+
+#### Policy validation — syntax + best-practice linter
+
+Real-time as you edit a policy in the Console (or via `iam:ValidatePolicy` API). Flags:
+
+- Syntax errors
+- Security warnings (overly-broad conditions, `*` where a specific action fits)
+- Suggestions (use `IfExists`, prefer specific ARNs)
+
+**Data-source scope of policy generation:**
+
+- Reads **CloudTrail management events** from the specified trail.
+- **90-day maximum window.**
+- Doesn't read data events by default.
+- Requires the trail's S3 bucket to be readable by Access Analyzer's service role.
+- Cross-account supported (point at a trail in another account — organisation-trail pattern).
+
+**Limitations worth knowing (exam sometimes tests):**
+
+- **Resource-level ARNs not always inferable** — some API calls don't include the ARN; generator falls back to `*`.
+- **Condition keys not inferred** — add MFA / region / tag conditions by hand.
+- **New API calls after the window aren't captured** — re-run periodically as the workload evolves.
+- **Some services aren't supported** for action-level inference; you get service-level (`s3:*`) instead of specific.
+
+**Comparison — "how do I get a least-privilege policy?":**
+
+| Data source | Granularity | Effort |
+|---|---|---|
+| **Access Analyzer policy generation** | Action-level + resource ARNs where inferable | Very low — one click |
+| **Access Advisor last-accessed** | Service-level only | Low but coarse |
+| **CloudTrail Insights** | Anomaly rates | Wrong tool |
+| **Manual CloudTrail log parsing** | Action-level (custom code) | Very high |
+| **Read docs + hand-author** | Depends on rigour | Very high |
+| **`*ReadOnlyAccess` managed policy + iterate** | Coarse | Medium |
+
+Access Analyzer wins on both axes — the granularity of manual parsing at the effort of one-click.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Remove the broad policies first, then observe what fails"* — deliberately not the answer. Script must run successfully so CloudTrail captures every call.
+- *"Trial-and-error: start with no permissions, add on each AccessDenied"* — the classic anti-pattern; time-consuming and error-prone.
+- *"Use `AmazonEC2ReadOnlyAccess` instead"* — still AWS-managed, still broader than needed.
+- *"Use IAM Access Advisor"* — service-level only; insufficient for a least-privilege policy.
+- *"Use AWS Config to generate the policy"* — Config tracks resource state, not API-call history.
+- *"Enable CloudTrail Insights"* — anomaly detection, not policy generation.
+- *"Use CloudFormation Guard"* — template linter, unrelated to IAM.
+- *"Use Trusted Advisor"* — best-practice snapshot; no policy generation.
+- *"Access Analyzer detects external access, not policy generation"* → external access is a *different feature* under the same umbrella; the exam distinguishes them.
+
+**Exam Triggers:**
+
+- *"Least-privilege customer-managed policy replacing AWS-managed + most operationally efficient"* → **Access Analyzer policy generation from CloudTrail**
+- *"Generate a policy from actual usage history"* → **Access Analyzer policy generation**
+- *"Find resources shared externally"* → **Access Analyzer external access analysis**
+- *"Find unused IAM roles or permissions"* → **Access Analyzer unused access analysis**
+- *"Validate a policy before deploying / block CI on more-permissive policies"* → **Access Analyzer custom policy checks / validation**
+- *"90-day CloudTrail-based analysis of role activity"* → **Access Analyzer policy generation**
+
+> *Mental model: **IAM Access Analyzer is `strace` for IAM** — five features under one umbrella, each answering a different least-privilege question. The exam distinguishes them:*
+> - *"Who's calling me from outside?" → **external access analysis***
+> - *"What did this role actually use?" → **policy generation** (with the counterintuitive "keep broad policies attached first" workflow)*
+> - *"What's stale?" → **unused access analysis***
+> - *"Is this new policy more permissive?" → **custom policy checks***
+> - *"Is this policy well-formed?" → **policy validation***
+> *For "replace AWS-managed with customer-managed, most efficient" → policy generation every time. Anyone suggesting hand-authoring, trial-and-error, Access Advisor, or CloudTrail parsing has picked the high-effort path.*
 
 ## Domain 5 — Data Protection (18%)
 
