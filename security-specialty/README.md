@@ -40,6 +40,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [S3 Encryption + Bucket Policies](#s3-encryption--bucket-policies)
   - [AWS Backup](#aws-backup)
   - [S3 Access Points](#s3-access-points)
+  - [EBS Encryption at Scale](#ebs-encryption-at-scale)
   - [Certificate Manager (ACM) and Private CA](#certificate-manager-acm-and-private-ca)
 - [Domain 6 — Management and Security Governance (14%)](#domain-6--management-and-security-governance-14)
   - [Organizations, SCPs, Control Tower](#organizations-scps-control-tower)
@@ -2218,6 +2219,136 @@ The bucket allows access through *any* access point in the same account; each ac
 - *"Grant temporary consumer access without editing the bucket policy"* → **create a new access point** with a scoped policy, delete when done
 
 > *Mental model: **S3 access points = named views on the same bucket** — each with its own DNS hostname, its own policy, and optionally its own VPC restriction. The bucket policy shrinks to a delegation statement; the real access scoping lives in per-consumer access-point policies. Different from Object Lambda access points, which additionally *transform* the data as it's read. When the exam says "simplify one giant bucket policy across many consumers," reach for access points.*
+
+### EBS Encryption at Scale
+
+**The canonical SCS-C03 "encrypt all EBS volumes now and in the future"question class.** Splits into two half-problems that need two different fixes, plus a preventive layer and a detective layer for defence in depth.
+
+**The four layers (memorise all four):**
+
+| Layer | Tool | What it does |
+|---|---|---|
+| **Future volumes (preventive default)** | **EBS encryption by default** (regional account attribute) | Every new EBS volume in the region auto-encrypted with the default KMS key — regardless of source (launch template, `CreateVolume`, CloudFormation, Terraform, ad-hoc) |
+| **Future volumes (preventive guardrail)** | **SCP with `ec2:Encrypted = false` Deny** | Org-wide belt-and-suspenders — blocks any `CreateVolume` / `RunInstances` where the request context says the volume would be unencrypted |
+| **Existing volumes (migration)** | **Snapshot → copy snapshot encrypted → new volume from encrypted snapshot → replace** | The only way to encrypt existing unencrypted volumes; EBS doesn't support in-place encryption |
+| **Continuous verification (detective)** | **AWS Config rules** (`ec2-ebs-encryption-by-default`, `encrypted-volumes`) | Ongoing evaluation that (a) default encryption is on in every region, and (b) no unencrypted volumes exist |
+
+#### Part A — enable EBS encryption by default (the "future" fix)
+
+Single API call per region:
+
+```bash
+aws ec2 enable-ebs-encryption-by-default --region <region>
+```
+
+Optionally specify a customer-managed CMK as the default (otherwise `aws/ebs`):
+
+```bash
+aws ec2 modify-ebs-default-kms-key-id \
+  --kms-key-id arn:aws:kms:<region>:<account>:key/<cmk-id> \
+  --region <region>
+```
+
+Console: **EC2 → Data protection and security → EBS encryption → Manage → Enable + choose KMS key**.
+
+Once on:
+
+- Every new volume from `RunInstances`, `CreateVolume`, `CopyImage`, `CopySnapshot`, `CreateSnapshot` — automatically encrypted.
+- The `Encrypted` flag in launch templates / CloudFormation / API calls is *effectively forced to `true`* — can't be overridden to `false`.
+- **Regional only** — must be enabled per region you operate in.
+
+#### Part B — org-wide preventive SCP (belt-and-suspenders)
+
+Layered on top of the regional default so even if a region's default is turned off (accident or malicious), unencrypted volume creation is still blocked:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "DenyUnencryptedEBSVolumes",
+    "Effect": "Deny",
+    "Action": [
+      "ec2:CreateVolume",
+      "ec2:RunInstances"
+    ],
+    "Resource": "*",
+    "Condition": {
+      "Bool": {
+        "ec2:Encrypted": "false"
+      }
+    }
+  }]
+}
+```
+
+Apply at Org root / OU containing all workload accounts. This is the *preventive* layer (see [[preventive-vs-detective-vs-responsive--the-three-tier-framework]]).
+
+#### Part C — migrate existing unencrypted volumes (the "now" fix)
+
+**EBS does not support in-place encryption.** For every unencrypted volume you must:
+
+1. **Snapshot** the volume — `aws ec2 create-snapshot`.
+2. **Copy the snapshot with encryption enabled** — `aws ec2 copy-snapshot --encrypted --kms-key-id <cmk>`. This is the actual encryption step; the copy target is encrypted even when the source isn't.
+3. **Create a new volume from the encrypted snapshot** — `aws ec2 create-volume --snapshot-id <encrypted-snapshot>`.
+4. **Detach the unencrypted volume; attach the encrypted replacement** (requires stopping the instance for root-volume swap; can be done live for data volumes on some instance types).
+5. **Delete the unencrypted volume + unencrypted snapshot** after validation.
+
+**For ASG-managed instances**, a leaner approach:
+
+1. Enable EBS encryption by default (Part A).
+2. **Copy the launch template's AMI with encryption enabled** (`aws ec2 copy-image --encrypted`) → update template to reference the encrypted AMI.
+3. **Trigger an ASG instance refresh** (`aws autoscaling start-instance-refresh`) → replaces every instance with encrypted root volumes.
+
+#### Part D — Config rules for continuous verification (detective)
+
+Two managed rules to pair with the recipe:
+
+- **`ec2-ebs-encryption-by-default`** — flags any account/region where encryption-by-default is off.
+- **`encrypted-volumes`** — flags any EBS volume that isn't encrypted (catches surviving unencrypted volumes).
+
+Combine with the canonical Config-rule + auto-remediation + SNS pattern (Domain 6 → AWS Config) so any drift is auto-alerted.
+
+**Why "modify the launch template's `Encrypted` flag" is the wrong exam answer:**
+
+| Aspect | Regional default | Launch template `Encrypted: true` |
+|---|---|---|
+| Scope | All new volumes in the region, regardless of source | Only volumes launched by *that* template |
+| Ad-hoc `CreateVolume` calls | ✅ encrypted | ❌ not covered |
+| Other launch templates | ✅ encrypted | ❌ not covered |
+| CloudFormation / Terraform volumes | ✅ encrypted | ❌ requires each stack to set the flag |
+| Bypassable by omission | ❌ (regional attribute) | ✅ (next template forgets) |
+| Auditor-friendly | ✅ single regional setting | ❌ audit every template |
+| Existing volumes | ❌ (still need migration) | ❌ (still need migration + replacement) |
+
+Launch-template modification is a partial fix — only covers that template's future launches. The regional default is strictly better on every axis.
+
+**The regional-scope gotcha (multi-region operations):**
+
+- Encryption-by-default is **per-account per-region**. Must enable in every region you use.
+- Automate rollout via SSM Automation runbook, Firewall Manager (no — Firewall Manager doesn't manage EBS encryption), or a CI script that iterates regions.
+- Add a **Config aggregator** in the audit account so you can verify all regions × all accounts from one dashboard.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Modify the launch template's `Encrypted` flag"* — partial fix; doesn't cover ad-hoc creates, other templates, or existing volumes.
+- *"Encrypt volumes in place"* — not supported by EBS.
+- *"Use AWS Backup to encrypt volumes"* — Backup encrypts recovery points, not the live volumes themselves.
+- *"Use Macie / GuardDuty / Inspector"* — wrong services.
+- *"Wait for ASG to replace old instances naturally"* — too slow for compliance stems.
+- *"Write a Lambda that scans and encrypts volumes"* — reinvents encryption-by-default; higher operational effort.
+- *"Enable CloudHSM"* — overkill for standard EBS.
+- *"Set up an SSM Automation runbook to enable encryption"* — Automation is for orchestration; the base primitive is the regional default.
+
+**Exam Triggers:**
+
+- *"Encrypt all EBS volumes now and in the future + minimal effort"* → **EBS encryption by default (regional) + migrate existing**
+- *"All new volumes must be encrypted regardless of how they're created"* → **regional default**, not per-template config
+- *"Prevent org-wide creation of unencrypted volumes"* → **SCP with `ec2:Encrypted = false` Deny**
+- *"Continuously verify EBS encryption compliance"* → **Config rules** `ec2-ebs-encryption-by-default` + `encrypted-volumes`
+- *"Encrypt an existing unencrypted volume"* → **snapshot → copy snapshot encrypted → new volume → replace**
+- *"Encrypt all ASG-managed instance volumes"* → **regional default + encrypted AMI + instance refresh**
+
+> *Mental model: EBS encryption is a **two-half problem** — existing volumes (migration) and future volumes (default encryption). Regional default is the strictly-better lever for the future half (covers every source, can't be bypassed by omission, single regional attribute to audit). Layer an **SCP `ec2:Encrypted = false` Deny** for org-wide preventive enforcement, pair **Config rules** for continuous verification, and use **snapshot → encrypted copy → replace** to migrate existing volumes. Launch-template modification is a partial fix the exam usually punishes.*
 
 ### Certificate Manager (ACM) and Private CA
 
