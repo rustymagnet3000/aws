@@ -22,6 +22,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [ELB Access Logs and Connection Logs (ALB / NLB)](#elb-access-logs-and-connection-logs-alb--nlb)
 - [Domain 3 — Infrastructure Security (20%)](#domain-3--infrastructure-security-20)
   - [VPC Security (SG vs NACL deep dive)](#vpc-security-sg-vs-nacl-deep-dive)
+  - [Cross-VPC / Cross-Account Security Group Referencing](#cross-vpc--cross-account-security-group-referencing)
   - [AWS WAF, Shield, Firewall Manager](#aws-waf-shield-firewall-manager)
   - [Network Firewall](#network-firewall)
   - [VPC Traffic Mirroring](#vpc-traffic-mirroring)
@@ -1261,6 +1262,139 @@ If the exam is up-to-date on vended-logs delivery, the CW Logs answer wins on ef
 ### VPC Security (SG vs NACL deep dive)
 
 Big table of the SG/NACL differences, plus the **evaluation order** (NACL inbound → SG inbound → subnet routing → SG outbound → NACL outbound) — memorise this cold.
+
+### Cross-VPC / Cross-Account Security Group Referencing
+
+**The canonical SCS-C03 "subset of frequently-launched instances needs peered VPC access" question.** When EC2 instances scale in/out constantly and only a subset need access to a resource in a peered VPC, the AWS-native answer is **security group referencing across the peering** — not CIDR-based rules, not NACLs, not per-instance IP additions.
+
+**The primitive:** VPC peering supports **cross-VPC + cross-account security-group referencing**. The source of a security group's inbound rule can be a *specific SG in the peered VPC*, referenced by its SG ID + peer account ID + peering connection ID. Not the whole VPC CIDR — just the specific SG.
+
+**Why this beats every alternative:**
+
+- **Auto-follows scaling** — any new EC2 instance launched with the referenced SG attached gets access; any instance without it doesn't.
+- **Subset targeting** — only instances that actually get the SG attached are in scope. Other instances in the same subnet without the SG cannot reach the resource.
+- **No CIDR maintenance** — no matter how many instances launch/terminate, the SG-ID reference is stable.
+- **No 60-rule-per-SG limit hit** — one SG reference covers unlimited instances.
+
+**The two-VPC / two-account setup — traffic-flow diagram:**
+
+```text
+┌─────────────────────────────────┐         ┌─────────────────────────────────┐
+│  Application VPC (AppAccount)   │         │  Database VPC (DBAccount)       │
+│                                 │         │                                 │
+│  ┌──────────────┐  ┌──────────┐ │         │  ┌──────────────┐               │
+│  │  EC2 with    │  │  EC2     │ │         │  │  Oracle RDS  │               │
+│  │  AppInstances│  │  without │ │  peer   │  │  or EC2      │               │
+│  │  SG attached │  │  SG      │ │◄────────┼─►│  DB          │               │
+│  │              │  │          │ │  pcx-   │  │              │               │
+│  └──────┬───────┘  └──────────┘ │  xxx    │  │  DB SG:      │               │
+│         │                       │         │  │  Ingress     │               │
+│         │  TCP 1521              │         │  │  1521 from   │               │
+│         └────────────────────────┼────────►│  │  AppInstances│               │
+│                                 │         │  │  SG (peered) │               │
+│                                 │         │  └──────────────┘               │
+│         Instance without        │         │                                 │
+│         AppInstancesSG →        │         │  Only instances with the        │
+│         DB SG rejects           │         │  specific SG in the peer VPC    │
+│                                 │         │  can reach the DB               │
+└─────────────────────────────────┘         └─────────────────────────────────┘
+```
+
+**Configuration steps:**
+
+1. **In the application VPC** (source):
+   - Create a dedicated SG (e.g., `AppInstancesSG`).
+   - Attach it only to the subset of EC2 instances that need access.
+   - Note the SG ID.
+
+2. **In the database VPC** (destination):
+   - Edit the target resource's SG inbound rule.
+   - Add: **Type = Custom TCP, Port = 1521, Source = `<AppAccount-ID>/sg-0abc...`** (peered SG reference).
+   - Console UI accepts the account + SG ID directly for peered SG references.
+
+**CLI form (cross-account variant):**
+
+```bash
+aws ec2 authorize-security-group-ingress \
+  --group-id sg-<db-sg-id-in-db-account> \
+  --ip-permissions '[
+    {
+      "IpProtocol": "tcp",
+      "FromPort": 1521,
+      "ToPort": 1521,
+      "UserIdGroupPairs": [
+        {
+          "GroupId": "sg-0abc...",
+          "UserId": "<AppAccount-ID>",
+          "VpcPeeringConnectionId": "pcx-<peering-id>"
+        }
+      ]
+    }
+  ]'
+```
+
+The `UserId` (source account) + `GroupId` (source SG) + `VpcPeeringConnectionId` triplet is what enables cross-account SG referencing.
+
+**Prerequisites — all mandatory (exam sometimes tests these):**
+
+- VPC peering connection exists.
+- Both VPCs in the **same AWS Region** — **cross-region peering does NOT support SG referencing** (classic exam trap).
+- Route tables in both VPCs have routes across the peering connection.
+- Optional: DNS resolution across the peering enabled.
+
+**The cross-region SG-referencing gotcha:**
+
+If the stem specifies **cross-region peering**, SG referencing is unavailable and you must fall back to:
+
+- **CIDR-based SG rules** (brittle for the "subset" requirement).
+- **AWS PrivateLink** (works cross-region for endpoint services).
+- **Transit Gateway with route-table controls**.
+
+The exam plants "same region" specifically to enable SG-referencing as the answer, and "different regions" to disqualify it. **Watch the region wording.**
+
+**Same-pattern applications (memorise the family):**
+
+The SG-referencing primitive appears in several exam scenarios beyond peering:
+
+| Scenario | SG configuration |
+|---|---|
+| **ALB → EC2 targets** | EC2 SG allows inbound from ALB's SG ID (same VPC) |
+| **App tier → RDS in same VPC** | RDS SG allows inbound from app SG's ID |
+| **Bastion → private instances** | Private instance SG allows SSH from bastion SG's ID |
+| **App VPC → DB VPC (peered, same account)** | DB SG allows from app SG's ID (peered VPC ref) |
+| **App VPC → DB VPC (peered, cross-account)** | DB SG allows from app SG's ID + peer account + peering ID (this question) |
+
+All use the same primitive; only the cross-VPC + cross-account variant requires the additional peering-connection-ID reference.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- ***"Use NACL rules with the application VPC's CIDR"*** — NACLs operate on subnets, not instances. Every instance in the source CIDR is allowed. Fails the "subset" requirement.
+- ***"Use SG inbound rule allowing the application VPC CIDR"*** — allows every instance in the app VPC, not the subset.
+- ***"Add each instance's private IP individually"*** — brittle; instances launch/terminate frequently; hits the 60-rule-per-SG limit.
+- ***"Deploy a bastion host"*** — adds a hop but doesn't scope which app instances get DB access.
+- ***"Use IAM policies to restrict database access"*** — IAM governs API calls, not TCP connections to a database port.
+- ***"Use PrivateLink"*** — works but different architecture; overkill when peering already exists.
+- ***"Use Transit Gateway"*** — stem specifies peering; TGW is a different construct.
+- ***"Enable AWS Network Firewall"*** — heavy for this simple pattern.
+- ***"Configure Route 53 policies"*** — DNS-based; doesn't restrict TCP.
+- ***"Use VPC Flow Logs to monitor"*** — detective, not preventive. The stem asks for a network *control*, not monitoring.
+
+**When SG referencing breaks down (and what to use instead):**
+
+- **Cross-region peering** → PrivateLink or Transit Gateway.
+- **VPCs in different Orgs with no peering possible** → PrivateLink service endpoint pattern.
+- **L7 filtering needed** (SQL inspection, deep packet) → AWS Network Firewall or Gateway Load Balancer + third-party appliances.
+- **Zero-trust identity-based access needed** → AWS Verified Access or IAM Database Authentication (for supported engines).
+
+**Exam Triggers:**
+
+- *"Peered VPCs, same region, subset of EC2s need access, frequent scale in/out"* → **cross-VPC SG referencing**
+- *"ALB → EC2 target"* → **same-VPC SG referencing** (EC2 SG allows from ALB SG)
+- *"App tier → RDS"* → **same-VPC SG referencing** (RDS SG allows from app SG)
+- *"Cross-region VPC with SG-level granularity"* → **PrivateLink** (SG-referencing doesn't work cross-region)
+- *"Restrict which instances can reach a database at network layer"* → **SG referencing**, not NACLs
+
+> *Mental model: **when a subset of frequently-launched EC2 instances needs access to a resource in a peered VPC (same region, possibly cross-account), the AWS-native answer is to attach a specific SG to the subset and reference that SG from the resource's SG.*** Cross-VPC + cross-account SG referencing (over same-region peering) is the only network-layer control that automatically follows instance scale events without CIDR maintenance and naturally scopes access to instances that have the SG attached. Everything else — CIDR rules, NACLs, IAM policies, bastion hosts — fails either the "subset" requirement or the "frequently launched" requirement. The one exception: cross-region peering doesn't support SG referencing; reach for PrivateLink or Transit Gateway there.
 
 ### AWS WAF, Shield, Firewall Manager
 
