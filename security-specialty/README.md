@@ -1260,7 +1260,127 @@ If the exam is up-to-date on vended-logs delivery, the CW Logs answer wins on ef
 
 ### VPC Security (SG vs NACL deep dive)
 
-Big table of the SG/NACL differences, plus the **evaluation order** (NACL inbound → SG inbound → subnet routing → SG outbound → NACL outbound) — memorise this cold.
+**Anchored against a doorman + airport-security-scanner analogy.** Security Groups are the **doorman with a memory** — once a guest is checked in, changing the guest list doesn't kick them out; return traffic auto-flows because the SG *remembers* the outbound request. NACLs are the **airport security scanner** — every packet re-screened, no memory of prior packets, so return traffic needs its own explicit allow rule.
+
+**Packet evaluation order (memorise cold):**
+
+> **NACL inbound → SG inbound → subnet route table → SG outbound → NACL outbound**
+
+For an inbound request, NACL fires first at the subnet boundary, then SG at the ENI. For an outbound reply, the reverse.
+
+#### SG vs NACL — the full comparison
+
+| Property | Security Group | NACL |
+|---|---|---|
+| **State** | **Stateful** — remembers connections; return traffic auto-allowed | **Stateless** — every packet re-evaluated independently in each direction |
+| **Rule actions** | **Allow only** — no explicit deny; deny is implicit-by-absence | **Allow and Deny** — explicit deny rules supported |
+| **Rule evaluation** | **All rules evaluated**; if any allows, packet passes | **First match wins** in ascending rule-number order; evaluation stops on first match |
+| **Attachment scope** | Per-**ENI** (per-instance effectively) | Per-**subnet** (all ENIs in the subnet share it) |
+| **Default posture** | Deny-all inbound, allow-all outbound (default SG) | Default NACL: allow-all in/out. Custom NACL: deny-all until rules added. |
+| **Rule reference** | Can reference other SGs (`sg-abc123`) as source/destination | CIDR blocks only — no SG references |
+| **Best for** | Application-tier access control (ENI-level) | Subnet-boundary defence-in-depth, explicit-deny for compliance |
+
+#### Statelessness — the mechanic that trips exam candidates
+
+**Mnemonic:** *"NACL forgets, SG remembers."* — both start with the same letter as the property they lack/have.
+
+For an outbound-initiated TLS connection (EC2 → external HTTPS), the NACL must be configured on **both directions**:
+
+- **Outbound rule:** allow TCP 443 (dst port) → covers the SYN and every subsequent client-to-server packet.
+- **Inbound rule:** allow TCP **1024-65535** (dst port) → covers return traffic, because the server's SYN-ACK arrives back on the client's **ephemeral** destination port (not on 443).
+
+Without the inbound ephemeral allow, the SYN-ACK is silently dropped and TLS never completes. With a stateful SG, this is invisible — the SG remembers the outbound request and permits the return automatically.
+
+**Ephemeral port ranges (why 1024-65535 is the safe default):**
+
+| Source | Ephemeral range |
+|---|---|
+| Linux kernel 2.4+ | 32768-60999 |
+| Windows Server 2003 and earlier | 1025-5000 |
+| Windows Server 2008+ | 49152-65535 |
+| **NAT Gateway, ELB, Lambda** | **1024-65535** |
+| **AWS-recommended catch-all for NACLs** | **1024-65535** |
+
+AWS-managed services (NAT Gateway, ELB targets, Lambda ENIs) use the widest range, so `1024-65535` is the only safe inbound allow for return traffic.
+
+#### Rule ordering — the specific-Deny-before-broad-Allow trap
+
+**Scenario:** an EC2 in a public subnet needs outbound TLS on 443 **and** must **explicitly deny** inbound MySQL on 3306.
+
+**Correct NACL config — DENY 3306 must have a LOWER rule number than the ephemeral ALLOW:**
+
+**Inbound rules:**
+
+| Rule # | Type | Protocol | Port | Source | Action |
+|---|---|---|---|---|---|
+| **90** | MySQL | TCP | **3306** | `0.0.0.0/0` | **DENY** |
+| 100 | Custom TCP | TCP | **1024-65535** | `0.0.0.0/0` | ALLOW |
+| * | ALL | ALL | ALL | ALL | DENY (implicit) |
+
+**Outbound rules:**
+
+| Rule # | Type | Protocol | Port | Destination | Action |
+|---|---|---|---|---|---|
+| 100 | HTTPS | TCP | **443** | `0.0.0.0/0` | ALLOW |
+| * | ALL | ALL | ALL | ALL | DENY (implicit) |
+
+**Why ordering matters:** 3306 is inside the ephemeral range 1024-65535. If the DENY 3306 rule is numbered **above** the ALLOW 1024-65535 (e.g. DENY at rule 110, ALLOW at rule 100), then:
+
+1. Inbound packet destined for port 3306 arrives.
+2. Rule 100 (ALLOW 1024-65535) evaluated → matches (3306 ∈ range) → **ALLOW applied. Evaluation stops.**
+3. Rule 110 (DENY 3306) **never consulted** — the DENY is dead code.
+
+Putting DENY 3306 at rule 90 forces it to fire first for any port-3306 packet, before the broader ALLOW is reached. This is the **specific-Deny-before-broad-Allow pattern** and it's what the exam tests.
+
+#### Numbered packet walkthrough — outbound TLS on the correct NACL
+
+1. **SYN out** — EC2 sends `src:10.0.1.20:51234 → dst:server:443`.
+   - Outbound NACL: Rule 100 ALLOW 443 matches → **sent**.
+2. **SYN-ACK in** — Server sends `src:server:443 → dst:10.0.1.20:51234`.
+   - Inbound NACL: Rule 90 (DENY 3306) doesn't match (dst is 51234). Rule 100 (ALLOW 1024-65535) matches → **admitted**.
+3. **ACK out** — EC2 sends `src:10.0.1.20:51234 → dst:server:443`.
+   - Outbound NACL: Rule 100 ALLOW 443 matches again → **sent**.
+4. **TLS ClientHello, ServerHello, application data** — each packet re-evaluated identically. NACL has **no memory** of steps 1-3.
+
+**Attacker attempts MySQL — first-match-wins kills it:**
+
+1. Attacker sends `src:attacker:52001 → dst:10.0.1.20:3306`.
+2. Inbound NACL: Rule 90 (DENY 3306) matches → **DROPPED. Evaluation stops.**
+3. Rule 100 never reached.
+
+#### What it is NOT — SG vs NACL disambiguation
+
+| It's not… | It's… |
+|---|---|
+| **SG with an explicit Deny rule** | SGs don't support Deny — only implicit deny by absence of an Allow |
+| **SG needing return-traffic rules** | SGs are stateful — outbound rule alone permits return |
+| **NACL with "all rules evaluated" logic** | NACL is first-match-wins in rule-number order |
+| **NACL referencing another SG or PrefixList as source** | NACLs take CIDR blocks only |
+| **NACL per-ENI attachment** | NACLs attach per-subnet — every ENI in the subnet shares them |
+| **AWS Network Firewall for this scenario** | Overkill; a NACL Deny handles subnet-boundary block with zero extra infra |
+
+#### Common Anti-patterns (exam wrong answers)
+
+- *"Allow inbound TCP 443 for return TLS traffic"* → wrong; return arrives on ephemeral destination port, not 443. Allowing inbound 443 opens the instance to inbound web connections from anywhere.
+- *"Configure the security group to deny inbound 3306"* → SGs don't support Deny. Absence-of-Allow is functionally similar but fails compliance requirements for an *explicit* Deny rule.
+- *"Place DENY 3306 at rule 200, after the broader ALLOW at 100"* → dead code; ALLOW matches first for port 3306, DENY never reached.
+- *"Allow inbound 32768-60999 (Linux ephemeral range only)"* → too narrow; NAT Gateway / ELB / Lambda use 1024-65535 and return traffic through those breaks.
+- *"NACLs are stateful, no return-path rule needed"* → confuses NACL with SG. This is *the* trap the exam tests.
+- *"Use ALLOW 0-65535 inbound"* → too broad; hides intent and defeats the point of an explicit deny policy.
+- *"Change the route table to block MySQL"* → route tables control next-hop, not port-level filtering.
+
+#### Exam Triggers
+
+- *"Explicitly deny a specific port at the subnet boundary"* → **NACL** (SGs can't Deny).
+- *"Block traffic immediately including existing connections"* → **NACL** (stateless — kills every packet on next hop; SG changes leave existing connections until TCP ages out).
+- *"Outbound TLS + inbound explicit deny of DB port"* → **NACL with DENY at lower rule number than ephemeral ALLOW 1024-65535**.
+- *"NACL rules not firing as expected"* → **check rule-number ordering — first match wins**.
+- *"Instance can send but not receive"* → **stateless NACL missing return-path ephemeral allow**.
+- *"Ephemeral ports"* → **1024-65535** for the safe catch-all.
+- *"Reference another SG as source/destination"* → **SG only** — NACLs use CIDR blocks.
+- *"Per-ENI access control"* → **SG** (NACLs are per-subnet).
+
+> *Mental model: **NACL forgets, SG remembers.** SGs are stateful doorkeepers — once you're checked in, the return traffic flows automatically. NACLs are airport-security scanners — every packet re-screened independently, no memory of prior packets, both directions must be explicitly configured. This forces two mechanics for any outbound-initiated flow on a NACL: an **outbound allow** for the request path (e.g. TCP 443) AND an **inbound allow** for the ephemeral return path (1024-65535). If you also need to explicitly deny a well-known port that overlaps the ephemeral range (3306, 3389, 1433, 22), the DENY must be numbered **below** the ephemeral ALLOW — because NACLs evaluate ascending, first match wins, and 3306 is inside 1024-65535. Miss either mechanic and the config is silently broken.*
 
 ### AWS WAF, Shield, Firewall Manager
 
