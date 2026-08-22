@@ -1943,6 +1943,153 @@ A **customer-managed KMS key (CMK)** answers ownership only. The key material st
 
 > *Mental model: "Customer-managed" = **who holds the policy**. "Client-side" = **where the encryption code runs**. Two independent axes — always disambiguate before picking an answer.*
 
+#### KMS deletion mechanics — scheduling, disabling, and MRK per-region coordination
+
+**Two exam-canonical traps in the same topic:**
+
+1. **`ScheduleKeyDeletion` does not disable the key.** The key remains **fully usable** for the entire 7–30 day waiting period. To stop use immediately AND delete permanently, you need both `DisableKey` + `ScheduleKeyDeletion`.
+2. **Multi-region keys (MRKs) require per-region deletion coordination.** MRKs share key material and key ID across regions, but each region's key is an independent resource with its own state and deletion schedule. Deleting only one region leaves the others usable for decryption.
+
+**The mandatory waiting-period floor:**
+
+- **Minimum 7 days**, maximum 30 days, **default 30 days**.
+- Cannot be shortened, bypassed, or overridden — **not even by AWS Support**.
+- Set via `--pending-window-in-days 7` (or up to 30) at `ScheduleKeyDeletion` time.
+- Waiting-period is a designed security feature — deletion is irreversible, so AWS deliberately makes it slow.
+
+**The five key states (memorise):**
+
+| State | Crypto operations | Recoverable? | Timeline |
+|---|---|---|---|
+| **Enabled** | ✅ All work | N/A | N/A |
+| **Disabled** (via `DisableKey`) | ❌ Returns `DisabledException` | Yes — `EnableKey` | Immediate |
+| **PendingDeletion** (via `ScheduleKeyDeletion`) | ✅ **Still fully works** | Yes — `CancelKeyDeletion` | Deletes at end of 7–30 day window |
+| **PendingReplicaDeletion** | Varies | Yes | Replica-only state |
+| **Unavailable** | ❌ Blocked | Depends on cause | Key-material issue (e.g., external key store) |
+
+**The critical row is `PendingDeletion` — crypto operations still work.** The trap: security teams schedule deletion thinking the key is now "removed from service," but attackers who still have access continue to decrypt during the 7–30 day window.
+
+**The disable-vs-delete state transition matrix:**
+
+| Current state | Action | Resulting state | What happens |
+|---|---|---|---|
+| Enabled | `ScheduleKeyDeletion` | PendingDeletion (still usable) | Deletion timer starts |
+| Enabled | `DisableKey` | Disabled (unusable) | Use blocked immediately |
+| PendingDeletion | `CancelKeyDeletion` | Disabled (unusable) | Timer cancelled; must `EnableKey` to reuse |
+| PendingDeletion | `DisableKey` | **PendingDeletion + Disabled** (target state for compromised keys) | Deletes on schedule, unusable meanwhile |
+| Disabled | `EnableKey` | Enabled | Reversible |
+| Disabled | `ScheduleKeyDeletion` | PendingDeletion (still Disabled) | Deletes at end of window |
+
+**The target state for a compromised key: `PendingDeletion + Disabled`** — deletion scheduled AND crypto blocked immediately.
+
+**Multi-region key (MRK) architectural facts:**
+
+MRKs are identified by the `mrk-` prefix in the key ID (e.g., `mrk-1a2b3c4d5e6f...`). Same key ID + same key material across all regions where the MRK is replicated.
+
+| Property | Shared across regions? |
+|---|---|
+| Key material | ✅ Shared — same bytes |
+| Key ID (`mrk-...`) | ✅ Shared |
+| Ciphertext compatibility | ✅ Shared — ciphertext from any region decrypts with any other region's replica |
+| Key state (Enabled / Disabled / PendingDeletion) | ❌ **Independent per region** |
+| Key policy | ❌ **Independent per region** — must be updated in each region |
+| Grants | ❌ Independent |
+| Aliases | ❌ Independent |
+| CloudTrail events | ❌ Independent |
+| Deletion schedule + waiting period | ❌ **Independent** — each region's clock runs separately |
+
+**The consequence:** deleting only the primary in one region doesn't stop attackers who have access to a replica in another region. Since ciphertext is region-portable (any replica can decrypt ciphertext produced by any other replica), a single un-deleted replica preserves the attacker's decryption capability.
+
+**MRK deletion coordination — the "fastest complete deletion" pattern:**
+
+1. **Enumerate all regions** where the MRK exists:
+
+   ```bash
+   aws kms describe-key --key-id mrk-<id> --region <primary-region> \
+     --query 'KeyMetadata.MultiRegionConfiguration.ReplicaKeys[].Arn'
+   ```
+
+2. **Schedule deletion in each region with the 7-day minimum window** — all timers start now:
+
+   ```bash
+   for region in us-west-2 us-east-1 eu-west-1 ap-southeast-2; do
+     aws kms schedule-key-deletion \
+       --key-id mrk-<id> \
+       --pending-window-in-days 7 \
+       --region $region
+   done
+   ```
+
+3. **(Belt-and-suspenders) Disable each key in each region immediately** to block use during the 7-day window:
+
+   ```bash
+   for region in us-west-2 us-east-1 eu-west-1 ap-southeast-2; do
+     aws kms disable-key --key-id mrk-<id> --region $region
+   done
+   ```
+
+Full deletion completes in 7 days from now; use is blocked immediately.
+
+**The MRK primary-vs-replica deletion rule:**
+
+- **Replica keys can be scheduled for deletion at any time** independently.
+- **Primary keys with replicas** — you must either delete all replicas first, or **promote a replica to primary** via `UpdatePrimaryRegion` before deleting the old primary.
+
+For "fastest deletion," scheduling all keys (primary + replicas) simultaneously lets them all reach the deletion date together after 7 days.
+
+**The compromised-key forensic playbook:**
+
+For any KMS key compromise:
+
+1. **`DisableKey`** — immediate block on all crypto operations.
+2. **`ScheduleKeyDeletion --pending-window-in-days 7`** — starts the deletion timer at the minimum window.
+3. **For MRKs** — repeat both steps in every region where a replica exists.
+4. **Update key policy** to remove the attacker's principal (belt-and-suspenders on top of `DisableKey`).
+5. **Audit CloudTrail** for all `kms:Decrypt` / `kms:Encrypt` / `kms:GenerateDataKey` calls using the key during the compromise window — to understand what data was accessed.
+6. **Rotate credentials** of any IAM principals that had access via the key policy.
+7. **Identify all resources** that were encrypted with this key (from CloudTrail data trail or by scanning your account for `KeyId` references) — plan re-encryption if needed.
+
+**Reading the stem — "delete" vs "stop use" vs "prevent recurrence":**
+
+The exam picks the answer by the stem's verb:
+
+| Stem phrase | Answer |
+|---|---|
+| *"Delete the key as quickly as possible"* + MRK | **Schedule deletion in every region with 7-day window** |
+| *"Stop the compromised key from being used"* | **`DisableKey`** (add to every region for MRKs) |
+| *"Prevent the attacker from creating new keys"* | **Update SCP / key policy to remove attacker permissions** |
+| *"Ensure the deletion cannot be reversed"* | **Deletion is reversible during waiting window** — trap; you cannot make it irreversible before the timer expires |
+| *"Recover a deleted key"* | **`CancelKeyDeletion`** only works during the waiting period; after that, the key is truly gone |
+
+**What plausible-looking wrong answers get wrong:**
+
+- ***"Delete the KMS key immediately via `DeleteKey`"*** — no such API exists.
+- ***"Schedule deletion with `--pending-window-in-days 0`"*** — rejected; minimum is 7.
+- ***"Contact AWS Support to expedite deletion"*** — support cannot override the 7-day floor.
+- ***"Disable only — that's the same as deleting"*** — wrong; Disable is reversible via `EnableKey`. Deletion after the waiting period is irreversible.
+- ***"Delete only the primary of the MRK"*** — leaves replicas active; attacker still decrypts via any replica.
+- ***"Modify the key policy to remove the attacker's principal"*** — helps but doesn't stop use if the attacker already has a temp session with the key. `DisableKey` is more direct.
+- ***"Rotate the KMS key material"*** — rotation applies to new encrypts; existing ciphertexts still decrypt with old key material. Doesn't stop the attacker.
+- ***"Just wait for the previously-scheduled deletion to expire"*** — attacker continues decrypting during the entire window. Must `DisableKey` now.
+
+**Common Anti-patterns:**
+
+- Assuming `PendingDeletion` = key unusable (it's not — the entire point of the disable-vs-delete distinction).
+- Forgetting to check for MRK replicas in other regions (silent gap; attacker retains full decryption access).
+- Trying to shortcut the 7-day minimum (impossible; hardcoded architectural constraint).
+- Removing the KMS key policy entirely to "lock everyone out" (orphans the key — the KMS root user access must remain, or the key becomes permanently unusable).
+- Assuming key rotation stops the attacker (rotation only affects new encryptions; historical decryption continues with old key material).
+
+**Exam Triggers:**
+
+- *"Scheduled deletion but key is still active"* → **`DisableKey`** — deletion doesn't imply disabled
+- *"Compromised MRK — delete as quickly as possible"* → **enumerate all regions + schedule deletion in each with 7-day window**
+- *"Cannot delete a KMS key in less than N days"* → **7-day mandatory floor**
+- *"Recover a scheduled-for-deletion key"* → **`CancelKeyDeletion`** during the waiting window
+- *"Cross-region attack surface via MRK"* → replicas share ciphertext compatibility; every region must be deleted
+
+> *Mental model: **KMS key deletion has a mandatory 7–30 day waiting period, and the key remains fully usable during that window unless you also disable it.*** `ScheduleKeyDeletion` sets the timer; `DisableKey` blocks crypto operations. **For MRKs**, each region's key is an independent resource — the same key material and key ID are shared, but every region has its own state and deletion schedule. Fastest complete deletion of a compromised MRK is coordinated per-region scheduling with 7-day windows, plus `DisableKey` in every region for immediate blocking. Reading the stem's verb picks the answer: *"delete quickly"* + MRK → per-region 7-day scheduling; *"stop use"* → `DisableKey`; *"prevent recurrence"* → policy changes. The 7-day floor is architectural and cannot be shortened by any means.
+
 ### Envelope Encryption
 
 **Numbered flow (SSE-KMS on S3):**
