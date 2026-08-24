@@ -1394,13 +1394,15 @@ Putting DENY 3306 at rule 90 forces it to fire first for any port-3306 packet, b
 
 | Attach point | Scope |
 |---|---|
-| **CloudFront distribution** | Global (edge) |
+| **CloudFront distribution** | Global (edge — Web ACL created in `us-east-1`) |
 | **Application Load Balancer** | Regional |
 | **Amazon API Gateway REST API stage** | Regional — attaches at the **stage**, not the API |
 | **AWS AppSync GraphQL API** | Regional |
 | **AWS App Runner service** | Regional |
-| **Amazon Cognito User Pool** | Regional |
+| **Amazon Cognito User Pool** | Regional (note: ATP + ACFP managed rule groups can't attach here) |
 | **AWS Verified Access instance** | Regional |
+| **AWS Amplify app** | Regional |
+| **Amazon Bedrock AgentCore Gateway** | Regional (recent addition; supports Web Bot Auth labels) |
 
 **One Web ACL can attach to many resources; one resource has at most one Web ACL.**
 
@@ -1415,18 +1417,21 @@ Putting DENY 3306 at rule 90 forces it to fire first for any port-3306 packet, b
 | Managed rule group | Attacks it blocks |
 |---|---|
 | **Core rule set (CRS)** | General web attack baseline — matches the OWASP Top 10 shape |
+| **Admin protection** | Blocks access to exposed admin URLs (WP admin panels, phpMyAdmin, etc.) |
 | **Known bad inputs** | Exploitation of known vulnerabilities, request patterns tied to malware C2 |
 | **SQL database** | **SQL injection** patterns in URIs, query strings, headers, and bodies |
 | **Linux operating system** | Linux-specific LFI, RFI, command injection |
 | **POSIX operating system** | POSIX shell command injection |
+| **Windows operating system** | Windows-specific attacks (PowerShell injection, WMI exploitation) |
 | **PHP application** | PHP-specific attacks (function injection, config exposure) |
 | **WordPress application** | WordPress plugin/theme exploitation |
 | **Amazon IP reputation list** | Blocks IPs on AWS-curated malicious IP list |
 | **Anonymous IP list** | Blocks Tor, VPN, and hosting-provider IPs |
 | **AWS WAF Bot Control** — **Common Bot Control** | Common bots (crawlers, scrapers, status monitors) via bot-category labelling |
-| **AWS WAF Bot Control** — **Targeted Bot Control** | Sophisticated distributed / rotating bots via ML + fingerprinting + JS challenge (extra cost) |
+| **AWS WAF Bot Control** — **Targeted Bot Control** | Sophisticated distributed / rotating bots via ML + fingerprinting + JS challenge + CAPTCHA (extra cost) |
 | **Account Takeover Prevention (ATP)** | Credential stuffing, brute-force login on sign-in endpoints |
 | **Account Creation Fraud Prevention (ACFP)** | Fake account signup at scale |
+| **Anti-DDoS** (2024-2025 addition) | L7 flood mitigation — pairs with Shield Advanced for application-layer DDoS |
 
 **Third-party managed rules** — also available in AWS Marketplace (F5, Fortinet, Cyber Security Cloud, Imperva, etc.) — subscribe + pay per Web ACL.
 
@@ -1453,7 +1458,7 @@ Whenever an exam stem says *"minimal ongoing tuning"* + *"web attack pattern (SQ
 | Cost | **Free**, auto-applied to all AWS resources | **~$3,000/month per organization** + data transfer |
 | Protection layer | L3/L4 automatic (SYN floods, reflection, UDP amplification) | L3/L4 + **L7 (with WAF integration)** |
 | Coverage | All AWS resources | CloudFront, Route 53, Global Accelerator, ALB/NLB/EIP-attached resources |
-| DDoS Response Team (DRT) | ✗ | ✓ 24/7 access during attack |
+| Shield Response Team (SRT) — formerly DDoS Response Team (DRT); legacy API surfaces still use `DRT` naming | ✗ | ✓ 24/7 access during attack |
 | Cost protection | ✗ | ✓ AWS refunds scaling costs caused by an attack |
 | Health-based detection | ✗ | ✓ Application-layer detection tied to Route 53 health checks |
 
@@ -1474,20 +1479,25 @@ Whenever an exam stem says *"minimal ongoing tuning"* + *"web attack pattern (SQ
 | **Security Group policy** | Audit SG rules, enforce baseline SGs, detect unused SGs | *"Audit for open ports 22/3389 across all VPCs"* |
 | **AWS Network Firewall policy** | Deploy Network Firewall + rule groups to VPCs | *"Deep-packet inspection between VPCs / VPC + internet, org-wide"* |
 | **Route 53 Resolver DNS Firewall policy** | Block malicious domains at the DNS resolver | *"Prevent DNS resolution of known-bad domains org-wide"* |
-| **Third-party firewall policy** | Palo Alto Cloud NGFW, Fortigate, Check Point via Marketplace | *"Partner NGFW deployed org-wide via a marketplace policy"* |
+| **Third-party firewall policy** | **Palo Alto Networks Cloud NGFW** and **Fortigate Cloud Native Firewall (CNF)** via Marketplace (Check Point is NOT an FMS third-party policy vendor) | *"Partner NGFW deployed org-wide via a marketplace policy"* |
 
 **Firewall Manager prerequisites:**
 
-1. **AWS Organizations** in **All Features** mode.
-2. **AWS Config** enabled in every target account (FMS uses Config to detect resource state).
-3. **Designated FMS admin account** — `aws organizations register-delegated-administrator --service-principal fms.amazonaws.com --account-id <security-account>`.
-4. **Trusted access** for `fms.amazonaws.com` in Organizations (auto-enabled by registration).
+1. **AWS Organizations** in **All Features** mode (Consolidated Billing alone is insufficient).
+2. **AWS Config** enabled in every target account in every target region (FMS uses Config to detect resource state).
+3. **Designated FMS admin account** — the Organizations management account calls **`fms:PutAdminAccount`** (or uses the FMS console). FMS then **automatically registers that account as the delegated administrator for `fms.amazonaws.com`** in Organizations on your behalf. You do NOT call `organizations register-delegated-administrator` directly for FMS — the FMS API handles it.
+4. **Trusted access** for `fms.amazonaws.com` in Organizations (auto-enabled by the FMS admin-account setup).
 
-**Auto-remediation semantics:**
+**Auto-remediation semantics (opt-in per policy):**
+
+Auto-remediation is a **policy setting** (`RemediationEnabled: true`), NOT mandatory. A policy can be created in *"identify non-compliant resources only"* mode where drift is reported but not fixed.
+
+When enabled:
 
 - **New in-scope resources** — FMS auto-attaches the policy to them at creation time. No per-account action.
-- **Drift** — if someone locally detaches a Web ACL from a resource that should have it, FMS re-attaches within minutes.
+- **Drift** — if someone locally detaches a Web ACL from a resource that should have it, FMS re-attaches on the next evaluation cycle.
 - **New accounts joining the org** — FMS applies the policy automatically if the scope includes their OU.
+- **Retrofit mode** — FMS also supports keeping a resource's existing Web ACL and layering the FMS rule groups into it, rather than replacing the association wholesale.
 
 **The specific exam pattern:** *"18 accounts + API Gateway + SQLi + bots + minimal ongoing effort"* → **FMS WAF policy** with **Managed Rules for SQL databases + Bot Control**, scoped to `AWS::ApiGateway::Stage` across the Organization.
 
@@ -1552,7 +1562,7 @@ Whenever an exam stem says *"minimal ongoing tuning"* + *"web attack pattern (SQ
 - *"SQL injection defence"* → **AWS Managed Rules for SQL databases** (in a WAF Web ACL).
 - *"Auto-apply WAF policy to newly created API Gateway stages"* → **Firewall Manager auto-remediation** with resource-type `AWS::ApiGateway::Stage`.
 - *"Reimburse scaling costs during a DDoS attack"* → **Shield Advanced cost protection**.
-- *"Engage AWS's DDoS Response Team"* → **Shield Advanced DRT access**.
+- *"Engage AWS's Shield Response Team (SRT, formerly DRT)"* → **Shield Advanced SRT access**.
 - *"Rate-limit requests by source IP"* → **WAF rate-based rule** (5-minute window).
 - *"Block Tor / anonymising proxies"* → **AWS Managed Rules Anonymous IP list**.
 - *"Prevent drift where someone locally detaches WAF"* → **Firewall Manager auto-remediation**.
