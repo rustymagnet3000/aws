@@ -2720,7 +2720,295 @@ The verb in the stem picks the tier.
 
 ### Audit Manager
 
-Automates evidence collection against frameworks (SOC 2, PCI, HIPAA). Continuously pulls from Config, CloudTrail, Security Hub findings into audit-ready reports.
+**Anchored against a compliance-framework evidence collector.** Audit Manager is not an evaluator — it's an **aggregator**. It doesn't check anything itself; it consumes signals from Config, Security Hub, CloudTrail, and your manual uploads and maps them to controls inside a named compliance framework, then generates auditor-ready reports.
+
+**Pre-built frameworks (partial list):**
+
+- AWS Foundational Security Best Practices (FSBP)
+- AWS Control Tower Guardrails
+- AWS Well-Architected Framework
+- AWS Generative AI Best Practices
+- PCI DSS v3.2.1 / v4.0
+- HIPAA Security Rule
+- SOC 2
+- GDPR
+- ISO/IEC 27001
+- NIST 800-53 Rev 5 / 800-171 Rev 2 / CSF v1.1
+- FedRAMP Moderate / Low
+- CIS AWS Benchmark v1.4.0
+- ACSC Essential Eight
+- GxP EU Annex 11
+
+You can also **author custom frameworks** and reuse individual controls across them.
+
+**Evidence sources (four categories):**
+
+1. **AWS Config rules** — including rules deployed via **Operational Best Practices conformance packs** (see below).
+2. **AWS Security Hub findings** — from the FSBP, CIS, PCI, and NIST standards.
+3. **AWS CloudTrail events** — proves an API was exercised.
+4. **Manual uploads** — screenshots, attestations, policy documents.
+
+**The "Operational Best Practices" naming confusion (high-value exam clarification):**
+
+*"Operational Best Practices"* is an **AWS Config conformance-pack template family name**, NOT an Audit Manager framework name. Config ships templates like `Operational Best Practices for HIPAA Security`, `Operational Best Practices for PCI DSS`, `Operational Best Practices for CIS`. Each is a bundle of ~20-100 Config rules.
+
+Audit Manager **consumes those rule evaluations as evidence** for its own frameworks — so you'll see phrases like *"Config rule from Operational Best Practices for HIPAA Security"* inside Audit Manager control mappings. That's a source reference, not a framework name.
+
+| Mechanism | Where it lives | What it does |
+|---|---|---|
+| **Operational Best Practices** | AWS Config | Conformance pack of Config rules |
+| **AWS Foundational Security Best Practices (FSBP)** | Security Hub + Audit Manager | Security standard / framework |
+| **AWS Well-Architected Framework** | Well-Architected Tool + Audit Manager | Six-pillar quality review |
+
+**Numbered flow:**
+
+1. Create an assessment from a pre-built framework (or a custom one).
+2. Scope the assessment — which AWS accounts, which services (S3, EC2, IAM, etc.).
+3. Audit Manager creates a role in each in-scope account and starts collecting evidence continuously.
+4. Every control shows its evidence trail: which Config rule matched, which CloudTrail events, which manual documents.
+5. Auditor reviews inside Audit Manager, or export the assessment report as a PDF for offline review.
+6. Delegate audit-owner roles to specific reviewers per control (segregation of duties).
+
+**What Audit Manager is NOT:**
+
+- **NOT a rule engine** — it doesn't evaluate anything; Config / Security Hub do.
+- **NOT a remediator** — it reports gaps; remediation is via Config remediation actions or SSM.
+- **NOT a workload-quality review tool** — that's **Well-Architected Tool** (evidence for auditor is different from workload architectural review).
+- **NOT a chaos-testing tool** — that's **AWS FIS**.
+- **NOT a resilience scoring tool** — that's **AWS Resilience Hub**.
+
+**Exam Triggers:**
+
+- *"Auditor-ready evidence for PCI / HIPAA / SOC 2 / NIST / FedRAMP"* → **Audit Manager**.
+- *"Continuously collect evidence tied to compliance controls"* → **Audit Manager**.
+- *"Custom compliance framework mapping to AWS Config rules"* → **Audit Manager custom framework**.
+- *"Where does Operational Best Practices for HIPAA live?"* → **AWS Config conformance pack** (Audit Manager consumes its evaluations).
+
+> *Mental model: Audit Manager is a **compliance framework aggregator**, not an evaluator. Config + Security Hub + CloudTrail generate the raw signals; Audit Manager maps those signals to named framework controls (HIPAA, PCI, SOC 2) and produces the auditor-ready report. "Operational Best Practices" is a Config conformance-pack family, not an Audit Manager framework — a distinction the exam explicitly tests.*
+
+### AWS Well-Architected Tool
+
+**Anchored against a structured six-pillar workload review methodology.** Well-Architected Tool (WA Tool) is AWS's native, per-workload architectural review artifact — you answer structured questions across six pillars, and it generates a risk-classified improvement plan plus an auditor-friendly PDF report.
+
+**The six pillars (memorise all six):**
+
+1. **Operational Excellence** — automation, runbooks, observability, incident response readiness.
+2. **Security** — identity, detective controls, infrastructure protection, data protection, incident response.
+3. **Reliability** — foundations (limits, network), workload architecture, change management, failure management.
+4. **Performance Efficiency** — right-sizing, monitoring, tradeoffs.
+5. **Cost Optimization** — expenditure awareness, cost-effective resources, matching supply to demand.
+6. **Sustainability** — region selection, user behaviour, software patterns, hardware efficiency.
+
+**Lenses (extensions on top of the base framework):**
+
+- Serverless, SaaS, IoT, ML, Data Analytics, Financial Services, Healthcare, HPC, Container Build, SAP, Government, Games Industry, DevOps, Generative AI.
+
+**Risk classification (memorise the vocabulary):**
+
+- **HRI (High Risk Issue)** — a best practice you didn't check that AWS flags as high risk for your workload.
+- **MRI (Medium Risk Issue)** — same, medium risk.
+- Improvement plan lists mitigations ordered by pillar and HRI/MRI severity.
+
+**Numbered flow:**
+
+1. **Define the workload** — name, description, environment (prod / preprod), AWS accounts + regions, industry.
+2. **Select lenses** — always include the AWS Well-Architected Framework Lens; add specialised lenses if applicable.
+3. **Answer questions per pillar** — structured questions with best-practice checkboxes.
+4. **Review generated HRIs and MRIs** — every unchecked best practice becomes a risk with mitigation guidance.
+5. **Generate improvement plan** — auto-generated list of mitigations, ordered by pillar and severity.
+6. **Implement mitigations, re-review** — HRI/MRI counts drop as best practices become checked. Track posture over time.
+7. **Export PDF report** — hand to the auditor.
+8. **Share workload** — cross-account sharing lets a central security team review workloads owned by member accounts.
+
+**What WA Tool is NOT:**
+
+- **NOT a chaos-testing service** — that's **AWS FIS**.
+- **NOT an automated resource scanner** — WA Tool is question-driven, not resource-inspecting. (Contrast Config, which inspects resources.)
+- **NOT a compliance-framework mapper** — that's **Audit Manager**.
+- **NOT a resilience scoring tool** — that's **Resilience Hub** (though the Reliability pillar overlaps).
+- **NOT single-workload only** — a single account can host dozens of workload reviews.
+
+**Common wrong-answer traps:**
+
+- *"WA Tool automatically evaluates my resources"* → wrong; it's a **question-based self-assessment** with expert-designed best practices.
+- *"WA Tool replaces Audit Manager for HIPAA / PCI"* → wrong; WA Tool is workload-quality, not compliance-framework evidence.
+- *"WA Tool provides an RTO/RPO score"* → wrong; that's **Resilience Hub**.
+
+**Exam Triggers:**
+
+- *"Review workloads against **multiple pillars** (Op Ex, Security, Reliability, Cost, Performance, Sustainability)"* → **WA Tool**.
+- *"Withstand disruptive events + improve through remediation + provide documentation to auditor"* → **WA Tool** when multiple pillars are named (this is the specific exam trap where Resilience Hub feels right but WA Tool wins).
+- *"HRI / MRI / high-risk issue"* → **WA Tool vocabulary**.
+- *"Well-Architected Framework"* referenced by name → **WA Tool**.
+- *"Cross-account sharing of workload reviews"* → **WA Tool workload sharing**.
+
+> *Mental model: WA Tool is AWS's **structured architectural review** — six pillars, HRI/MRI risk classification, expert-designed best-practice checklist, PDF export. If a question names three or more pillars, or asks for **workload-quality evidence spanning multiple dimensions**, the answer is WA Tool. Specialised tools (Resilience Hub, FIS, Audit Manager, Trusted Advisor, Config) win when the question narrows to a single specific outcome; WA Tool wins on breadth.*
+
+### AWS Resilience Hub
+
+**Anchored against WA Tool's Reliability pillar, but automated and score-driven.** Where WA Tool asks *you* questions, Resilience Hub **inspects your deployed resources**, computes an actual RTO/RPO per disruption type, compares against your target policy, and generates specific remediation actions per gap.
+
+**Four disruption types Resilience Hub assesses:**
+
+1. **Application failure** — bug, misconfiguration.
+2. **Infrastructure failure** — single-instance or single-component loss.
+3. **AZ disruption** — full Availability Zone loss.
+4. **Region disruption** — full Region loss.
+
+For each, Resilience Hub compares your **target RTO/RPO** (set in a resilience policy) against the **assessed RTO/RPO** (computed from resource inspection).
+
+**Numbered flow:**
+
+1. **Define the application** — group resources via CloudFormation stack ARNs, Terraform state, Resource Groups, or App Registry.
+2. **Set the resilience policy** — target RTO/RPO per disruption type.
+3. **Run assessment** — Resilience Hub inspects each resource (RDS Multi-AZ config, Auto Scaling min/max, S3 replication rules, backup schedules) and computes assessed RTO/RPO.
+4. **Review the resilience score** — 0-100, compared against policy. Gaps flagged as **compliant** or **breach** per disruption type.
+5. **Review recommendations** — actionable remediation per breach ("convert `db-prod` from Single-AZ to Multi-AZ").
+6. **Generate FIS experiment templates** — Resilience Hub can auto-generate an **AWS FIS** experiment matching each disruption type, so you can validate that assessed behaviour matches real behaviour.
+7. **Export report** — assessment findings + score + recommendations for the auditor.
+
+**What Resilience Hub is NOT:**
+
+- **NOT a chaos-testing engine** — it *invokes* FIS but doesn't inject faults itself.
+- **NOT a six-pillar quality review** — that's **WA Tool** (broader scope).
+- **NOT a compliance-framework tool** — that's **Audit Manager**.
+- **NOT a backup service** — that's **AWS Backup** (Resilience Hub *evaluates* your backup config, doesn't take backups).
+
+**Exam Triggers:**
+
+- *"Score / measure / assess application resilience"* → **Resilience Hub**.
+- *"Meet RTO / RPO targets"* → **Resilience Hub resilience policy**.
+- *"Validate the assessed resilience with a chaos experiment"* → **Resilience Hub → generated FIS experiment template**.
+- *"Improve resilience through identified remediation actions"* → **Resilience Hub** (only when the question narrows to resilience specifically; if multiple WA pillars are named, WA Tool wins).
+
+> *Mental model: Resilience Hub is **the Reliability pillar of Well-Architected, automated and scored**. It inspects resources rather than asking questions, computes objective RTO/RPO, and integrates with FIS for validation. Wins when the question narrows to resilience with a numeric outcome (score, RTO, RPO); loses to WA Tool when the question spans multiple pillars.*
+
+### AWS Fault Injection Service (FIS)
+
+**Anchored against Netflix's Chaos Monkey.** FIS is AWS's managed chaos-engineering service — deliberately break your own infrastructure under IAM control, with CloudWatch-alarm-driven stop conditions that auto-halt the experiment before it causes a real outage.
+
+Formerly called **AWS Fault Injection Simulator** — renamed to **Service** in 2023, same acronym.
+
+**Action categories:**
+
+| Category | Example actions |
+|---|---|
+| **EC2** | Terminate, stop, reboot, send spot interruption warning |
+| **OS-level (via SSM Agent)** | CPU stress, memory stress, disk fill, kill process, network latency injection, blackhole traffic, DNS resolution failure |
+| **RDS / Aurora** | Force failover, reboot, stop DB instance |
+| **ECS / EKS** | Task/pod termination, container CPU/memory stress, node drain |
+| **Lambda** | Add latency to invocations, throw errors, throttle concurrency |
+| **API throttling** | Throttle specific AWS API calls (`kms:Decrypt`, `sts:AssumeRole`, `s3:GetObject`) for a target IAM role |
+| **AZ Availability: Power Interruption** | Simulate full AZ loss — the exam's headline action for HA validation |
+| **Networking** | Disrupt VPC / Transit Gateway / subnet connectivity |
+| **EBS** | Pause volume I/O |
+
+**The five FIS building blocks:**
+
+1. **Experiment template** — the recipe: actions, targets, stop conditions, IAM role.
+2. **Actions** — the individual faults; sequenced or parallel.
+3. **Targets** — resources selected by tag / ARN / filter; selection mode `ALL`, `COUNT(n)`, `PERCENT(x)`.
+4. **Stop conditions** — **CloudWatch Alarms** that auto-halt the experiment when a customer-facing metric degrades (5xx breach, p99 latency spike). **The safety net that makes FIS production-safe.**
+5. **IAM role** — the role FIS assumes; tightly scoped to the actions in the template.
+
+**Numbered experiment flow:**
+
+1. Author experiment template.
+2. Start experiment (`aws fis start-experiment`).
+3. FIS assumes the IAM role and applies fault actions on schedule.
+4. CloudWatch alarms monitored continuously — if any goes to ALARM state, FIS **halts the experiment and reverts** where possible.
+5. Experiment ends — success, stop condition, or manual halt.
+6. Review CloudWatch metrics, X-Ray traces, application logs.
+
+**What FIS is NOT:**
+
+- **NOT a resilience scoring tool** — that's **Resilience Hub**.
+- **NOT a compliance evidence tool** — that's **Audit Manager**.
+- **NOT a workload review tool** — that's **WA Tool**.
+- **NOT a pen-testing / adversarial-traffic tool** — pen testing is authorised via the AWS Customer Support form; FIS attacks *your own* infrastructure.
+- **NOT a DDoS simulator** — third-party load-test partners handle that under AWS's testing policy.
+
+**Common wrong-answer traps:**
+
+- *"Use FIS to test WAF rules"* → wrong; WAF has its own test mode.
+- *"Use FIS to simulate a DDoS"* → wrong; not its purpose.
+- *"FIS runs safely without stop conditions"* → dangerous; every production experiment must have CloudWatch-alarm stop conditions.
+- *"FIS is part of AWS Backup / DR"* → wrong; **Backup** handles backups, **Elastic Disaster Recovery (DRS)** handles cross-region failover, **FIS tests both**.
+
+**Exam Triggers:**
+
+- *"Chaos engineering on AWS"* → **FIS**.
+- *"Validate multi-AZ failover / test the runbook without a real incident"* → **FIS**.
+- *"Simulate an AZ outage"* → **FIS AZ Availability Power Interruption action**.
+- *"Inject latency / errors / API throttling"* → **FIS actions**.
+- *"Netflix Chaos Monkey equivalent"* → **FIS**.
+
+> *Mental model: FIS is **chaos engineering as a managed service** — break your own infrastructure on purpose, IAM-gated, with CloudWatch-alarm stop conditions so bad experiments auto-revert. Wins when the question asks about **executing** a fault; loses to Resilience Hub when the question asks about **scoring** resilience.*
+
+### Audit / Quality / Resilience Services — which one when
+
+**The disambiguation cheat-sheet.** All five of these services can plausibly answer *"prove workload quality + improve it + hand something to the auditor"* — and the exam deliberately puts them side-by-side. Match the question phrase to the service:
+
+| Question phrase | Service | Why |
+|---|---|---|
+| *"Multiple WA pillars named (Op Ex, Security, Reliability, Cost, Performance, Sustainability)"* | **Well-Architected Tool** | The pillars ARE WA Tool's structure |
+| *"Per-workload review + auditor documentation + recommendations across dimensions"* | **Well-Architected Tool** | WA Tool workload PDF is the artifact |
+| *"HRI / MRI / high-risk issue"* | **Well-Architected Tool** | Its native vocabulary |
+| *"Score / assessment / RTO / RPO specifically"* | **Resilience Hub** | Its native output |
+| *"Meet resilience policy / target RTO / target RPO"* | **Resilience Hub** | Its native policy model |
+| *"Compliance framework named (HIPAA / PCI / SOC 2 / NIST / FedRAMP / GDPR / ISO 27001)"* | **Audit Manager** | Its pre-built framework catalog |
+| *"Continuously collect evidence tied to controls"* | **Audit Manager** | Its aggregator function |
+| *"Inject faults / chaos experiment / test failover"* | **AWS FIS** | Its execution primitive |
+| *"Simulate AZ or region loss"* | **AWS FIS** | AZ Availability Power Interruption action |
+| *"Account-level cost + performance + security + service-limits checks"* | **Trusted Advisor** | Its check categories |
+| *"Deploy 30 pre-built Config rules for HIPAA / PCI / NIST"* | **AWS Config Operational Best Practices conformance pack** | Its template family |
+| *"Prescriptive security controls with continuous findings"* | **Security Hub AWS FSBP standard** | The Security Hub standard |
+
+**The pattern-matching rules to memorise:**
+
+1. **Three or more of the six pillars named → WA Tool** (broadest scope wins on breadth).
+2. **Word "score" or numeric RTO/RPO → Resilience Hub** (unique output).
+3. **Named compliance framework → Audit Manager** (framework catalog).
+4. **Word "inject" / "chaos" / "simulate outage" → FIS** (only chaos-execution service).
+5. **Word "conformance pack" / "Operational Best Practices" → Config** (the pack template family).
+6. **Word "Foundational Security Best Practices / FSBP" → Security Hub standard** (or Audit Manager as consumer).
+7. **"Business or Enterprise Support" + cost/perf/security-checks → Trusted Advisor** (account-level, not workload-level).
+
+**Which service supplies what to whom:**
+
+```text
+              ┌──────────────────────────┐
+              │  AWS Config              │  produces  ┌──────────────────┐
+              │  (Operational Best       │──────────► │                  │
+              │   Practices packs)       │            │  AWS Audit       │
+              └──────────────────────────┘            │  Manager         │
+              ┌──────────────────────────┐  produces  │  (aggregates     │
+              │  Security Hub            │──────────► │   evidence into  │
+              │  (FSBP + other standards)│            │   framework      │
+              └──────────────────────────┘            │   reports)       │
+              ┌──────────────────────────┐  produces  │                  │
+              │  CloudTrail              │──────────► │                  │
+              └──────────────────────────┘            └──────────────────┘
+
+              ┌──────────────────────────┐  invokes  ┌──────────────────┐
+              │  Resilience Hub          │─────────► │  AWS FIS         │
+              │  (score + recommendation)│           │  (chaos exec)    │
+              └──────────────────────────┘           └──────────────────┘
+
+              ┌──────────────────────────┐
+              │  Well-Architected Tool   │  (self-contained;
+              │  (six-pillar review,     │   consumes nothing,
+              │   HRI/MRI, PDF report)   │   produces PDF audit doc)
+              └──────────────────────────┘
+
+              ┌──────────────────────────┐
+              │  Trusted Advisor         │  (account-level
+              │  (cost / perf / security │   checks, not
+              │   / service limits)      │   workload-scoped)
+              └──────────────────────────┘
+```
+
+> *Mental model: **the five services form a stack of intent, not alternatives.** Config + Security Hub + CloudTrail generate raw signals → Audit Manager maps them to compliance frameworks. Resilience Hub scores resilience → FIS validates by execution. WA Tool sits alongside as the structured six-pillar review methodology. Trusted Advisor is the account-wide checkup. Pick by matching the **question's phrasing** to the service's **native vocabulary** (HRI/MRI → WA; RTO/RPO → Resilience Hub; framework name → Audit Manager; "inject" → FIS).*
 
 ### Service Catalog
 
