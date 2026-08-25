@@ -3479,7 +3479,7 @@ Access Analyzer wins on both axes — the granularity of manual parsing at the e
 - **Key types:** AWS-managed (auto-rotated yearly, can't customize) vs Customer-managed (rotate on demand, custom policy) vs AWS-owned (invisible).
 - **Symmetric** (default, AES-256 GCM) vs **Asymmetric** (RSA / ECC for sign+verify, envelope encryption).
 - **Key policies** are mandatory — root user access defaults enabled; IAM policies alone can't grant KMS access without the key policy.
-- **Grants** — temporary programmatic permissions on a key (used by AWS services like RDS on your behalf); expire and can be retired.
+- **Grants** — programmatic policy instruments on a single CMK, primarily used by AWS services (RDS, EBS, DynamoDB, Redshift, etc.) to act on your key on your behalf. See the full grants subsection below for mechanics — the stub-level intuition "grants expire" is a misconception; grants persist until explicitly retired or revoked.
 - **Multi-Region keys** — separate KMS keys with the same key material replicated across regions; app can encrypt in one region, decrypt in another.
 
 #### Customer-managed KMS key vs client-side encryption (disambiguation)
@@ -3659,7 +3659,174 @@ The exam picks the answer by the stem's verb:
 - *"Recover a scheduled-for-deletion key"* → **`CancelKeyDeletion`** during the waiting window
 - *"Cross-region attack surface via MRK"* → replicas share ciphertext compatibility; every region must be deleted
 
-> *Mental model: **KMS key deletion has a mandatory 7–30 day waiting period, and the key remains fully usable during that window unless you also disable it.*** `ScheduleKeyDeletion` sets the timer; `DisableKey` blocks crypto operations. **For MRKs**, each region's key is an independent resource — the same key material and key ID are shared, but every region has its own state and deletion schedule. Fastest complete deletion of a compromised MRK is coordinated per-region scheduling with 7-day windows, plus `DisableKey` in every region for immediate blocking. Reading the stem's verb picks the answer: *"delete quickly"* + MRK → per-region 7-day scheduling; *"stop use"* → `DisableKey`; *"prevent recurrence"* → policy changes. The 7-day floor is architectural and cannot be shortened by any means.
+#### KMS Grants — the "AWS service acts on my key on my behalf" mechanism
+
+**Anchored against a temporary, service-oriented KMS authorization primitive.** A grant is a **policy instrument attached to a single CMK** that authorizes a grantee to perform a specific subset of KMS operations. It sits alongside key policy and IAM policy as the third authorization surface.
+
+**When AWS services use grants automatically:**
+
+- **RDS / Aurora** — snapshot copy, cross-account share, PITR restore.
+- **EBS** — encrypted volume creation from an encrypted snapshot.
+- **DynamoDB** — encrypted table + backup access.
+- **Redshift** — encrypted cluster + snapshot operations.
+- **S3** — Bucket Keys and other integrations.
+
+**The service creates a grant scoped to what it needs, uses the permission, and retires the grant when done.** This is why "cross-account RDS snapshot copy needs `kms:CreateGrant` on the source CMK's key policy" — RDS in the destination account creates a grant against the source CMK during the copy.
+
+##### Grant components
+
+Set via `CreateGrant`:
+
+| Component | Purpose |
+|---|---|
+| **KeyId** | Which CMK. **Cross-account grant creation requires the full key ARN** — key ID or alias name are rejected. |
+| **GranteePrincipal** OR **GranteeServicePrincipal** | Who receives the permission. Mutually exclusive alternatives; use `GranteeServicePrincipal` when the grantee is an AWS service (e.g. `ec2.us-east-1.amazonaws.com`) rather than an IAM principal. |
+| **RetiringPrincipal** OR **RetiringServicePrincipal** | Optional — who can retire the grant (beyond the account root and the grantee, if applicable). |
+| **Operations** | List of KMS actions the grantee can perform (subset — see below). |
+| **Constraints** | Optional — `EncryptionContextEquals`, `EncryptionContextSubset`, or `SourceArn` (three types, not two). |
+| **Name** | Optional identifier. |
+| **DryRun** | Test permissions without effect. |
+
+##### Grant operations — the closed set
+
+A grant can authorize ONLY these enumerated KMS actions (the "grant operations"):
+
+- **Cryptographic:** `Decrypt`, `Encrypt`, `GenerateDataKey` (+ Pair, +Without Plaintext variants), `ReEncrypt*`, `Sign`, `Verify`, `GenerateMAC`, `VerifyMAC`.
+- **Metadata:** `DescribeKey`, `GetPublicKey`.
+- **Grant management:** `CreateGrant`, `RetireGrant`.
+
+**Grants CANNOT authorize:** `PutKeyPolicy`, `ScheduleKeyDeletion`, `CancelKeyDeletion`, `EnableKey`, `DisableKey`, `TagResource`, `UntagResource`, `ReplicateKey`, `UpdatePrimaryRegion`, or any other management-plane operation. For those you need key policy or IAM policy.
+
+**Exam trap:** *"Grant a service permission to disable / delete a key via `CreateGrant`"* → not possible.
+
+##### The three grant constraint types (a common exam corner)
+
+| Constraint | Scope | Works on |
+|---|---|---|
+| **`EncryptionContextEquals`** | Grant permits the op only when the request's `EncryptionContext` matches EXACTLY. | Symmetric encryption keys only |
+| **`EncryptionContextSubset`** | Grant permits the op only when the request's `EncryptionContext` INCLUDES every key-value pair from the constraint (grant's context is a subset of request's). | Symmetric encryption keys only |
+| **`SourceArn`** | Restricts the grant to requests made on behalf of a specific AWS resource ARN. | **All key types** (symmetric, asymmetric, HMAC) |
+
+**Two exam traps around constraints:**
+
+1. **Encryption-context constraints are silent no-ops on asymmetric and HMAC keys** — because those key types don't accept an `EncryptionContext` parameter. Applying `EncryptionContextEquals` to a grant on an asymmetric signing key does NOT restrict anything. Use **`SourceArn`** to constrain grants on non-symmetric keys.
+2. **Omitting encryption context does NOT trivially satisfy a subset constraint.** If a grant has `EncryptionContextSubset`, the request MUST include an `EncryptionContext` parameter — omitting it is a denial, not a match-empty.
+
+##### Grant tokens — bridging eventual consistency
+
+`CreateGrant` returns a **grant token** immediately, before the grant is fully propagated to all KMS endpoints. Pass the token as the `GrantTokens` parameter on subsequent KMS calls to use the grant **immediately** without waiting for eventual consistency (typically ~5 minutes).
+
+**Two exam traps around grant tokens:**
+
+1. **Grant tokens do NOT have a 5-minute TTL.** They remain valid for the life of the grant. The 5-minute figure is the eventual-consistency window — after which the token is no longer needed, but it doesn't expire.
+2. **`CreateGrant` is the only KMS API that returns a grant token** — you can't extract a token from an existing grant later.
+
+##### Retirement vs revocation — the retire-authority matrix
+
+Two distinct ways a grant ends. Different auth semantics:
+
+| Action | Purpose | Who can call it |
+|---|---|---|
+| **`RetireGrant`** | Voluntary — the grantee (or a designated party) gives up the permission | (a) the `RetiringPrincipal` if specified in the grant; (b) the grantee — **only if `RetireGrant` is included in the grant's Operations list**; (c) the AWS account that owns the grant, via `kms:RetireGrant` IAM permission delegation. |
+| **`RevokeGrant`** | Forced removal — an admin kills the grant | Any principal with `kms:RevokeGrant` (typically key admins). |
+
+**Two subtleties the exam tests:**
+
+1. **The grantee does NOT retire by default.** They can only retire if `RetireGrant` is explicitly in the `Operations` list.
+2. **The IAM principal who called `CreateGrant` has no special retirement right** — retirement authority belongs to the AWS account root (delegatable via `kms:RetireGrant` IAM policy), not to the specific caller.
+
+Both retire and revoke remove the grant permanently.
+
+##### The three-way authorization model — with a critical asymmetry
+
+Access to a CMK is evaluated against key policy + IAM policy + grants. **BUT** the composition rule is not symmetric:
+
+**Same-account access:**
+
+- The key policy MUST include the *"Enable IAM User Permissions"* statement (Principal: `arn:aws:iam::<account>:root`) — otherwise **an IAM policy alone is INERT**. Key policy has primacy.
+- With that delegation in place: either key policy OR IAM policy can authorize.
+- Grants also work independently, for the grant-operations subset.
+- Explicit Deny anywhere blocks.
+
+**Cross-account access:**
+
+- **Both** the source-account key policy AND the caller's IAM policy must allow. **Two-side handshake, no exceptions.**
+- Cross-account grants also possible — creator in the source account creates a grant naming a principal in another account (source key policy still needs to authorize the creation).
+
+**Exam trap:** *"User has `kms:Decrypt` in an IAM policy but the CMK's key policy has no root/account delegation — can they decrypt?"* → **NO.** IAM alone is inert without key-policy delegation. This trips a whole class of questions.
+
+##### Cross-account snapshot copy — the four permissions
+
+The exam's most-tested grant scenario. Source-account CMK's key policy must grant the **destination account** these actions to enable `CopyDBSnapshot` / cross-account restore:
+
+| Action | Why |
+|---|---|
+| **`kms:Decrypt`** | Read the shared snapshot's ciphertext |
+| **`kms:DescribeKey`** | Validate the CMK metadata |
+| **`kms:CreateGrant`** | RDS in the destination account creates a grant on the source CMK during the copy operation |
+| **`kms:ReEncrypt*`** | Re-encrypt from source CMK to destination CMK during copy (when destination uses its own key) |
+
+**Additionally on the destination side:** the destination-account IAM policy must allow the same actions (two-side handshake).
+
+**Also:** the source snapshot MUST be encrypted with a **customer-managed CMK** — the AWS-managed `aws/rds` alias **cannot be shared cross-account** at all. Wrong-answer distractor: *"Share the encrypted snapshot using the default RDS KMS key"* → impossible.
+
+##### AWS-managed keys and grants
+
+**Customers cannot create grants on AWS-managed keys** (`aws/rds`, `aws/ebs`, `aws/s3`, `aws/dynamodb`, etc.). The AWS-managed key's key policy does not grant `kms:CreateGrant` to the customer — only the owning AWS service can create grants on them, and the service uses them on your behalf transparently.
+
+If a design requires customer-created grants, the CMK must be **customer-managed**.
+
+##### Grants on Multi-Region keys
+
+**A grant on the primary MRK does NOT replicate to replica MRKs.** Each MRK replica is a distinct KMS resource — it has its own grant list, its own key policy, its own audit trail. To have equivalent grants on all replicas, create the grant on each replica separately (or automate via CloudFormation / Terraform).
+
+**Common wrong answer:** *"Creating a grant on the primary MRK covers all Regions"* → no.
+
+##### Grants on Custom Key Stores
+
+Grants work identically on customer-managed CMKs in **Custom Key Stores** (CloudHSM-backed or external key stores). No special exam trap here — treat them the same as any customer-managed CMK.
+
+##### Grant quotas — worth knowing
+
+- **50,000 grants per KMS key** (hard limit). Real-world drives service architecture — RDS/EBS auto-retire their service-created grants precisely to avoid exhausting this.
+- **ListGrants** paginates at 100 grants per page.
+- Grants do NOT count against key policy document size (which has its own 32 KB limit).
+
+##### What grants are NOT — disambiguation
+
+| It's not… | Actual mechanic |
+|---|---|
+| **Expiring by default** | Persist until explicitly retired or revoked. AWS-service-created grants are auto-retired by the service. |
+| **Attachable to multiple keys** | Each grant permits access to exactly one CMK. |
+| **A substitute for key policy for all operations** | Only the enumerated "grant operations" subset. |
+| **The primary mechanism for human user access** | Grants are for services + programmatic scenarios. Human users typically go through key policy + IAM policy. |
+| **Usable on AWS-managed keys** | Customers cannot create grants on `aws/service` keys. |
+| **Replicated across MRK replicas** | Each replica needs its own grant. |
+
+##### Common Anti-patterns (exam wrong answers)
+
+- *"Share the default `aws/rds` KMS key with another account"* — impossible; AWS-managed keys cannot be shared.
+- *"Grant a service `kms:CreateGrant` in the IAM policy and skip the key policy"* — cross-account KMS is a two-side handshake; both sides required.
+- *"Constrain a grant on an asymmetric signing key with `EncryptionContextEquals`"* — silent no-op; use `SourceArn` instead.
+- *"The grantee can always retire a grant"* — only if `RetireGrant` is in the grant's `Operations`.
+- *"Grant tokens expire after 5 minutes"* — no explicit TTL; they persist for the grant's lifetime.
+- *"An IAM policy with `kms:*` gives access without any key policy"* — inert unless key policy has the "Enable IAM User Permissions" statement delegating to the account.
+- *"Create one grant covering multiple CMKs"* — grants are per-CMK; one grant per CMK required.
+- *"Creating a grant on primary MRK covers replicas"* — no; each MRK replica needs its own grant.
+
+##### Exam Triggers
+
+- *"AWS service acts on my CMK on my behalf"* → **grant** (service creates it, uses it, retires it).
+- *"Cross-account RDS / EBS snapshot copy needs which KMS permissions on the source CMK?"* → **`kms:Decrypt` + `kms:DescribeKey` + `kms:CreateGrant` + `kms:ReEncrypt*`** on the source key policy, granted to the destination account.
+- *"Snapshot copy fails during transition"* → **missing `kms:CreateGrant`** on the source CMK.
+- *"Scope a grant to a specific resource (works on asymmetric keys)"* → **`SourceArn` constraint** (not encryption context).
+- *"Use a grant immediately after CreateGrant, before eventual consistency"* → **grant token** in the `GrantTokens` parameter.
+- *"Voluntary release of a grant by the grantee"* → **RetireGrant** (only if `RetireGrant` in Operations).
+- *"Admin kills a grant"* → **RevokeGrant**.
+- *"IAM `kms:*` still can't decrypt"* → **key policy missing the account root delegation statement**.
+- *"Cross-account grant creation fails"* → **key ID must be the full ARN**; source key policy must allow `kms:CreateGrant`.
+- *"50,000 grants exhausted on a key"* → real quota — service architecture must auto-retire.
+> *Mental model: **Grants are the temporary, single-key, single-operation-set, service-oriented KMS authorization surface — sitting alongside key policy and IAM policy as the third leg of KMS access control.*** AWS services (RDS, EBS, DynamoDB, Redshift, S3 Bucket Keys) create them automatically during workflows that touch encrypted data, and auto-retire when done — this is why cross-account snapshot copies need `kms:CreateGrant` on the source CMK's key policy. **Three grant constraint types (not two): `EncryptionContextEquals` and `EncryptionContextSubset` (symmetric-only), and `SourceArn` (all key types).** Two authorization asymmetries the exam tests repeatedly: (1) **same-account IAM policy is inert** without the key policy's "Enable IAM User Permissions" statement delegating to the account root; (2) **cross-account KMS is always a two-side handshake** — both source key policy AND caller IAM policy must allow, no shortcut. **Grants on Multi-Region keys don't replicate across replicas — each replica is a distinct KMS resource.** Grants CANNOT authorize management-plane operations (`PutKeyPolicy`, `ScheduleKeyDeletion`, etc.) — only the enumerated grant-operations subset.*
 
 ### Envelope Encryption
 
