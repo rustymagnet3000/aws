@@ -4512,11 +4512,201 @@ Cross-account is the **primary** layer for cyber-attack scenarios; the others ar
 
 > *Mental model: **when the threat model is compromise-level (cyber attack, ransomware, malicious insider), same-account defences aren't sufficient — every one of them (SCP, RBin, Vault Lock) can eventually be worked around by an attacker with enough privilege inside the same account. Cross-account snapshot copy to an isolated backup account is the only defence that survives full-account compromise because the protection lives in a different security boundary.*** For CMK-encrypted snapshots, cross-account copy requires **three coordinated steps**: (1) `ec2:ModifySnapshotAttribute` to share the snapshot with the target account, (2) update the **source CMK's key policy** to allow the target account's principals to decrypt / create-grant / re-encrypt, (3) target account issues `CopySnapshot` — re-encrypting with a **backup-account-owned CMK** for cryptographic independence. Regularise via AWS Backup cross-account copy (managed, includes Vault Lock option in destination) or EventBridge → Lambda. Recycle Bin, Vault Lock, and SCPs remain **complementary** layers, not primary for this threat class.
 
-### Certificate Manager (ACM) and Private CA
+### Certificate Manager (ACM), Private CA, and the two-hop TLS pattern
 
-- **ACM public certs** — free, auto-rotated. Only usable with AWS integrations (ALB, CloudFront, API Gateway, App Runner). **Cannot be exported.**
-- **ACM Private CA** — hierarchy of your own CAs for internal mTLS / IoT. Paid per CA + per cert issued.
-- **Import external cert to ACM** — one-way, no auto-rotation. You must re-import before expiry.
+**Anchored against a public + private PKI hierarchy split across two services.** AWS Certificate Manager (ACM) handles **public** TLS certificates trusted by browsers and third parties; **AWS Private CA** (formerly ACM Private CA) handles **internal** certificates trusted only within your organisation (mTLS, IoT, internal-service certs). Both integrate with AWS load balancers and CDN services natively.
+
+#### The three certificate types in ACM
+
+| Type | Cost | Rotation | Exportable? | Where it goes |
+|---|---|---|---|---|
+| **ACM public cert** (default: non-exportable) | Free | Automatic (~13 months) | ❌ **No** (private key stays in ACM HSM) | AWS integrations only |
+| **ACM public cert (exportable)** — **new June 2025** | Free (issuance) + per-export fee | Automatic | ✅ Yes — but **opt-in at issuance, immutable after** | AWS integrations + EC2 / containers / on-prem |
+| **Imported cert** | You paid the CA | Manual — you re-import before expiry | Same as your original cert | AWS integrations only |
+| **AWS Private CA cert** | $400/mo per CA (general-purpose) or **$50/mo (short-lived mode)** + $0.75/cert (tiered down) | Automatic when managed | ✅ Yes — always | Anywhere (EC2, containers, on-prem) |
+
+#### The "ACM public certs cannot be exported" trap — updated for 2025
+
+**Historical exam-canonical trap (still tested):** *"Install the ACM public cert on the EC2 instance."* — was auto-wrong because ACM public cert private keys were architecturally locked in ACM's HSM boundary.
+
+**2025 update:** As of **June 2025**, AWS supports **exportable ACM public certificates**, but with strict conditions:
+
+- **Opt-in at issuance** — must be created as exportable; the flag is immutable after issuance.
+- **Non-exportable is still the default** — the classic trap still applies for any cert that wasn't explicitly created as exportable.
+- **Pre-June-17-2025 certs are always non-exportable** — grandfathered.
+
+**Exam interpretation:** the classic trap still holds for exam scenarios unless the stem specifically mentions "exportable" or "created as exportable." Default assumption in exam questions is still **non-exportable**. In production, know the new option exists.
+
+#### The two-hop TLS design for ALB → EC2 end-to-end encryption
+
+```text
+                                                    AWS BOUNDARY
+   ────────────────────────────                ────────────────────────
+   ┌──────────────┐
+   │              │
+   │   Client     │
+   │  (browser)   │
+   │              │
+   └──────┬───────┘
+          │
+          │  ┌────────────────────────────────────────────────┐
+          │  │  HOP 1 — Client → ALB                          │
+          │  │  ─────────────────────                         │
+          │  │  TLS Session #1                                │
+          │  │  Cert: ACM PUBLIC certificate                  │
+          │  │  (private key locked in ACM HSM by default)    │
+          │  └────────────────────────────────────────────────┘
+          │
+          ▼
+   ┌──────────────────────────────────────────────────────────────────┐
+   │  Application Load Balancer (HTTPS listener :443)                 │
+   │  ────────────────────────────────────────────                    │
+   │                                                                  │
+   │       (TLS 1 terminated — plaintext HTTP briefly in ALB memory)  │
+   │       (WAF inspects here; L7 routing decisions made here)        │
+   │       (mTLS client cert validated here if Trust Store attached)  │
+   │       (TLS 2 initiated to selected target)                       │
+   │                                                                  │
+   └───────┬──────────────────────────────────────────────────────────┘
+           │
+           │  ┌────────────────────────────────────────────────┐
+           │  │  HOP 2 — ALB → EC2                             │
+           │  │  ────────────────                              │
+           │  │  TLS Session #2 (independent)                  │
+           │  │  Cert on the EC2: instance-side cert           │
+           │  │  Sources: AWS Private CA / self-signed /       │
+           │  │           third-party CA / imported            │
+           │  │                                                │
+           │  │  ⚠  ALB does NOT validate this cert.           │
+           │  │     Self-signed / expired / wrong CN all work. │
+           │  │     Target-group protocol MUST be HTTPS.       │
+           │  └────────────────────────────────────────────────┘
+           │
+           ▼
+   ┌───────────────────────────────────────────────────────────────┐
+   │  Auto Scaling Group — EC2 instances                           │
+   │  ─────────────────────────────────                            │
+   │  Each instance holds: cert.pem + privkey.pem on filesystem    │
+   │  Web server (nginx/Apache/Node) serves HTTPS using them.      │
+   │  Cert delivered via: launch-template user-data + Private CA   │
+   │  IAM role, ACME on EC2 (2025-06+), or baked into AMI.         │
+   └───────────────────────────────────────────────────────────────┘
+```
+
+**Two independent TLS sessions, one plaintext hop inside ALB's memory.** For "encryption on the wire at every point between user and instance" (the exam's typical meaning of *"end-to-end"*), this satisfies the requirement.
+
+For **true single-session E2E encryption** (no plaintext at the LB) → use **NLB TCP passthrough** with the instance handling TLS.
+
+#### The three ELB TLS termination models — memorise
+
+| Model | Load Balancer | Client → LB | LB → target | Single TLS session? | Use when |
+|---|---|---|---|---|---|
+| **ALB TLS terminate + re-encrypt** | ALB | Encrypted (ACM public cert) | Encrypted (target cert) | ❌ Two sessions, plaintext in ALB memory | L7 features (WAF, path routing, HTTP inspection) + encryption on the wire |
+| **ALB TLS terminate only** | ALB | Encrypted (ACM public cert) | Plaintext | ❌ | Internal networks where LB-target hop is trusted |
+| **NLB TCP passthrough** | NLB | Encrypted (target's cert, forwarded via SNI) | Same TLS session as client → LB | ✅ True end-to-end single session | *"LB must not see plaintext"* — regulatory / crypto-purist requirement |
+| **NLB TLS terminate + re-encrypt** | NLB | Encrypted (ACM cert on NLB TLS listener) | Encrypted (target cert) — but NLB doesn't validate the target cert the same way ALB doesn't | ❌ | L4 traffic with mandatory NLB inspection at the LB |
+
+**Exam decides by phrasing:**
+
+- *"End-to-end encryption + L7 features (WAF, path routing, host-based routing)"* → **ALB with HTTPS target group**.
+- *"LB must not see plaintext / single TLS session / regulatory requirement"* → **NLB with TCP passthrough**, instance handles TLS.
+
+#### ALB does NOT validate the target's certificate (opportunistic TLS)
+
+The ALB → target TLS handshake is **opportunistic** — ALB uses TLS on the wire but does NOT verify the target's certificate chain:
+
+- **Self-signed certs work** — no CA trust needed.
+- **Expired certs work** — no expiry check.
+- **Wrong CN / SAN works** — no hostname match.
+
+This is a deliberate design choice for internal LB-to-target traffic, where the concern is on-wire encryption rather than target identity (the ALB is in the same VPC as the targets). **AWS confirms this behaviour is intentional** — do not assume the ALB does mTLS to its targets.
+
+#### Certificate-per-role catalog (exam gold)
+
+| Role | Cert source | Attach where |
+|---|---|---|
+| **Public-facing ALB listener** | ACM public cert (free, auto-rotated, in same region) | ALB HTTPS listener |
+| **CloudFront distribution** | ACM public cert **in `us-east-1`** (required, regardless of distribution's actual routing) | CloudFront distribution |
+| **API Gateway custom domain** | ACM public cert | API Gateway custom domain |
+| **App Runner service** | ACM public cert | Custom domain association |
+| **Cognito user pool custom domain** | ACM public cert **in `us-east-1`** — Cognito uses CloudFront under the hood | Cognito user pool custom domain (NOT directly on the user pool) |
+| **NLB TLS termination listener** | ACM public cert (or imported) | NLB TLS listener |
+| **NLB TCP passthrough (E2E single session)** | Any cert (public / private / self-signed) | **Instance filesystem, NOT the NLB** — client TLS terminates at instance |
+| **Internal ALB / target instance** | AWS Private CA cert, self-signed, or third-party | Instance filesystem, referenced by web server config |
+| **mTLS client authentication on ALB** | AWS Private CA cert (typical) or third-party | Trust Store on the ALB's mTLS-enabled listener |
+| **EKS pod TLS (Ingress / service mesh)** | AWS Private CA via ACK | Pod / Ingress |
+| **Nitro Enclaves attestation-gated TLS** | ACM public cert (special integration) | EC2 Nitro Enclave |
+
+#### AWS ACM's full integrations list (broader than commonly cited)
+
+ACM certs (public + private via ACM Private CA) integrate with:
+
+- **ELB** (ALB, NLB, and Classic Load Balancer)
+- **CloudFront**
+- **API Gateway** (custom domains)
+- **App Runner** (custom domains)
+- **AWS Elastic Beanstalk**
+- **AWS Amplify**
+- **Cognito** (user pool custom domains, via CloudFront proxy)
+- **Amazon OpenSearch Service**
+- **AWS Network Firewall** (TLS inspection)
+- **AWS Nitro Enclaves** (attestation-gated cert use inside enclave)
+- **EKS** (via AWS Controllers for Kubernetes)
+- **CloudFormation** (as inputs for the above resources)
+
+The common exam framing is *"ACM works with ALB, NLB, CloudFront, API Gateway"* — that's the shortlist, not the complete list.
+
+#### Certificate delivery patterns for EC2 (four legitimate approaches)
+
+For instances that need certs installed on their filesystem (the ALB → EC2 second hop, or NLB TCP passthrough):
+
+1. **AWS Private CA + launch template user-data + IAM role** — instance calls `IssueCertificate` at boot; renewed on a cron. **Best for auto-rotation at scale.**
+2. **Baked into the AMI** — cert + key embedded at AMI build time; rotates when AMI is rebuilt. Simplest for short-lived infra.
+3. **SSM Parameter Store (SecureString) or Secrets Manager + boot script** — cert pulled from secrets at boot. Rotation via secrets rotation.
+4. **ACME on EC2 (new 2025-06)** — ACM public certs can now be automated onto EC2 directly via ACME **without requiring Nitro Enclaves**. Fresh capability — worth knowing but not exam-canonical yet.
+
+Direct attachment of an ACM-managed public cert to an EC2 (without ACME) is only possible via **Nitro Enclaves** — the enclave receives the cert via KMS attestation.
+
+#### ALB mTLS (mutual TLS) — added November 2023, extended November 2024
+
+ALB HTTPS listeners can now enforce **mutual TLS**, requiring clients to present a certificate:
+
+| Mode | Behaviour |
+|---|---|
+| **Passthrough** | Forward the client cert to the backend via HTTP header (`X-Amzn-Mtls-Clientcert`). ALB does not validate. |
+| **Verify with Trust Store** | ALB validates the client cert against a **Trust Store** resource (bundle of CA certs, typically from AWS Private CA). Only valid certs pass. |
+| **CA advertisement (added 2024-11)** | ALB advertises which CAs it trusts during the TLS handshake, so clients can pick the right cert automatically. |
+
+**Trust Store** is a first-class ALB resource — you create it, upload CA bundles, attach to the listener. AWS Private CA is the typical source.
+
+#### Common wrong-answer traps
+
+| Distractor | Why it fails |
+|---|---|
+| **"Install the ACM public cert on the EC2 instance"** | Non-exportable by default (classic trap). Even with the 2025 exportable option, an exam that doesn't specifically mention exportable is testing the classic trap. |
+| **"Use CloudFront to encrypt LB → EC2 traffic"** | CloudFront sits BEFORE ALB, not between ALB and EC2. Wrong layer. |
+| **"Configure ALB SSL passthrough"** | ALB does NOT support TLS passthrough — L7 always terminates. Only NLB in TCP mode passthroughs. |
+| **"NLB in TCP mode with a single ACM cert on the LB"** | NLB TCP passthrough doesn't attach a cert at the LB — cert is on the instance. |
+| **"Enable SNI on the ALB to encrypt LB → target"** | SNI is about multiple certs per listener, not target encryption. |
+| **"Attach ACM Private CA cert to the public-facing ALB listener"** | Public-facing listener needs a **public** cert (or clients fail chain validation). Private CA certs go on internal-only listeners or on instances. |
+| **"Use IPsec between ALB and EC2"** | ALB doesn't support IPsec. |
+| **"ALB validates the target cert"** | Opportunistic TLS — no validation. Self-signed / expired / wrong CN all work. |
+| **"Import cert to ACM and it auto-rotates"** | Imported certs are NOT auto-rotated by ACM. You must re-import before expiry. |
+
+#### Exam Triggers
+
+- *"Encrypt client → LB AND LB → EC2"* → **ALB HTTPS listener + HTTPS target group + separate cert on the EC2**.
+- *"End-to-end encryption + L7 / WAF / path routing"* → **ALB two-hop pattern**.
+- *"LB must not see plaintext / single TLS session"* → **NLB TCP passthrough**, instance terminates.
+- *"Install ACM public cert on EC2"* → **classic trap — auto-wrong unless stem says "exportable"**.
+- *"Auto-rotate instance certs at scale"* → **AWS Private CA** with launch-template automation.
+- *"Client certificate authentication on the LB"* → **ALB mTLS with Trust Store**.
+- *"ACM cert for CloudFront"* → **must be in `us-east-1`**.
+- *"Internal mTLS / IoT device certs / on-prem PKI"* → **AWS Private CA**.
+- *"Import external cert + auto-rotation"* → **trap — imported certs don't auto-rotate**.
+- *"Certificate must run inside a hardware attestation boundary"* → **Nitro Enclaves + ACM**.
+
+> *Mental model: **ACM public certs live behind AWS's HSM boundary and (by default) only "attach" to AWS integrations** — attach the ACM public cert to your ALB / CloudFront / API Gateway, and use a **different cert source** (AWS Private CA, self-signed, or third-party) for anything that needs the private key on a filesystem (EC2, containers, on-prem). **The ALB two-hop encryption pattern always uses TWO cert sources: ACM public on the LB listener + something-else on the instances.** Since June 2025, ACM public certs can be opt-in exportable, but exam questions still default to non-exportable — any option that says "install the ACM cert on EC2" without qualification is the classic trap. For true single-session E2E encryption, switch to NLB TCP passthrough; for L7 features + wire encryption, ALB two-hop is the answer. **Cert-per-role rule: match the cert source to where the private key must live — HSM boundary (ACM public) for LBs and CDNs, filesystem (Private CA / self-signed) for instances.***
 
 ### Amazon Macie — sensitive data discovery in S3 at scale
 
