@@ -27,6 +27,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [VPC Traffic Mirroring](#vpc-traffic-mirroring)
   - [PrivateLink, VPC Endpoints, Endpoint Policies](#privatelink-vpc-endpoints-endpoint-policies)
   - [AWS IoT Core — policy variables and client-ID injection](#aws-iot-core--policy-variables-and-client-id-injection)
+  - [EC2 Instance Connect / Session Manager — IAM requirements and misleading errors](#ec2-instance-connect--session-manager--iam-requirements-and-misleading-errors)
 - [Domain 4 — Identity and Access Management (16%)](#domain-4--identity-and-access-management-16)
   - [IAM Policy Evaluation Logic](#iam-policy-evaluation-logic)
   - [AWS Credential Provider Chain](#aws-credential-provider-chain)
@@ -1895,6 +1896,180 @@ The policy substitutes the client-supplied string directly into the ARN pattern,
 - *"Issue device certs from a private CA"* → **AWS Private CA** integrated with IoT Core
 
 > *Mental model: **in AWS IoT Core, `iot:ClientId` is client-supplied and never safe for authorization; `iot:Connection.Thing.ThingName` is cryptographically anchored to the device's registered X.509 certificate and is the only safe identity variable for topic-scoped policies**. The two-part mitigation for the character-injection attack class: (1) use `iot:Connection.Thing.ThingName` in every Subscribe/Publish policy Resource — never `iot:ClientId`; (2) force the connecting `ClientId` to equal the thing name via a Connect resource ARN like `client/${iot:Connection.Thing.ThingName}` — this rejects any client whose CONNECT string doesn't match its cert-verified identity at connect time, before any topic operation. Pair with Device Defender for continuous anti-pattern detection, JITP for automated cert-thing binding, and Private CA for controlled cert issuance.*
+
+### EC2 Instance Connect / Session Manager — IAM requirements and misleading errors
+
+**The canonical SCS-C03 "SSH from a laptop works but EC2 Instance Connect / Session Manager fails" question.** The exam trap: the surface error points at SSH-layer problems (host key validation failure, encryption errors), but the actual root cause is IAM permissions on the instance profile. AWS-native connection tooling requires the instance to be able to *call AWS APIs from inside itself* — traditional SSH does not.
+
+**The two connection flows side-by-side:**
+
+**Flow A — Traditional SSH (works even without any IAM):**
+
+```text
+┌─────────────────────┐            ┌─────────────────────────────────┐
+│  User's laptop      │            │  EC2 instance                   │
+│                     │            │                                 │
+│  ssh -i key.pem     │            │  sshd on port 22                │
+│  ec2-user@ip        │            │                                 │
+│                     │            │  Instance profile: not needed   │
+│                     │            │  SSM Agent: not needed          │
+│                     │  TCP :22   │  Only needs:                    │
+│                     ├──────────► │  - Port 22 reachable            │
+│                     │            │  - authorized_keys populated    │
+│                     │  RSA/Ed25519│                                │
+│                     │  handshake │                                 │
+│                     │  ◄───────► │                                 │
+│                     │            │                                 │
+│  Client validates   │            │                                 │
+│  host key (TOFU     │            │                                 │
+│  or known_hosts)    │            │                                 │
+└─────────────────────┘            └─────────────────────────────────┘
+
+No AWS API involvement anywhere. Peer-to-peer protocol.
+```
+
+**Flow B — EC2 Instance Connect (needs IAM on the instance profile):**
+
+```text
+┌─────────────────────┐            ┌─────────────────────┐            ┌─────────────────────────────────┐
+│  User's browser or  │            │  AWS Instance       │            │  EC2 instance                   │
+│  CLI (mssh)         │            │  Connect API        │            │                                 │
+│                     │            │  + SSM services     │            │  ec2-instance-connect agent     │
+│                     │            │                     │            │  SSM Agent (amazon-ssm-agent)   │
+│                     │            │                     │            │                                 │
+│                     │  (1)       │                     │            │  Instance profile MUST have:    │
+│                     ├──────────► │                     │            │  - AmazonSSMManagedInstanceCore │
+│                     │  SendSSH   │                     │            │    (or equivalent perms:        │
+│                     │  PublicKey │                     │            │     ssmmessages:*, ec2messages:*│
+│                     │  API call  │                     │            │     ssm:*)                      │
+│                     │            │                     │            │                                 │
+│                     │            │                     │  (2)       │                                 │
+│                     │            │                     ├──────────► │  Push temp public key to        │
+│                     │            │                     │  Push key  │  ~/.ssh/authorized_keys         │
+│                     │            │                     │  (via SSM  │  (agent writes the temp key,    │
+│                     │            │                     │  channel)  │   valid 60s)                    │
+│                     │            │                     │            │                                 │
+│                     │            │                     │            │  ← Requires AWS API path to     │
+│                     │            │                     │            │    work. Broken without SSM     │
+│                     │            │                     │            │    permissions.                 │
+│                     │            │                     │            │                                 │
+│                     │  (3)       │                     │            │                                 │
+│                     ├────────────┼─────────────────────┼──────────► │  TCP :22 to sshd                │
+│                     │  TCP :22   │                     │            │  Uses the temp public key       │
+│                     │  with the  │                     │            │                                 │
+│                     │  temp key  │                     │            │                                 │
+│                     │            │                     │            │                                 │
+│                     │  If step 2 │                     │            │                                 │
+│                     │  fails →   │                     │            │                                 │
+│                     │  step 3    │                     │            │                                 │
+│                     │  fails at  │                     │            │                                 │
+│                     │  handshake │                     │            │                                 │
+│                     │  → user    │                     │            │                                 │
+│                     │  sees "host│                     │            │                                 │
+│                     │  key valid-│                     │            │                                 │
+│                     │  ation     │                     │            │                                 │
+│                     │  failure"  │                     │            │                                 │
+└─────────────────────┘            └─────────────────────┘            └─────────────────────────────────┘
+
+AWS API involvement mandatory. Instance profile permissions matter.
+```
+
+The critical difference: **Flow A is peer-to-peer** (no AWS API path). **Flow B has an AWS API round-trip** where AWS pushes a temporary SSH key to the instance via the SSM channel, and the instance must be able to *participate in that push* — which requires the SSM-related permissions on its instance profile.
+
+**Session Manager follows the same pattern — same IAM requirement:**
+
+```text
+┌─────────────────────┐            ┌─────────────────────┐            ┌─────────────────────────────────┐
+│  User's browser or  │            │  SSM service        │            │  EC2 instance                   │
+│  aws ssm start-     │            │                     │            │                                 │
+│  session            │  (1)       │                     │            │  SSM Agent running              │
+│                     ├──────────► │                     │            │                                 │
+│                     │  StartSess │                     │            │  Instance profile:              │
+│                     │  ion API   │                     │            │   AmazonSSMManagedInstanceCore  │
+│                     │            │                     │            │                                 │
+│                     │            │                     │  (2)       │                                 │
+│                     │  WebSocket │                     ├──────────► │  Establishes control channel    │
+│                     │  session   │                     │  session   │  (via ssmmessages)              │
+│                     │  ◄─────────┼─────────────────────┼──────────► │                                 │
+│                     │            │                     │            │  ← Same IAM requirement as      │
+│                     │            │                     │            │    Instance Connect. Same       │
+│                     │            │                     │            │    failure mode without it.     │
+└─────────────────────┘            └─────────────────────┘            └─────────────────────────────────┘
+
+No port 22 exposure at all — everything through SSM.
+```
+
+Session Manager is often preferred over Instance Connect because it needs no inbound port 22 at all — but shares the exact same IAM prerequisite on the instance profile.
+
+**Why the "host key validation failure" error is misleading:**
+
+When Instance Connect's Step 2 (push temp key via SSM) fails silently because the instance profile lacks `AmazonSSMManagedInstanceCore`, the temp key is never written to `authorized_keys`. In Step 3, the client tries to SSH with the temp key. The instance doesn't recognise the key → sshd rejects the authentication attempt → the client's connection state manifests as a **handshake failure**, which some clients render as *"host key validation failure"* even though the actual failure is upstream in the temp-key push.
+
+**The `AmazonSSMManagedInstanceCore` managed policy — what it grants:**
+
+- `ssm:UpdateInstanceInformation` — register the instance with SSM.
+- `ssmmessages:CreateControlChannel` / `CreateDataChannel` — the SSM Session Manager / Instance Connect data plane.
+- `ec2messages:*` — SSM Agent messaging.
+- `ssm:GetDocument`, `ssm:ListInstanceAssociations`, `ssm:PutInventory`, etc.
+
+**This is the "table stakes" policy for any AWS-native instance-connection tooling** — Session Manager, Instance Connect, Run Command, Patch Manager, Fleet Manager, State Manager. Without it, all of these fail.
+
+**Diagnostic checklist — "Instance Connect / Session Manager fails but SSH works":**
+
+| # | Check | Fix |
+|---|---|---|
+| 1 | Does the instance profile have **`AmazonSSMManagedInstanceCore`**? | Attach it |
+| 2 | Is the **SSM Agent** running on the instance? (`systemctl status amazon-ssm-agent`) | Start / install / update it |
+| 3 | Can the instance reach SSM endpoints? (Public IP + IGW, NAT, or **VPC interface endpoints** for `ssm`, `ssmmessages`, `ec2messages`) | Add endpoints or fix networking |
+| 4 | Is the **`ec2-instance-connect`** package installed on the instance? | Install (Amazon Linux 2 / most modern AMIs have it; Ubuntu / RHEL may need manual install) |
+| 5 | Does the **caller's** IAM identity have `ec2-instance-connect:SendSSHPublicKey`? | Grant it to the user/role calling Instance Connect |
+| 6 | Is the security group allowing inbound port 22 from Instance Connect's IP range (for public Instance Connect) or from the **EIC Endpoint** ENI? | Update SG |
+| 7 | Is the instance registered as a managed instance in SSM Fleet Manager? | Should appear automatically once #1 + #2 + #3 are satisfied |
+
+The **#1 check is the exam's answer** — the most-often-missed and produces the misleading "host key" error.
+
+**The three IAM sides of Instance Connect (know each — the exam picks by wording):**
+
+| Side | Principal | Permission |
+|---|---|---|
+| **Instance side** | Instance profile | **`AmazonSSMManagedInstanceCore`** (or equivalent) — this section |
+| **Caller side** | IAM user / role making the connection | **`ec2-instance-connect:SendSSHPublicKey`** on the specific instance ARN |
+| **Network side** | Security group / NACL / VPC endpoint | Port 22 inbound from Instance Connect's IPs or the EIC Endpoint's ENI |
+
+**What plausible-looking wrong answers get wrong:**
+
+- *"Rotate the host keys again"* — the visible error is misleading; fixing host keys doesn't touch the IAM path.
+- *"Re-publish the fingerprint via the serial console"* — a real mechanism for a different scenario (Instance Connect browser client's fingerprint cache), not this one.
+- *"Update `~/.ssh/known_hosts`"* — user-side host-key tracking; irrelevant to Instance Connect.
+- *"The IAM policy for Instance Connect is missing permissions on the caller"* — that would fail with `AccessDenied`, not a host-key error.
+- *"Enable MFA"* — Instance Connect doesn't require MFA at the SSH layer.
+- *"The Instance Connect endpoint is misconfigured"* — would fail at connection setup, not handshake.
+- *"Rotate the SSH key pair on the caller's side"* — Instance Connect uses temporary keys, not the caller's.
+- *"Restart sshd"* — sshd is running (SSH from alternative sources succeeds).
+- *"CloudHSM is unreachable"* — the CloudHSM mention in the stem is a red herring; the CloudHSM host-key rotation is orthogonal to the IAM issue.
+
+**Common Anti-patterns for this question class:**
+
+- Focusing on SSH-layer error text (host keys, fingerprints, encryption) — misleads away from IAM.
+- Assuming CloudHSM / crypto involvement means the answer is crypto-related.
+- Suggesting SSH config changes on the instance — doesn't touch the AWS API path.
+- Forgetting that Session Manager has the same IAM prerequisite (they share the SSM channel).
+
+**Exam Triggers:**
+
+- *"Instance Connect fails / Session Manager fails / SSM Run Command fails"* + *"standard SSH works"* → **`AmazonSSMManagedInstanceCore`** missing from instance profile
+- *"Misleading SSH-layer error but actual cause is IAM"* → check the **instance profile's managed policies** first
+- *"AWS-native connection tooling requires IAM on the instance"* → the SSM-family policy
+- *"Private subnet + Instance Connect"* → also need **EIC Endpoint** or SSM VPC endpoints (`ssm`, `ssmmessages`, `ec2messages`)
+
+**Related to (but distinct from) the credential provider chain issue** (see [[aws-credential-provider-chain]]):
+
+- Credential provider chain: "the SDK is using the wrong identity" — client-side SDK behaviour.
+- This section: "the instance can't participate in the AWS-managed SSH push path" — instance-side IAM.
+
+Both are "wrong-cause diagnostic" traps but for different mechanisms.
+
+> *Mental model: **AWS-native instance connection tooling requires AWS-native permissions on the instance.*** Traditional SSH is a peer-to-peer protocol (no AWS API involvement); anything AWS-native — Instance Connect, Session Manager, Run Command, Patch Manager — requires the instance to *call AWS APIs from inside itself*, which needs an instance profile with **`AmazonSSMManagedInstanceCore`** (the "SSM-family enabler" managed policy). When AWS-native tooling fails but standard SSH works, the first thing to check is whether this policy is attached. The visible error may point at SSH-layer artefacts (host key validation, encryption) but the actual cause is usually IAM on the instance profile. Bonus: Session Manager needs no port 22 at all — everything routes through the SSM channel — making it the exam's preferred replacement for SSH in most modern scenarios.
 
 ## Domain 4 — Identity and Access Management (16%)
 
