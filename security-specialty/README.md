@@ -1168,6 +1168,154 @@ The exam punishes anyone who conflates "delete after N years" across services. T
 
 > *Terminology mental model: "**Retention**" is CloudWatch Logs vocabulary. "**Lifecycle policy**" is S3 vocabulary. "**Object Lock**" is S3 WORM/legal-hold. Picking the wrong term reveals you chose the wrong storage backend — even if your instinct about "delete after N years" was correct.*
 
+#### Lambda + CloudWatch Logs — write-side vs read-side troubleshooting
+
+**The canonical SCS-C03 "Lambda logs aren't appearing / error loading Log Streams" question class.** The trap is that the *symptom* (can't see logs) looks like a read problem but the *cause* is almost always on the write side — the Lambda's execution role failed to create the log streams that would otherwise be visible.
+
+**Two IAM sides — two completely separate principals, two completely separate action sets:**
+
+| Side | Principal | Actions needed |
+|---|---|---|
+| **Write** (Lambda → CloudWatch Logs) | The Lambda's **execution role** | `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents` |
+| **Read** (User → CloudWatch Logs) | The **human's IAM principal** | `logs:DescribeLogGroups`, `logs:DescribeLogStreams`, `logs:GetLogEvents`, `logs:FilterLogEvents`, `logs:StartQuery`, `logs:GetQueryResults` |
+
+Same-looking error message can point at either side. Every exam question has a tell.
+
+**The write-side trio (memorise as a group — they always travel together for Lambda logging):**
+
+```text
+logs:CreateLogGroup    ← create the log group /aws/lambda/<fn-name>
+logs:CreateLogStream   ← create the per-execution stream
+logs:PutLogEvents      ← write events to the stream
+```
+
+The **most-missed action is `CreateLogStream`** because engineers hand-authoring the policy tend to think of the "group" and the "events" but forget the intermediate "stream" layer. Symptom: log group exists, but console shows *"error loading Log Streams"* because no streams were ever created.
+
+**The CloudWatch Logs hierarchy — three levels, three IAM actions:**
+
+```text
+Log Group      (/aws/lambda/myFunc)              ← CreateLogGroup permission
+  └── Log Stream  (2026/08/15/[$LATEST]abc123…)  ← CreateLogStream permission
+        └── Log Event  ("START RequestId: …")    ← PutLogEvents permission
+```
+
+Miss any one and the pipeline breaks at that level:
+
+- Miss `CreateLogGroup` → group never created → downstream stream/event creation fails.
+- **Miss `CreateLogStream`** → **group exists but no stream inside** → `PutLogEvents` fails with `ResourceNotFoundException`; console shows *"error loading Log Streams."*
+- Miss `PutLogEvents` → stream created but never populated → empty streams appear.
+
+**AWS-recommended shortcut — `AWSLambdaBasicExecutionRole`:** the managed policy that grants all three write-side actions in one attach. Whenever the Lambda console creates a new function, this is what it attaches by default. Any hand-authored replacement almost always forgets `CreateLogStream`.
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [{
+        "Effect": "Allow",
+        "Action": [
+            "logs:CreateLogGroup",
+            "logs:CreateLogStream",
+            "logs:PutLogEvents"
+        ],
+        "Resource": "*"
+    }]
+}
+```
+
+**Three signals for telling write-side vs read-side apart on the exam:**
+
+### Signal 1 — the person diagnosing has admin
+
+If the stem says *"the specialist has administrator permissions"* → **the read side is already covered.** Admin has `logs:*` including all reads. The failure has to be upstream — the write side.
+
+If the stem instead says *"the specialist has only [narrow policy]"* → then check whether they also have logs read permissions.
+
+### Signal 2 — the exact error text
+
+- *"Access denied"* / *"not authorized"* / *"AccessDenied"* → the *user's* permissions are the ceiling → **read side**.
+- *"Error loading log streams"* / *"no log streams found"* / *"resource not found"* → the streams don't exist → **write side**.
+
+The phrasing *"error loading"* is ambiguous — sounds like a read failure but the exam pairs it with "specialist has admin" specifically so you rule out the read side.
+
+### Signal 3 — which policy is on screen
+
+**Whatever policy JSON the stem prints is the one you're being asked to fix.**
+
+- If the stem shows the **Lambda execution-role policy** → write-side question. Look for missing `logs:*` actions in the trio.
+- If the stem shows the **user's IAM policy** → read-side question. Look for missing `logs:Describe*` / `logs:Get*` / `logs:FilterLogEvents` / `logs:StartQuery` actions.
+
+**Why "error loading Log Streams" is not really a read error:**
+
+The console flow when a user clicks *"View logs in CloudWatch"*:
+
+1. Console calls `logs:DescribeLogStreams` with the log group name — admin can read, this succeeds.
+2. Log group exists (execution role had `CreateLogGroup`).
+3. `DescribeLogStreams` returns an **empty list** — no streams were ever created (execution role lacked `CreateLogStream`).
+4. Console UI can't render an empty list gracefully → shows *"error loading Log Streams."*
+
+The API call *succeeded* — the user (admin) had read permission. But the *result* was empty because the write side never populated streams. Ambiguous UI wording → mistaken read-error interpretation.
+
+**The two mirror-image exam question shapes:**
+
+| Shape | Stem tells | Actor | Artefact shown | Fix |
+|---|---|---|---|---|
+| **Write-side failure** | *"Lambda logs not appearing / error loading Log Streams"* | Someone with admin | **Lambda execution-role policy** | Add missing `logs:*` action(s) to the execution role — usually `CreateLogStream` |
+| **Read-side failure** | *"IAM user gets AccessDenied when viewing Logs Insights results"* | Someone with narrow permissions | **User's IAM policy** | Add `logs:StartQuery`, `logs:GetQueryResults`, `logs:DescribeLogStreams`, `logs:GetLogEvents` to the user |
+
+The exam picks a side by (a) whose policy JSON is on screen and (b) whether the human has admin.
+
+**KMS complications — logs encrypted with a customer-managed CMK:**
+
+Both sides can fail if the log group uses SSE-KMS with a customer-managed key:
+
+- **Write-side KMS failure** — execution role lacks `kms:Decrypt` / `kms:GenerateDataKey` on the CMK → writes fail with encryption errors. Also, the CMK's key policy must allow the `logs.<region>.amazonaws.com` service principal to use the key.
+- **Read-side KMS failure** — user lacks `kms:Decrypt` on the CMK → they can list streams but can't read the event bodies (opaque or `DecryptionFailure`).
+
+Both look like "logs aren't appearing" but the fixes are on opposite principals *and* on the KMS key policy.
+
+**VPC-Lambda variation (bonus — appears in a different question class):**
+
+If the Lambda runs inside a VPC and logs still don't appear even with all three permissions, the issue is usually **network reachability to CloudWatch Logs**:
+
+- Lambda in a private subnet with no NAT gateway → can't reach `logs.<region>.amazonaws.com`.
+- **Fix:** add a **CloudWatch Logs interface VPC endpoint** (`com.amazonaws.<region>.logs`) so Lambda sends logs privately, or add a NAT gateway.
+
+**The Lambda-logs troubleshooting checklist (walk in order):**
+
+| # | Check | Fix |
+|---|---|---|
+| 1 | Does the execution role have `logs:CreateLogGroup`? | Add it |
+| 2 | Does the execution role have **`logs:CreateLogStream`**? | **Add it — most common miss** |
+| 3 | Does the execution role have `logs:PutLogEvents`? | Add it |
+| 4 | Is the log group name `/aws/lambda/<functionName>` (case-sensitive)? | Fix naming or scope the Resource ARN |
+| 5 | Is there a KMS CMK on the log group the role can't access? | Add `kms:Decrypt` / `kms:GenerateDataKey`; update KMS key policy to allow `logs.<region>.amazonaws.com` |
+| 6 | Is the function in a VPC without a Logs VPC endpoint or NAT? | Add a Logs interface endpoint |
+| 7 | Has the function ever been invoked? | Invoke it once — no invoke = no logs |
+| 8 | If the user is diagnosing, do they have read actions? | Add `logs:Describe*` / `logs:Get*` / `logs:FilterLogEvents` |
+
+Rows 1–3 solved by attaching `AWSLambdaBasicExecutionRole`.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Give the diagnosing user more permissions"* — if they have admin, that's not the issue; the execution role is.
+- *"Enable CloudWatch Logs in the region"* — Logs is always on; no service-level enable.
+- *"Restart / redeploy the Lambda function"* — doesn't grant permissions.
+- *"Grant `cloudwatch:*` to the execution role"* — wrong service; CloudWatch Metrics ≠ CloudWatch Logs. Action prefix is `logs:*`.
+- *"Enable CloudTrail data events for Lambda"* — CloudTrail records API calls, not application logs.
+- *"Increase Lambda memory / timeout"* — resource limits don't affect logging permissions.
+- *"Add `s3:*` to the execution role"* — wrong service.
+- *"Fix the IAM user's read policy"* when the artefact shown is the execution role — wrong side.
+
+**Exam Triggers:**
+
+- *"Lambda logs missing / 'error loading Log Streams' / admin diagnoses"* → **execution role missing `logs:CreateLogStream`** (or one of the trio)
+- *"User can't run Logs Insights query"* → **user missing `logs:StartQuery` + `logs:GetQueryResults`**
+- *"Lambda in VPC can't send logs"* → **CloudWatch Logs VPC interface endpoint** (`com.amazonaws.<region>.logs`) or NAT gateway
+- *"KMS-encrypted log group + Lambda write fails"* → `kms:Decrypt` + `kms:GenerateDataKey` on the execution role + KMS key policy allow for `logs.<region>.amazonaws.com`
+- *"Fastest way to grant a Lambda basic logging"* → attach the AWS-managed policy **`AWSLambdaBasicExecutionRole`**
+
+> *Mental model: **Lambda CloudWatch logging has two IAM sides, one per principal.** Write side (execution role) needs the trio `CreateLogGroup` + `CreateLogStream` + `PutLogEvents`. Read side (user) needs `Describe*` + `Get*` + `FilterLogEvents` + `StartQuery`. The exam picks a side by whose policy is on screen and whether the diagnoser has admin. **"Error loading Log Streams" almost always means the write side failed to create streams — not a read-side denial.** Fastest write-side fix: attach `AWSLambdaBasicExecutionRole`. Fastest read-side fix: add the read actions to the user. When in doubt, follow the JSON — the exam is asking you to fix the policy it shows you.*
+
 ### Athena on Security Logs
 
 Common SCS pattern: **CloudTrail → S3 → Athena** for ad-hoc "who did what when" queries. Same for VPC Flow Logs. Use **partition projection** on `year=/month=/day=` prefixes to keep query cost low.
