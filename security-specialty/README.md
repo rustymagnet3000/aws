@@ -26,6 +26,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [Network Firewall](#network-firewall)
   - [VPC Traffic Mirroring](#vpc-traffic-mirroring)
   - [PrivateLink, VPC Endpoints, Endpoint Policies](#privatelink-vpc-endpoints-endpoint-policies)
+  - [AWS IoT Core — policy variables and client-ID injection](#aws-iot-core--policy-variables-and-client-id-injection)
 - [Domain 4 — Identity and Access Management (16%)](#domain-4--identity-and-access-management-16)
   - [IAM Policy Evaluation Logic](#iam-policy-evaluation-logic)
   - [AWS Credential Provider Chain](#aws-credential-provider-chain)
@@ -1779,6 +1780,121 @@ Traffic is copied via **VXLAN encapsulation** (UDP 4789). The IDS decapsulates b
 - **Gateway endpoints** (S3 + DynamoDB only, free) vs **Interface endpoints** (ENI-based, PrivateLink, $).
 - **Endpoint policies** = IAM-style policy attached to the endpoint that restricts *which* S3 buckets / DynamoDB tables can be reached through it.
 - **VPC peering vs PrivateLink** — PrivateLink is one-way, only exposes a service; VPC peering is bi-directional, whole-VPC.
+
+### AWS IoT Core — policy variables and client-ID injection
+
+**The canonical SCS-C03 "malicious IoT device manipulates client ID with injected characters to access unauthorized topics" question.** The vulnerability is using **client-supplied identity** in IoT policies; the fix is switching to **certificate-anchored identity variables**.
+
+**The attack — why naive IoT policies fail:**
+
+The vulnerable pattern:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["iot:Subscribe", "iot:Publish"],
+  "Resource": "arn:aws:iot:us-east-1:123456789012:topic/devices/${iot:ClientId}/*"
+}
+```
+
+Looks safe — *"each client can pub/sub only to `devices/<their-id>/*`."* But **`iot:ClientId` is the string the client sends in the MQTT CONNECT packet** — attacker-controlled. Injection payloads:
+
+- `ClientId = "*"` → matches every topic
+- `ClientId = "#"` → MQTT single-level wildcard
+- `ClientId = "victim/../attacker"` → path traversal
+- `ClientId = "victim/#"` → wildcard escalation
+
+The policy substitutes the client-supplied string directly into the ARN pattern, escalating access.
+
+**IoT policy variables — the two categories (memorise which are safe):**
+
+| Category | Variable | Trustworthy for authz? |
+|---|---|---|
+| **Client-controlled** | `iot:ClientId` | ❌ Attacker-controlled |
+| **Client-controlled** | `iot:Connection.Thing.ThingTypeName` (derived) | ❌ Not cert-anchored |
+| **Cryptographically-verified** | **`iot:Connection.Thing.ThingName`** | ✅ Only populated when cert is attached to a thing |
+| **Cryptographically-verified** | `iot:Connection.Thing.IsAttached` (boolean) | ✅ Cert-anchored |
+| **Cryptographically-verified** | `iot:Certificate.Subject.CommonName` | ✅ Signed by the CA |
+| **Cryptographically-verified** | `iot:Certificate.Subject.Organization` | ✅ Same |
+
+**Rule:** any IoT policy that uses `iot:ClientId` outside a *"ClientId must equal ThingName"* check has a client-ID-injection vulnerability.
+
+**The two-part mitigation (the exam's canonical answer):**
+
+1. **Replace `${iot:ClientId}` with `${iot:Connection.Thing.ThingName}`** in every Subscribe/Publish policy Resource — the thing name is tied to the device's registered X.509 certificate.
+2. **Restrict the `iot:Connect` action so the client ID must equal the thing name** — via a Connect resource ARN like `client/${iot:Connection.Thing.ThingName}`. Rejects any client whose MQTT CONNECT string doesn't match its cert-verified identity.
+
+**The fixed policy applying both mitigations:**
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OnlyConnectAsRegisteredThing",
+      "Effect": "Allow",
+      "Action": "iot:Connect",
+      "Resource": "arn:aws:iot:us-east-1:123456789012:client/${iot:Connection.Thing.ThingName}"
+    },
+    {
+      "Sid": "SubscribeOnlyToOwnTopics",
+      "Effect": "Allow",
+      "Action": "iot:Subscribe",
+      "Resource": "arn:aws:iot:us-east-1:123456789012:topicfilter/devices/${iot:Connection.Thing.ThingName}/*"
+    },
+    {
+      "Sid": "PublishOnlyToOwnTopics",
+      "Effect": "Allow",
+      "Action": "iot:Publish",
+      "Resource": "arn:aws:iot:us-east-1:123456789012:topic/devices/${iot:Connection.Thing.ThingName}/*"
+    }
+  ]
+}
+```
+
+**Numbered runtime flow — legitimate vs attacker:**
+
+**Legit client `thing-1234`:**
+
+1. Connects with X.509 cert (attached to thing `thing-1234`) + `ClientId = "thing-1234"`.
+2. IoT resolves cert → thing name → sets `iot:Connection.Thing.ThingName = "thing-1234"`.
+3. Connect policy resource `client/thing-1234` matches → Allow.
+4. Subscribes to `devices/thing-1234/data` → matches → Allow.
+
+**Attacker `attacker-XYZ` trying to spoof `thing-1234`:**
+
+1. Connects with own cert (attached to thing `attacker-XYZ`) but sends `ClientId = "thing-1234"`.
+2. IoT resolves cert → thing name comes from **the cert**, not the ClientId → `iot:Connection.Thing.ThingName = "attacker-XYZ"`.
+3. Connect policy resource becomes `client/attacker-XYZ` but the client submitted `ClientId = "thing-1234"` → **mismatch** → Connect refused before any topic operation.
+
+**Adjacent hardening layers worth pairing:**
+
+- **AWS IoT Device Defender** — audits IoT Core config for anti-patterns (unauthenticated devices, certs used by multiple things, permissive policies). Detective.
+- **IoT Just-in-Time Provisioning (JITP)** — auto-registers devices at first connect using their cert; ensures 1:1 cert-thing binding from the start.
+- **AWS Private CA integration** — issue device certs from your own CA; ensures no self-signed / unauthorised certs.
+- **`iot:Connection.Thing.IsAttached = true` condition** — require cert-thing binding as an additional check.
+- **CloudTrail on IoT Core** — logs `Connect` events with the actual verified thing name for forensics.
+
+**What plausible-looking wrong answers get wrong:**
+
+- *"Use IAM policies for IoT Core"* — IoT Core uses its own IoT policies attached to certificates, not IAM identity policies. IAM covers the management-plane API, not MQTT.
+- *"Rotate the certificate more frequently"* — doesn't prevent client-ID injection.
+- *"Use MQTT username/password authentication"* — doesn't address the client-ID authorization problem.
+- *"Enable AWS WAF on the IoT endpoint"* — WAF is HTTP/HTTPS; MQTT isn't in scope.
+- *"Enable GuardDuty / CloudTrail"* — detective, not preventive.
+- *"Add a validation Lambda before topic access"* — reinvents what `${iot:Connection.Thing.ThingName}` does natively; higher effort.
+- *"Use device shadow to store expected ID"* — device shadow is for state sync, not auth.
+- *"Set MQTT keepalive shorter"* — connection timeout; not related.
+- *"Encrypt IoT messages"* — TLS is already in use; doesn't stop injection at authz.
+
+**Exam Triggers:**
+
+- *"Devices manipulate client ID / MQTT wildcards escalate access"* → **replace `iot:ClientId` with `iot:Connection.Thing.ThingName`** + **enforce ClientId = ThingName in Connect policy**
+- *"Detect IoT anti-patterns / permissive policies"* → **IoT Device Defender**
+- *"Auto-register devices on first connect"* → **IoT Just-in-Time Provisioning (JITP)**
+- *"Issue device certs from a private CA"* → **AWS Private CA** integrated with IoT Core
+
+> *Mental model: **in AWS IoT Core, `iot:ClientId` is client-supplied and never safe for authorization; `iot:Connection.Thing.ThingName` is cryptographically anchored to the device's registered X.509 certificate and is the only safe identity variable for topic-scoped policies**. The two-part mitigation for the character-injection attack class: (1) use `iot:Connection.Thing.ThingName` in every Subscribe/Publish policy Resource — never `iot:ClientId`; (2) force the connecting `ClientId` to equal the thing name via a Connect resource ARN like `client/${iot:Connection.Thing.ThingName}` — this rejects any client whose CONNECT string doesn't match its cert-verified identity at connect time, before any topic operation. Pair with Device Defender for continuous anti-pattern detection, JITP for automated cert-thing binding, and Private CA for controlled cert issuance.*
 
 ## Domain 4 — Identity and Access Management (16%)
 
