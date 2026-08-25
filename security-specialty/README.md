@@ -995,6 +995,191 @@ The critical exam nuance: **SG rule changes do not terminate existing connection
 
 > *Mental model: **SG = doorman with a memory** (once a guest is in, changing the guest list doesn't kick them out until they leave). **NACL = airport security scanner** (every packet re-screened, ban list applied instantly). For "kill traffic now, keep the box running" — NACL every time.*
 
+#### SSM-native forensic isolation — the SG-swap + Session Manager workflow
+
+**Complementary to the NACL isolation pattern above.** NACL Deny-all wins when the instance is alone in its subnet AND you need to kill in-flight connections stateless-style. **SG-swap + SSM Session Manager wins when you need per-ENI surgical isolation that preserves a live forensic session and keeps the SSM control channel alive.** Both approaches appear in SCS-C03 questions; the stem's phrasing picks between them.
+
+**When to pick which:**
+
+| Scenario | Isolation mechanism |
+|---|---|
+| *"Kill all traffic RIGHT NOW, including in-flight attacker connections + instance alone in subnet"* | **NACL Deny-all** (stateless, subnet-wide, kills established TCP) |
+| *"Isolate instance + preserve running SSM Session Manager session + interactive memory acquisition"* | **SG-swap to isolation SG allowing only SSM VPC endpoints** (stateful, per-ENI, preserves the responder's control channel) |
+| *"Shared subnet + can't affect neighbours"* | **SG-swap** (NACL is subnet-wide) |
+| *"Preserve investigative activity audit trail"* | **SG-swap + Session Manager with session logging to S3/CWL** |
+
+##### The three-action combo for the "select three" exam pattern
+
+Requirements the exam typically bundles:
+
+1. **Preserve volatile memory (RAM)** — do NOT stop or terminate.
+2. **Preserve non-volatile memory (EBS)** — snapshot the volumes.
+3. **Update instance metadata with incident ticket ID** — tag.
+4. **Isolate from network while keeping instance online** — SG-swap.
+5. **Capture investigative activity during volatile collection** — Session Manager session logging.
+
+The exam-canonical three actions that cover all five:
+
+**Action 1 — Snapshot all attached EBS volumes.**
+
+```bash
+aws ec2 create-snapshots \
+  --instance-specification InstanceId=i-abc123 \
+  --tag-specifications 'ResourceType=snapshot,Tags=[{Key=IncidentID,Value=INC-12345}]'
+```
+
+Snapshot is out-of-band from the instance — doesn't touch RAM. **Forensic-safe choice over "detach the EBS volumes"**: only NON-root volumes can be detached from a running instance; detaching the root volume requires stop → destroys RAM. Snapshot works for all volumes without stopping anything.
+
+**Action 2 — Replace the instance's SGs with a forensic-isolation SG AND tag the instance with the incident ID.**
+
+```bash
+# Attach isolation SG at the ENI level (AWS's recommended API for this)
+aws ec2 modify-network-interface-attribute \
+  --network-interface-id eni-abc \
+  --groups sg-forensic-only
+
+# Tag with incident ID
+aws ec2 create-tags \
+  --resources i-abc123 \
+  --tags Key=IncidentID,Value=INC-12345
+```
+
+The forensic SG allows ONLY outbound TCP 443 to SSM VPC endpoints (see next section). SG-swap is a **metadata-plane change** — no reboot, RAM preserved, and stateful SG behaviour means the responder's existing SSM session survives the swap.
+
+**Action 3 — Use SSM Session Manager (with session logging enabled) to run memory-acquisition tools and stream RAM to S3.**
+
+```bash
+aws ssm start-session --target i-abc123
+# Inside session (Linux):
+sudo insmod /path/to/lime.ko "path=s3://forensic-mem/INC-12345.lime format=lime"
+```
+
+**Session Manager (not Run Command) is the correct primitive** for live forensic investigation because:
+- Interactive shell — iterate on findings, real-time output.
+- **Session logging** captures every keystroke + output to S3/CloudWatch Logs when enabled at account level.
+- Requires no bastion / no SSH keys / no open port 22.
+
+##### VPC endpoint prerequisites (critical detail)
+
+For SSM Agent to phone home while the instance is network-isolated, the forensic isolation SG must permit outbound TCP 443 to specific **VPC interface endpoints**:
+
+| Endpoint | Strictly required? | Purpose |
+|---|---|---|
+| **`com.amazonaws.<region>.ssm`** | ✅ Yes | SSM service API |
+| **`com.amazonaws.<region>.ssmmessages`** | ✅ Yes | Session Manager + Run Command control/data channels |
+| **`com.amazonaws.<region>.ec2messages`** | ⚠ Legacy | Previously required; SSM Agent 3.3.40.0+ prefers `ssmmessages`. In Regions launched in 2024+, only `ssmmessages` is supported. Still commonly deployed for backward compat. |
+
+Optional but common in forensic builds:
+
+- **`com.amazonaws.<region>.s3`** (gateway endpoint) — stream memory dumps to S3 without transiting internet / NAT.
+- **`com.amazonaws.<region>.logs`** — CloudWatch Logs for session-logging destination.
+- **`com.amazonaws.<region>.kms`** — if session logs are KMS-encrypted.
+
+**Exam-canonical claim: "three endpoints required" (ssm + ssmmessages + ec2messages)** — the historical answer that still appears in exam banks. The modern reality is that `ec2messages` is being phased out, but for exam purposes, the three-endpoint answer is still correct.
+
+##### The `AWSSupport-ContainEC2Instance` runbook
+
+AWS ships a **first-party SSM Automation runbook** that automates this workflow: **`AWSSupport-ContainEC2Instance`** (formerly documented under slightly different names — the current canonical name is `Contain`, not `Isolate`).
+
+What it does:
+
+1. Backs up the original SG configuration to S3 (for reversal later).
+2. Optionally captures an AMI backup of the instance.
+3. Optionally puts an ASG instance into standby state.
+4. **Attaches an isolation SG via `ec2:ModifyNetworkInterfaceAttribute`** (per-ENI, AWS's recommended API for multi-ENI instances).
+5. Provides a `Restore` mode to reverse the containment cleanly.
+
+Uses `ec2:ModifyNetworkInterfaceAttribute` at the ENI level rather than `ec2:ModifyInstanceAttribute --groups` — functionally equivalent for a single-ENI instance, but ENI-scoped is AWS's recommendation for instances with multiple ENIs.
+
+##### Session Manager vs Run Command for forensic capture
+
+| | Run Command | Session Manager (with logging) |
+|---|---|---|
+| **Model** | Fire-and-forget command dispatch per invocation | Interactive shell |
+| **Real-time observation** | ❌ Wait for command to complete | ✅ Live output during investigation |
+| **Iterative investigation** | ❌ Re-invoke per command | ✅ Continuous shell — pivot on findings |
+| **Activity capture** | Per-invocation records (command + output) | Full session transcript to S3 / CWL — closer to a "screen recording" |
+| **Session-logging caveat** | N/A | **Logging isn't available when the session uses port-forwarding or tunnels SSH-over-SSM** |
+| **Forensic best-fit** | Bulk automation (patch, config gather across fleet) | **Live incident investigation** |
+
+##### The "or SSH/RDP" poison-pill option pattern
+
+Exam options that contain phrasing like *"...use SSM Run Command to collect memory data, **or alternatively** establish an interactive SSH or RDP session"* are **auto-wrong** — the SSH/RDP half of the "or" contaminates the whole option because:
+
+- SSH/RDP require open network paths (port 22 / 3389) — conflicts with the forensic isolation SG that permits only SSM endpoints.
+- SSH/RDP require bastion + keys or RDP client — high operational overhead vs. Session Manager's native path.
+- Native SSH/RDP produce no AWS-side audit trail — session logging is a Session Manager feature.
+
+**Rule:** any exam option offering *"X **or alternatively** Y"* where X is native/managed (SSM primitive) and Y is on-prem-style (SSH, RDP, agent install, bastion) — assume Y is the poison pill. Exam options are evaluated as atomic units — you can't pick just the SSM half.
+
+##### Numbered end-to-end forensic-isolation flow
+
+```text
+   1.  Operator triggers SSM Automation runbook
+       (AWSSupport-ContainEC2Instance or custom)
+                            │
+                            ▼
+   2.  ADD TAG           →  aws ec2 create-tags
+       (metadata)          --resources i-abc123
+                            --tags Key=IncidentID,Value=INC-12345
+                            │
+                            ▼
+   3.  ATTACH ISOLATION →  aws ec2 modify-network-interface-attribute
+       SG (per-ENI,        --network-interface-id eni-abc
+        preserve RAM,      --groups sg-forensic-only
+        stateful           (outbound only to SSM VPC endpoints)
+        preserves SSM)     │
+                            ▼
+   4.  SNAPSHOT VOLUMES  →  aws ec2 create-snapshots
+       (non-volatile,      --instance-specification InstanceId=i-abc123
+        out-of-band,        --tag-specifications '...'
+        no RAM impact)      │
+                            ▼
+   5.  SESSION MANAGER   →  aws ssm start-session --target i-abc123
+       WITH LOGGING       (session preferences: S3 destination,
+                            KMS-encrypted, CWL streaming)
+                            │
+       Inside session:     sudo insmod lime.ko "path=s3://forensic-mem/
+                             INC-12345.lime format=lime"
+                           (streams RAM to S3; every command logged
+                            to S3/CWL by Session Manager)
+                            │
+                            ▼
+   6.  ANALYSIS OFFLINE  →  Attach snapshot to a forensic AMI in an
+                            isolated forensic account, mount read-only.
+                            Analyze memory dump with Volatility3.
+```
+
+##### Common Anti-patterns (exam wrong answers)
+
+| Distractor | Why it fails |
+|---|---|
+| **"Stop the instance and detach the EBS volumes"** | Stop destroys RAM (fails volatile-memory preservation). Only non-root volumes can detach from a running instance anyway; root requires stop. **Forensic-safe alternative is `CreateSnapshot`, not detach.** |
+| **"Terminate the instance and rely on backups"** | Destructive; loses RAM and running-state evidence. |
+| **"Use SSH from a forensic bastion to run memory dump commands"** | Requires SSH keys, bastion infrastructure, open port 22 through the isolation SG → violates least overhead. Session Manager needs none of that. |
+| **"Reboot the instance into forensic mode"** | Reboot clears RAM. Fails volatile preservation. |
+| **"Use EC2 Instance Connect"** | Requires a network path to port 22 — conflicts with network isolation. Session Manager operates via SSM endpoints, not SSH. |
+| **"Use SSM Run Command to execute memory-collection scripts, OR alternatively SSH/RDP"** | The "or SSH/RDP" clause is the poison pill (see above). Session Manager is the correct primitive. |
+| **"Detach EBS volumes and re-attach to a forensic AMI"** | Detach of root volume requires stop → RAM lost. Snapshot works without stopping. |
+| **"Modify the network ACL to Deny all traffic"** | Blast-radius problem — kills neighbours in shared subnets AND cuts off the SSM VPC endpoint traffic path (kills the responder). Only valid if the instance is alone in the subnet AND you carve out SSM endpoint allow rules. |
+| **"Strip the IAM instance profile permissions"** | Cuts off SSM Agent's ability to reach the SSM service — kills the responder's control channel. Also has up to 1-hour propagation delay before existing SSM sessions terminate. |
+| **"Use CloudTrail to reconstruct the incident from API logs"** | CloudTrail is API-plane — necessary complement, not sufficient for in-instance memory or shell activity. |
+| **"Enable EC2 detailed monitoring"** | CloudWatch metrics — not forensic capture. |
+
+##### Exam Triggers
+
+- *"Preserve volatile + non-volatile memory + isolate but keep online + capture activity"* → **snapshot + SG-swap+tag + Session Manager with logging** (three-action combo).
+- *"Preserve volatile memory"* → **do NOT stop, terminate, or reboot**; use SSM Session Manager + LiME/WinPmem live.
+- *"Capture investigative activity during volatile collection"* → **Session Manager session logging to S3 / CloudWatch Logs**.
+- *"Least operational overhead" + "SSM Agent installed"* → **SSM primitives**; no bastion, no SSH, no forensic jump host.
+- *"AWS-native runbook for containment"* → **`AWSSupport-ContainEC2Instance`** Automation document.
+- *"Isolate + preserve existing forensic session"* → **SG-swap** (stateful preserves in-flight connections).
+- *"Kill in-flight attacker connections AND instance is alone in subnet"* → **NACL Deny-all** (see the NACL isolation section above).
+- *"Update instance metadata with ticket ID"* → **`ec2:CreateTags`** on the instance.
+- *"Session Manager or SSH/RDP alternative"* option → **auto-wrong** (poison-pill "or" pattern).
+
+> *Mental model: **SSM-native forensic isolation is per-ENI SG-swap + Session Manager with logging + LiME/WinPmem, three primitives combined into three exam-visible actions (snapshot + SG-swap+tag + Session Manager).*** The whole design pivots on the SSM Agent being able to phone home while every other network path is severed — which is why the isolation SG must allow outbound to SSM VPC endpoints (`ssm` + `ssmmessages` strictly, `ec2messages` legacy). **Any answer that stops, reboots, terminates, or detaches root volumes destroys volatile memory — auto-wrong. Any answer using SSH / bastion / EC2 Instance Connect adds overhead vs SSM Session Manager, which is already available. Any answer changing IAM to strip permissions also cuts off the responder — SSM needs the agent's IAM role intact.*** AWS ships this as the **`AWSSupport-ContainEC2Instance`** SSM Automation runbook. Least overhead = SSM primitives all the way down; NACL Deny is a sibling pattern reserved for subnet-alone + kill-in-flight scenarios.*
+
 #### AWS-notified-you-of-compromise — the 6-step account-compromise playbook
 
 **Distinct from a GuardDuty finding.** When *AWS itself* (Trust & Safety / Abuse Response) notifies you of suspicious activity — usually because an access key leaked publicly, cryptomining was detected on your fleet, or unusual API activity fired their internal alarms — a specific containment procedure kicks in. The exam tests this as a "before responding to AWS Support" question.
