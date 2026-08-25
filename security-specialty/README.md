@@ -42,6 +42,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [AWS Backup](#aws-backup)
   - [S3 Access Points](#s3-access-points)
   - [EBS Encryption at Scale](#ebs-encryption-at-scale)
+  - [EBS Snapshot Cross-Account Backup (CMK-encrypted)](#ebs-snapshot-cross-account-backup-cmk-encrypted)
   - [Certificate Manager (ACM) and Private CA](#certificate-manager-acm-and-private-ca)
 - [Domain 6 — Management and Security Governance (14%)](#domain-6--management-and-security-governance-14)
   - [Organizations, SCPs, Control Tower](#organizations-scps-control-tower)
@@ -3052,6 +3053,159 @@ Launch-template modification is a partial fix — only covers that template's fu
 - *"Encrypt all ASG-managed instance volumes"* → **regional default + encrypted AMI + instance refresh**
 
 > *Mental model: EBS encryption is a **two-half problem** — existing volumes (migration) and future volumes (default encryption). Regional default is the strictly-better lever for the future half (covers every source, can't be bypassed by omission, single regional attribute to audit). Layer an **SCP `ec2:Encrypted = false` Deny** for org-wide preventive enforcement, pair **Config rules** for continuous verification, and use **snapshot → encrypted copy → replace** to migrate existing volumes. Launch-template modification is a partial fix the exam usually punishes.*
+
+### EBS Snapshot Cross-Account Backup (CMK-encrypted)
+
+**The canonical SCS-C03 "protect snapshots against a compromised account / ransomware / cyber attack" question.** When the threat model is a **fully-compromised production account** (not just accidental deletion), single-account defences (Recycle Bin, SCPs, Vault Lock) can eventually be circumvented by an attacker with sufficient privilege. **Cross-account snapshot copy is the only layer that survives full-account compromise** — the protection lives in a different security boundary.
+
+**Threat-model decoder — which snapshot defence for which threat:**
+
+| Threat scenario | Primary defence |
+|---|---|
+| *Cyber attack / ransomware / compromised production account* | **Cross-account copy** to isolated backup account (this section) |
+| *Accidental deletion by an admin* | **EBS Recycle Bin** with retention rule |
+| *Compliance mandate for N-year immutable retention* | **AWS Backup + Vault Lock compliance mode** |
+| *Prevent snapshot from being shared publicly* | **SCP** with `ec2:ModifySnapshotAttribute` Deny + **AWS Config** rule `ebs-snapshot-public-restorable-check` |
+| *Detect unauthorised snapshot deletion* | **CloudTrail** + **EventBridge** alert |
+
+The stem's threat vector determines the primary defence. When the stem says *"cyber attack"* or *"compromised"* → cross-account copy is the answer.
+
+**Why single-account defences aren't enough for account-level compromise:**
+
+- **Recycle Bin** — an attacker with sufficient privilege can disable the retention rule (unless in compliance-mode retention lock — but even then only if compliance-mode was enabled *before* compromise).
+- **SCPs** — apply to member accounts; compromise of the management account (or a well-privileged member role) can lift them.
+- **Vault Lock (compliance mode)** — still lives in the same account; attacker with root or backup-service admin can eventually work around it.
+- **KMS key policy** — attacker with `iam:PassRole` on the right role can bypass; also, if the CMK itself is compromised, all in-account protections fall.
+
+**Cross-account copy fundamentally different:** the backup account is a separate IAM realm, separate root, separate set of principals. Compromise of production doesn't give the attacker any privilege in the backup account.
+
+**The three-step cross-account copy mechanic (for CMK-encrypted snapshots — memorise the steps):**
+
+Because the snapshots are **CMK-encrypted**, the copy has a KMS-permission wrinkle beyond the vanilla snapshot-sharing flow. Three steps:
+
+#### Step 1 — Share the snapshot with the target account
+
+Source (production) account modifies the snapshot's `createVolumePermission`:
+
+```bash
+aws ec2 modify-snapshot-attribute \
+  --snapshot-id snap-0abc123 \
+  --attribute createVolumePermission \
+  --operation-type add \
+  --user-ids <backup-account-id>
+```
+
+Makes the snapshot **visible and copyable** from the backup account.
+
+#### Step 2 — Grant the backup account KMS access to the source CMK
+
+The CMK's **key policy** (in the source account) must allow the backup account's principals to use the key for the copy operation. Without this, the copy fails with a KMS access error — this is the gotcha the exam specifically tests:
+
+```json
+{
+  "Sid": "AllowBackupAccountToCopyEncryptedSnapshot",
+  "Effect": "Allow",
+  "Principal": { "AWS": "arn:aws:iam::<backup-account-id>:root" },
+  "Action": [
+    "kms:Decrypt",
+    "kms:CreateGrant",
+    "kms:GenerateDataKeyWithoutPlaintext",
+    "kms:DescribeKey",
+    "kms:ReEncrypt*"
+  ],
+  "Resource": "*",
+  "Condition": {
+    "Bool": { "kms:GrantIsForAWSResource": "true" }
+  }
+}
+```
+
+The `kms:GrantIsForAWSResource` condition scopes the CreateGrant to AWS-service-driven usage (EBS in this case), preventing the backup account from creating arbitrary grants.
+
+#### Step 3 — Backup account issues `CopySnapshot`
+
+From within the backup account, using its own IAM permissions plus the KMS grant above:
+
+```bash
+aws ec2 copy-snapshot \
+  --source-region us-east-1 \
+  --source-snapshot-id snap-0abc123 \
+  --encrypted \
+  --kms-key-id arn:aws:kms:us-east-1:<backup-account-id>:key/<backup-cmk> \
+  --description "Cross-account backup copy from prod"
+```
+
+**Best practice — re-encrypt with a backup-account CMK during the copy.** Not the source CMK. This gives the backup account **cryptographic independence** — a compromised source CMK (or its policy) doesn't render the backup copies unusable.
+
+**Numbered runtime flow:**
+
+1. Production creates a snapshot → encrypted with the source CMK.
+2. Automation (AWS Backup / EventBridge → Lambda / SSM Automation) modifies the snapshot attribute to share with the backup account.
+3. Automation triggers `CopySnapshot` in the backup account.
+4. EBS in the backup account requests KMS operations on the source CMK (allowed via the key policy from Step 2) to decrypt the source DEK.
+5. EBS re-encrypts with the backup-account CMK.
+6. New encrypted snapshot lives in the backup account, decryptable only via the backup account's CMK.
+7. Original production CMK compromise → backup copies remain accessible via backup CMK.
+8. Original snapshot deletion → backup copies unaffected (isolated account boundary).
+
+**Regularising the copy on schedule — three managed approaches:**
+
+- **AWS Backup with cross-account copy action in the backup plan** — the modern managed approach. Set a Backup plan that snapshots EBS + copies to a vault in the backup account. Combine with **Vault Lock compliance mode** on the destination vault for WORM immutability. This is the AWS-recommended path (see [[aws-backup]]).
+- **EventBridge scheduled rule → Lambda** iterating production snapshots and initiating copies.
+- **SSM Automation runbook** (`AWSSupport-*` or custom) executed on schedule.
+
+The AWS Backup approach is the leanest — one policy handles snapshotting + sharing + copying + retention + optional Vault Lock.
+
+**Backup account hardening (best practices):**
+
+- **Minimal IAM** — no admin humans in the account. Only a specific copy role can write; only a specific restore role can read.
+- **SCP denying `ec2:DeleteSnapshot`** in the backup account except by a break-glass role.
+- **Vault Lock compliance mode** on any AWS Backup vaults in the account.
+- **Cross-account CloudTrail** logging to a third audit account for tamper-evident audit trail.
+- **No trust relationships** from the backup account to the production account (production shouldn't be able to AssumeRole into backup).
+- **MFA required** on any interactive access.
+
+**Complete defence-in-depth stack (four layers, cross-account being the primary):**
+
+| Layer | What it protects against |
+|---|---|
+| **Cross-account copy** (this section) | Full account compromise — attacker in production can't reach the backup account |
+| **AWS Backup + Vault Lock compliance** on the destination vault | Root of backup account can't delete recovery points |
+| **EBS Recycle Bin** in production | Accidental deletion (governance) or full anti-deletion (compliance-mode retention lock) |
+| **SCP + KMS key policy** hardening | Preventive controls layered on production; belt-and-suspenders |
+
+Cross-account is the **primary** layer for cyber-attack scenarios; the others are complementary.
+
+**What plausible-looking wrong answers get wrong:**
+
+- ***"Enable Recycle Bin only"*** — protects against deletion but not against a fully-compromised account that can disable the RBin rule.
+- ***"SCP Deny on `ec2:DeleteSnapshot` in production"*** — SCPs are lift-able if the mgmt account is compromised; doesn't provide an isolated copy.
+- ***"Use Vault Lock in production account"*** — same-account WORM; still vulnerable to root of the compromised account (before cooling-off period expires).
+- ***"Encrypt with a new CMK per snapshot"*** — doesn't provide isolation from account compromise.
+- ***"Take manual snapshots via CLI"*** — no isolation.
+- ***"Move snapshots to Glacier / S3 Object Lock"*** — EBS snapshots don't move to those tiers directly.
+- ***"Enable MFA delete"*** — S3-only feature.
+- ***"Rely on IAM policies alone"*** — attacker with account creds bypasses IAM from the same account.
+- ***"Copy the snapshot but don't grant the backup account KMS access"*** — copy fails because the target account can't decrypt during the copy. The CMK cross-account grant is what makes CMK-encrypted cross-account copy work.
+
+**Common Anti-patterns:**
+
+- Missing the KMS key policy step — copy fails silently or with cryptic errors.
+- Re-using the source CMK for the copy — no cryptographic independence; source CMK compromise still affects backup.
+- One-time manual copy — snapshots go stale; recovery is only as good as the latest copy.
+- Backup account too privileged — defeats the isolation.
+- Trust relationship from backup → production — allows a production compromise to pivot into the backup account.
+
+**Exam Triggers:**
+
+- *"Protect EBS snapshots from a cyber attack / compromised account / ransomware"* → **cross-account copy to isolated account**
+- *"Copy CMK-encrypted snapshot cross-account fails"* → **KMS key policy** on source CMK must grant target-account principals `Decrypt`/`GenerateDataKeyWithoutPlaintext`/`ReEncrypt*`/`DescribeKey`/`CreateGrant` (with `kms:GrantIsForAWSResource: true`)
+- *"Ransomware-resistant offline copy"* → **cross-account copy** + Vault Lock compliance in destination account
+- *"Recover accidentally deleted snapshot"* → **EBS Recycle Bin** (different question class)
+- *"WORM-immutable backups"* → **AWS Backup + Vault Lock compliance** (may be layered inside the backup account)
+- *"Prevent snapshot from being made public"* → **SCP** with `ec2:ModifySnapshotAttribute` Deny + Config rule `ebs-snapshot-public-restorable-check`
+
+> *Mental model: **when the threat model is compromise-level (cyber attack, ransomware, malicious insider), same-account defences aren't sufficient — every one of them (SCP, RBin, Vault Lock) can eventually be worked around by an attacker with enough privilege inside the same account. Cross-account snapshot copy to an isolated backup account is the only defence that survives full-account compromise because the protection lives in a different security boundary.*** For CMK-encrypted snapshots, cross-account copy requires **three coordinated steps**: (1) `ec2:ModifySnapshotAttribute` to share the snapshot with the target account, (2) update the **source CMK's key policy** to allow the target account's principals to decrypt / create-grant / re-encrypt, (3) target account issues `CopySnapshot` — re-encrypting with a **backup-account-owned CMK** for cryptographic independence. Regularise via AWS Backup cross-account copy (managed, includes Vault Lock option in destination) or EventBridge → Lambda. Recycle Bin, Vault Lock, and SCPs remain **complementary** layers, not primary for this threat class.
 
 ### Certificate Manager (ACM) and Private CA
 
