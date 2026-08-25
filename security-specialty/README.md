@@ -28,6 +28,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [PrivateLink, VPC Endpoints, Endpoint Policies](#privatelink-vpc-endpoints-endpoint-policies)
 - [Domain 4 — Identity and Access Management (16%)](#domain-4--identity-and-access-management-16)
   - [IAM Policy Evaluation Logic](#iam-policy-evaluation-logic)
+  - [AWS Credential Provider Chain](#aws-credential-provider-chain)
   - [MFA Enforcement — MultiFactorAuthPresent + MultiFactorAuthAge](#mfa-enforcement--multifactorauthpresent--multifactorauthage)
   - [SCPs, Permission Boundaries, Session Policies](#scps-permission-boundaries-session-policies)
   - [IAM Identity Center and Federation](#iam-identity-center-and-federation)
@@ -1746,6 +1747,175 @@ Read this string first before spelunking policies.
 - *"Denied via SCP"* → check org / OU / account SCPs
 
 > *Mental model: IAM policy evaluation is a **ceiling stack**, not an addition. Identity policy sets intent; SCP, resource policy, permission boundary, session policy, and VPC endpoint policy each cap it below their own limit. When admin gets AccessDenied, don't add to the identity policy — look **up** the stack for the ceiling. The two the exam favours (session policy + VPC endpoint policy) are invisible in the entity's own config.*
+
+### AWS Credential Provider Chain
+
+**The canonical SCS-C03 "EC2 has an IAM role attached but API calls are using an IAM user" question.** The role isn't broken — a higher-priority credential source is shadowing it. Fundamentally different from the IAM policy evaluation troubleshooting above: **this is a client-side SDK behaviour, not a server-side authorisation check.**
+
+**The full provider chain (priority order — memorise cold):**
+
+| # | Source | How it's set |
+|---|---|---|
+| 1 | **Explicit code parameters** | `boto3.client('s3', aws_access_key_id=…)` etc. |
+| 2 | **Environment variables** | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` |
+| 3 | **AWS CLI credentials file** | `~/.aws/credentials` (per-profile static keys) |
+| 4 | **AWS CLI config file** | `~/.aws/config` (per-profile static keys, or `role_arn` for assume-role chains) |
+| 5 | **Container credentials** | `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` — for ECS tasks + EKS pods |
+| 6 | **Instance profile via IMDS** | `169.254.169.254/latest/meta-data/iam/security-credentials/<role>` — for EC2 |
+
+The SDK walks this list top-down, uses the **first** source it finds, and **stops**. Instance-profile creds are at the **bottom** — any higher source shadows the attached role entirely.
+
+**Why the role appears "not used" even though it's attached:**
+
+Something placed IAM user credentials in one of the higher-priority locations on the instance. Most common causes:
+
+- **`~/.aws/credentials` file** exists (e.g., `/home/ec2-user/.aws/credentials` or `/root/.aws/credentials`) with static IAM user access keys.
+- **Environment variables** set in the shell / systemd unit / cron job / Dockerfile — `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` exported.
+- **`~/.aws/config`** has explicit `aws_access_key_id` in a profile.
+- **AMI baked with credentials** — someone ran `aws configure` before creating the image; keys ship with every launch.
+- **Container inherits env vars** from the host or from a Dockerfile `ENV` directive.
+
+The instance profile role is still *attached and functional* — the SDK just never reaches step 6 in the chain because step 2, 3, or 4 already returned a credential.
+
+**Two-command diagnostic (master this):**
+
+```bash
+aws configure list         # shows which source is winning (Type column)
+aws sts get-caller-identity # shows the ARN the SDK is signing requests as
+```
+
+**Reading `aws configure list` — the Type column tells you the source:**
+
+| Type value | Source |
+|---|---|
+| `iam-role` | ✅ Instance profile via IMDS (**the desired state**) |
+| `env` | Environment variables (`AWS_ACCESS_KEY_ID` etc.) |
+| `shared-credentials-file` | `~/.aws/credentials` |
+| `config-file` | `~/.aws/config` (explicit keys) |
+| `container-role` | ECS/EKS task credentials |
+
+**Reading `aws sts get-caller-identity` — the ARN tells you the identity:**
+
+- `arn:aws:iam::<acct>:user/<name>` → an IAM user (shadowed the role — problem)
+- `arn:aws:sts::<acct>:assumed-role/<role-name>/<session>` → instance role (desired state)
+
+**The fix — remove the higher-priority credentials:**
+
+```bash
+# 1. Delete the shared-credentials file
+rm ~/.aws/credentials
+# Or edit to remove aws_access_key_id / aws_secret_access_key lines
+
+# 2. Remove explicit keys from ~/.aws/config if present
+
+# 3. Unset environment variables
+unset AWS_ACCESS_KEY_ID
+unset AWS_SECRET_ACCESS_KEY
+unset AWS_SESSION_TOKEN
+unset AWS_PROFILE
+
+# 4. Check systemd units for env vars
+sudo grep -rn 'AWS_ACCESS_KEY_ID' /etc/systemd/system /etc/default
+# Edit the unit → systemctl daemon-reload && systemctl restart <svc>
+
+# 5. Check shell profiles and cron
+grep -rn 'AWS_ACCESS_KEY_ID' /home /root /etc/cron.* /etc/profile*
+
+# 6. Verify
+aws configure list          # should now show Type: iam-role
+aws sts get-caller-identity # should now show assumed-role ARN
+```
+
+**Numbered diagnostic flow:**
+
+1. Run `aws configure list` — read the Type column.
+2. If Type is anything but `iam-role`, that source is shadowing the instance role.
+3. Locate the source (file / env var / systemd unit) and remove it.
+4. Re-run `aws configure list` and `aws sts get-caller-identity` to confirm the SDK is now using the instance role.
+
+**Why this pattern is bad beyond "wrong identity":**
+
+- **Static IAM user access keys are long-lived**, unlike the STS temp creds the instance profile provides.
+- **Long-lived keys have a longer window of compromise** — a leaked user key stays valid until manually rotated.
+- **Manual rotation** is required for static keys; instance profile creds auto-rotate through IMDS every few hours.
+- **CloudTrail audit trail is misleading** — the caller identity shows an IAM user, not the instance, making cross-referencing to compute resources harder.
+- **The IAM user probably has broader permissions** than the role — users tend to accrete permissions; roles tend to be scoped for a specific workload.
+- **Static keys placed in files** are prime SSRF exfiltration targets.
+
+**Diagnosis flow diagram:**
+
+```text
+┌─────────────────────────────────────┐
+│  API call from EC2 instance uses    │
+│  wrong identity (IAM user vs role)  │
+└──────────────┬──────────────────────┘
+               ▼
+     aws configure list  ── shows Type column
+               │
+      ┌────────┴──────────────────────────────┐
+      │ Type = iam-role                       │ ← desired state; check IAM policy on role
+      │                                       │
+      │ Type = shared-credentials-file        │ ← ~/.aws/credentials exists → remove
+      │                                       │
+      │ Type = env                            │ ← env vars set → unset in shell / systemd / cron
+      │                                       │
+      │ Type = config-file                    │ ← ~/.aws/config has explicit keys → remove
+      │                                       │
+      │ Type = container-role                 │ ← ECS/EKS task creds; different mechanism
+      └───────────────────────────────────────┘
+```
+
+**Prevention (best practices):**
+
+- **Never bake AWS credentials into an AMI.** Base images should be credential-free; roles come from the instance profile.
+- **Prefer instance profiles / task roles / IRSA** (IAM Roles for Service Accounts) for EKS. Never install static keys onto compute.
+- **Use SSM Parameter Store / Secrets Manager** for external secrets an app needs — not IAM user access keys.
+- **Add SCP guardrails** preventing `iam:CreateAccessKey` for regular IAM users; force everything through roles.
+- **Enable AWS Config rules** `iam-user-no-policies-check`, `access-keys-rotated`, and `iam-user-unused-credentials-check` to flag static-key sprawl.
+- **Turn on IAM Access Analyzer's unused-access analysis** to identify IAM users with stale keys.
+
+**What plausible-looking wrong answers miss:**
+
+- ***"The IAM role's trust policy doesn't allow EC2"*** — would cause total failure to assume; the stem says calls succeed, just as the wrong identity.
+- ***"The instance profile is misconfigured"*** — if that were true, no role identity would appear anywhere.
+- ***"IMDS is disabled"*** — would cause the SDK to fall through to nothing, resulting in `NoCredentialsError`. But the stem says calls succeed, so credentials are being found somewhere.
+- ***"The IAM role has insufficient permissions"*** — permissions issues surface as `AccessDenied`, not "wrong identity."
+- ***"CloudTrail is showing the wrong identity due to a delay"*** — CloudTrail records the actual signing principal in near-real-time; not a delay artefact.
+- ***"Reset the EC2 instance's metadata service"*** — restarting IMDS doesn't clear file/env-based credentials.
+
+**Contrast with the eval-logic troubleshooting:**
+
+| Symptom | Layer | Fix |
+|---|---|---|
+| *"Wrong identity is signing requests"* | **Credential provider chain** (client-side SDK) | Remove higher-priority credential source |
+| *"Right identity, AccessDenied on action"* | **Policy evaluation chain** (server-side IAM) | Fix the ceiling layer (SCP, boundary, session policy, VPC endpoint policy, resource policy) |
+
+Both classes of question look similar in the console; the diagnostic tool is different.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- Attributing "wrong identity" to a policy problem — that's *server-side*; this is a *client-side* precedence issue.
+- Restarting the instance or the IMDS service — doesn't clear files or env vars.
+- Recreating the instance profile — the profile is fine; the SDK just isn't reaching it.
+- Modifying the trust policy — irrelevant unless the SDK is failing to assume.
+
+**Exam Triggers:**
+
+- *"EC2 has role attached but API calls use IAM user credentials"* → **credential provider chain** — higher-priority source shadowing IMDS
+- *"How to diagnose which credentials the SDK is using?"* → **`aws configure list`** (Type column) + **`aws sts get-caller-identity`** (Arn)
+- *"Fix an EC2 that's using static keys instead of the role"* → **remove `~/.aws/credentials`**, unset env vars, check systemd units
+- *"Prevent EC2 fleet from ever using static IAM keys"* → **AMI hardening** + **SCP denying `iam:CreateAccessKey`** + Config rules
+- *"Force API calls from EC2 to use only the instance profile"* → remove all higher-priority sources; ensure the SDK's chain falls through to IMDS
+
+**The one-command diagnostic to internalise:**
+
+```bash
+aws configure list && aws sts get-caller-identity
+```
+
+Type column → source. ARN → identity. Two commands, one line, entire diagnosis.
+
+> *Mental model: **the AWS SDK doesn't automatically use the instance role — it walks a priority-ordered credential provider chain and uses the first source it finds.*** Instance-profile creds via IMDS are at the **bottom** of that chain. Environment variables, `~/.aws/credentials`, and `~/.aws/config` static keys all shadow it. When the exam says "role attached but wrong identity" — it's a **client-side precedence problem, not a server-side policy problem**. Fix by removing the higher-priority credential source, not by touching the role. Master `aws configure list` (Type column) + `aws sts get-caller-identity` (ARN) as the two-command diagnostic that answers every "which credentials are being used?" question in one line.*
 
 ### MFA Enforcement — MultiFactorAuthPresent + MultiFactorAuthAge
 
