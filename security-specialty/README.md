@@ -28,6 +28,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [PrivateLink, VPC Endpoints, Endpoint Policies](#privatelink-vpc-endpoints-endpoint-policies)
   - [AWS IoT Core — policy variables and client-ID injection](#aws-iot-core--policy-variables-and-client-id-injection)
   - [EC2 Instance Connect / Session Manager — IAM requirements and misleading errors](#ec2-instance-connect--session-manager--iam-requirements-and-misleading-errors)
+  - [Session Manager Deep Dive](#session-manager-deep-dive)
 - [Domain 4 — Identity and Access Management (16%)](#domain-4--identity-and-access-management-16)
   - [IAM Policy Evaluation Logic](#iam-policy-evaluation-logic)
   - [AWS Credential Provider Chain](#aws-credential-provider-chain)
@@ -2070,6 +2071,228 @@ The **#1 check is the exam's answer** — the most-often-missed and produces the
 Both are "wrong-cause diagnostic" traps but for different mechanisms.
 
 > *Mental model: **AWS-native instance connection tooling requires AWS-native permissions on the instance.*** Traditional SSH is a peer-to-peer protocol (no AWS API involvement); anything AWS-native — Instance Connect, Session Manager, Run Command, Patch Manager — requires the instance to *call AWS APIs from inside itself*, which needs an instance profile with **`AmazonSSMManagedInstanceCore`** (the "SSM-family enabler" managed policy). When AWS-native tooling fails but standard SSH works, the first thing to check is whether this policy is attached. The visible error may point at SSH-layer artefacts (host key validation, encryption) but the actual cause is usually IAM on the instance profile. Bonus: Session Manager needs no port 22 at all — everything routes through the SSM channel — making it the exam's preferred replacement for SSH in most modern scenarios.
+
+### Session Manager Deep Dive
+
+**The AWS-recommended SSH replacement.** Session Manager provides interactive shell + port forwarding + file transfer *without* opening any inbound ports on the instance. Everything flows through an outbound HTTPS/WebSocket tunnel between the instance's SSM Agent and the SSM data plane. For SCS-C03 this is the exam's default answer to any "give admins shell access to a private-subnet instance" question.
+
+**Architecture — the WebSocket tunnel:**
+
+```text
+┌─────────────────────┐              ┌─────────────────────┐              ┌─────────────────────────────┐
+│  Admin's browser or │              │  SSM service        │              │  EC2 instance               │
+│  aws ssm start-     │              │  (control plane +   │              │                             │
+│  session            │  (1)         │   data plane)       │              │  SSM Agent                  │
+│                     ├────────────► │                     │              │  (outbound HTTPS to SSM)    │
+│                     │  StartSession│                     │              │                             │
+│                     │  API call    │                     │              │  Instance profile:          │
+│                     │              │                     │              │  AmazonSSMManagedInstance-  │
+│                     │              │                     │  (2)         │  Core (mandatory)           │
+│                     │              │                     ├───◄──────────┤                             │
+│                     │              │                     │  Agent opens │                             │
+│                     │              │                     │  control     │                             │
+│                     │              │                     │  channel     │                             │
+│                     │              │                     │              │                             │
+│                     │  (3)         │                     │              │                             │
+│                     │◄─────────────┤                     ├──────────────┤                             │
+│                     │  Bidirectional│                    │  Data plane  │                             │
+│                     │  WebSocket    │                    │  bridged     │                             │
+│                     │  data tunnel  │                    │  through SSM │                             │
+└─────────────────────┘              └─────────────────────┘              └─────────────────────────────┘
+
+No port 22, no sshd, no keys.  Zero inbound exposure.
+Instance only has to reach SSM endpoints OUTBOUND.
+```
+
+Compare to Instance Connect's flow (previous section) — Session Manager is fundamentally different: **no port 22 at all**, no SSH handshake, no host keys. The instance is unreachable from outside its VPC's outbound path.
+
+**The features that make Session Manager the exam's default modern-access answer:**
+
+#### Feature 1 — Session recording to S3 / CloudWatch Logs
+
+Sessions can be **fully recorded** to S3 buckets or CloudWatch Log groups. Every command, every keystroke, every screen output → captured verbatim, timestamped, and persisted.
+
+Configuration via **Session Manager Preferences** (a special SSM document `SSM-SessionManagerRunShell` — actually a JSON preference stored per-region):
+
+```json
+{
+  "schemaVersion": "1.0",
+  "description": "Session Manager preferences",
+  "sessionType": "Standard_Stream",
+  "inputs": {
+    "s3BucketName": "sessions-audit-bucket",
+    "s3KeyPrefix": "sessions/",
+    "s3EncryptionEnabled": true,
+    "cloudWatchLogGroupName": "/aws/ssm/sessions",
+    "cloudWatchEncryptionEnabled": true,
+    "kmsKeyId": "arn:aws:kms:us-east-1:<acct>:key/<key-id>",
+    "runAsEnabled": false,
+    "runAsDefaultUser": ""
+  }
+}
+```
+
+Once configured, every session in that region is auto-recorded — no per-session opt-in. Meets compliance requirements (SOC 2, HIPAA, PCI-DSS) that mandate audit trails of administrative access.
+
+**What Instance Connect can't do:** Instance Connect delivers a real SSH channel; you'd need to enable sshd session logging separately on each instance and ship the logs off. Session Manager gives this natively at the AWS layer.
+
+#### Feature 2 — KMS encryption of session data
+
+Two layers of encryption:
+
+- **In transit**: session data flows over TLS to AWS's SSM data plane by default.
+- **End-to-end encryption**: enable **KMS encryption on the Session Manager Preferences** (`kmsKeyId`) → session data is additionally encrypted between the client and the agent using a KMS-managed key. Even AWS's SSM service can't inspect the payload.
+
+This is the exam's *"encrypted in transit end-to-end"* answer for interactive shell access.
+
+**KMS permissions needed:**
+
+- Admin's IAM identity: `kms:GenerateDataKey` on the CMK.
+- Instance profile: `kms:Decrypt` on the CMK.
+- KMS key policy: allow both principals.
+
+#### Feature 3 — Private-subnet access via VPC endpoints
+
+For instances in private subnets with no internet gateway or NAT, Session Manager works via three **VPC interface endpoints**:
+
+- `com.amazonaws.<region>.ssm` — SSM control plane
+- `com.amazonaws.<region>.ssmmessages` — Session Manager data plane (mandatory for Session Manager)
+- `com.amazonaws.<region>.ec2messages` — SSM Agent messaging (mandatory)
+
+Optionally also `com.amazonaws.<region>.s3` (Gateway) and `com.amazonaws.<region>.logs` if the sessions are logged.
+
+With these endpoints, the instance:
+
+- Has no public IP
+- Has no NAT
+- Has no inbound ports
+- Reaches SSM privately over the AWS backbone
+
+This is the **exam-canonical answer for "give admins shell access to a fully private-subnet instance"** — no bastion host required.
+
+#### Feature 4 — Port forwarding
+
+Session Manager can forward local ports through the SSM tunnel to a port on the instance (or, in the case of the Remote Port Forwarding document, to a target reachable *from* the instance):
+
+```bash
+# Forward local port 3306 to RDS reachable from the instance
+aws ssm start-session \
+  --target i-0abcdef \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["rds.example.com"],"portNumber":["3306"],"localPortNumber":["3306"]}'
+```
+
+Use cases:
+
+- **Reach an RDS instance** in a private subnet from your laptop via `mysql -h localhost -P 3306` — no public database, no VPN.
+- **Reach a private webapp** via `curl localhost:8080` tunnelled to the private ALB.
+- **RDP / VNC** on Windows / Linux GUI instances.
+
+**Instance Connect can't do this** — it's SSH-only. Session Manager's port forwarding is a distinct capability.
+
+#### Feature 5 — Session preferences with fine-grained controls
+
+The preferences document controls behaviour per region:
+
+- **`runAsEnabled: true` + `runAsDefaultUser`** — sessions run as a specific non-root OS user (least-privilege enforcement on the OS side).
+- **`idleSessionTimeout`** — auto-terminate idle sessions after N minutes.
+- **`maxSessionDuration`** — cap the total session duration.
+- **`shellProfile`** — inject custom shell startup commands (e.g., load `~/.bashrc`, restrict PATH).
+
+These provide OS-level guardrails on top of the AWS-side IAM controls.
+
+#### Feature 6 — Cross-account SSM administration
+
+Use SSM with **delegated administrator** (an account in the Org designated to run Session Manager across all member accounts) to give a central security team shell access to any instance without individual account admin roles. Same pattern as GuardDuty / Config delegated admin.
+
+**IAM prerequisites — the two sides:**
+
+| Side | Principal | Actions needed |
+|---|---|---|
+| **Admin (caller)** | IAM user/role starting the session | `ssm:StartSession` on the specific instance ARN + `ssm:TerminateSession` on their own sessions; optionally `ssm:ResumeSession` |
+| **Instance** | Instance profile | **`AmazonSSMManagedInstanceCore`** (same as Instance Connect) |
+| **KMS (if encrypting)** | Both sides via key policy | `kms:GenerateDataKey` (admin), `kms:Decrypt` (instance) |
+
+The `ssm:StartSession` action on the admin side can be scoped by resource ARN:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "ssm:StartSession",
+  "Resource": [
+    "arn:aws:ec2:us-east-1:<acct>:instance/i-0abcdef",
+    "arn:aws:ssm:us-east-1:<acct>:document/SSM-SessionManagerRunShell"
+  ]
+}
+```
+
+Or tag-based scoping — grant `ssm:StartSession` only when the target instance carries specific tags. Common pattern:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "ssm:StartSession",
+  "Resource": "arn:aws:ec2:*:*:instance/*",
+  "Condition": {
+    "StringEquals": {
+      "ssm:resourceTag/Environment": "dev"
+    }
+  }
+}
+```
+
+Admin can only start sessions on `Environment=dev` instances.
+
+**Session Manager vs Instance Connect — quick comparison for the exam:**
+
+| Aspect | Session Manager | Instance Connect |
+|---|---|---|
+| Protocol | HTTPS/WebSocket to SSM | SSH on port 22 |
+| Inbound port required | **None** | 22 (or EIC Endpoint ENI) |
+| sshd running | Not needed | Yes |
+| Session recording | ✅ Native (S3 / CW Logs) | ❌ Not built-in |
+| KMS end-to-end encryption of session | ✅ Yes | ❌ (TLS only) |
+| Port forwarding | ✅ Yes | ❌ |
+| SSH tooling compatible (scp, PuTTY) | ❌ | ✅ |
+| Private subnet | SSM VPC endpoints | EIC Endpoint |
+| Instance profile requirement | `AmazonSSMManagedInstanceCore` | `AmazonSSMManagedInstanceCore` |
+| Compliance-friendly (audit trail) | ✅ Best in class | Partial |
+| Modern default | ✅ | Legacy transition option |
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"Use SSH with a bastion host in a public subnet"* — legacy pattern; Session Manager makes bastions unnecessary. Exam usually rejects bastion when Session Manager is an option.
+- *"Open port 22 to the corporate CIDR"* — Session Manager needs zero inbound; opening 22 defeats the purpose.
+- *"Store SSH keys in Secrets Manager"* — Session Manager needs no keys at all; better than "manage keys carefully."
+- *"Use CloudTrail to record shell commands"* — CloudTrail records API calls, not shell content. Session Manager's session logging captures shell content.
+- *"Enable IAM MFA to protect the instance"* — MFA governs the AWS API layer, doesn't protect the shell session content.
+- *"Use AWS Systems Manager Run Command"* — Run Command executes a specific command, not interactive shell. Different feature. Same IAM prerequisite.
+- *"Skip the SSM VPC endpoints"* — private-subnet instances without endpoints can't reach SSM; sessions fail.
+- *"Enable Session Manager without recording"* — misses the compliance win.
+
+**Exam Triggers:**
+
+- *"Interactive shell / SSH replacement for EC2 without exposing port 22"* → **Session Manager**
+- *"Record all administrative session content for audit"* → **Session Manager session logging** to S3 / CW Logs
+- *"Reach a database in a private subnet from a laptop"* → **Session Manager port forwarding** (`AWS-StartPortForwardingSessionToRemoteHost`)
+- *"Give admins shell access to instances in fully private subnets, no public IPs, no NAT, no bastion"* → **Session Manager + SSM VPC endpoints** (`ssm`, `ssmmessages`, `ec2messages`)
+- *"End-to-end encrypted session data"* → **Session Manager with KMS key** in preferences
+- *"Central security team runs sessions across all Org accounts"* → **Session Manager + delegated admin** in AWS Organizations
+- *"Restrict which instances an admin can shell into"* → **`ssm:StartSession` with `ssm:resourceTag`** condition
+- *"Run interactive sessions as a specific OS user (not root)"* → **`runAs` mode** in Session Manager preferences
+
+**Related SSM features (know the family):**
+
+- **Run Command** (`ssm:SendCommand`) — execute a specific command on one or many instances. Non-interactive.
+- **Patch Manager** — scheduled OS patching via SSM.
+- **State Manager** — enforce desired state (packages installed, config files, etc.).
+- **Fleet Manager** — inventory + browser-based RDP + Registry Editor for Windows.
+- **Automation runbooks** — YAML workflows (see [[ssm-automation-runbooks--the-auto-remediation-engine]]).
+- **Parameter Store** — hierarchical config store (also SSM family).
+
+All share the same `AmazonSSMManagedInstanceCore` prerequisite on the instance profile.
+
+> *Mental model: **Session Manager is the AWS-recommended replacement for SSH — no inbound ports, native session recording, KMS-encrypted end-to-end, works in fully private subnets via VPC endpoints, and IAM-scoped access with tag-based conditions.*** Instance Connect delivers a real SSH channel with ephemeral keys (SSH-tooling-compatible); Session Manager delivers a WebSocket tunnel through SSM (audit-friendly, zero-inbound). Both need `AmazonSSMManagedInstanceCore` on the instance profile. For the exam's "modern admin access + compliance + no inbound exposure" answer, Session Manager wins on almost every axis — the only reason to prefer Instance Connect is legacy SSH-tooling compatibility.
 
 ## Domain 4 — Identity and Access Management (16%)
 
