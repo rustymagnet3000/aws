@@ -1831,9 +1831,192 @@ All use the same primitive; only the cross-VPC + cross-account variant requires 
 
 ### AWS WAF, Shield, Firewall Manager
 
-- **WAF** = L7 rules (SQLi, XSS, rate limits, geo, custom).
-- **Shield Standard** (free, auto) vs **Shield Advanced** ($3k/month; cost protection, DRT, L7 protection).
-- **Firewall Manager** = policy-based **enforcement** across an Organization for WAF + Shield Advanced + Network Firewall + SG audit.
+**Anchored against a three-layer defence stack** — WAF is the L7 application firewall (rule-based, per-request), Shield is the L3/L4/L7 DDoS mitigation layer, and Firewall Manager is the **org-wide policy distribution + governance layer** that makes both operate at multi-account scale.
+
+#### AWS WAF — what it is and where it attaches
+
+**Anchored against Cloudflare WAF or an on-prem F5 ASM.** WAF inspects HTTP/HTTPS requests against a Web ACL (an ordered list of rules), and blocks, allows, counts, or CAPTCHA-challenges each request. Runs on AWS edge or regional service infrastructure — you don't manage servers.
+
+**Web ACL attach points (memorise these):**
+
+| Attach point | Scope |
+|---|---|
+| **CloudFront distribution** | Global (edge — Web ACL created in `us-east-1`) |
+| **Application Load Balancer** | Regional |
+| **Amazon API Gateway REST API stage** | Regional — attaches at the **stage**, not the API |
+| **AWS AppSync GraphQL API** | Regional |
+| **AWS App Runner service** | Regional |
+| **Amazon Cognito User Pool** | Regional (note: ATP + ACFP managed rule groups can't attach here) |
+| **AWS Verified Access instance** | Regional |
+| **AWS Amplify app** | Regional |
+| **Amazon Bedrock AgentCore Gateway** | Regional (recent addition; supports Web Bot Auth labels) |
+
+**One Web ACL can attach to many resources; one resource has at most one Web ACL.**
+
+**WAF is NOT attached to:** EC2 directly, NLB (L4-only load balancer, no HTTP inspection), Lambda directly, or S3 buckets. If the exam offers those as attach points → wrong.
+
+#### AWS Managed Rules — the exam's central concept
+
+**Anchored against a pre-packaged rule set maintained by AWS's threat intel team.** You don't author these — you subscribe. AWS updates them as new attack patterns emerge, so **"minimal ongoing tuning"** in an exam stem points directly at Managed Rules.
+
+**Curated by AWS (subscribe by name in your Web ACL):**
+
+| Managed rule group | Attacks it blocks |
+|---|---|
+| **Core rule set (CRS)** | General web attack baseline — matches the OWASP Top 10 shape |
+| **Admin protection** | Blocks access to exposed admin URLs (WP admin panels, phpMyAdmin, etc.) |
+| **Known bad inputs** | Exploitation of known vulnerabilities, request patterns tied to malware C2 |
+| **SQL database** | **SQL injection** patterns in URIs, query strings, headers, and bodies |
+| **Linux operating system** | Linux-specific LFI, RFI, command injection |
+| **POSIX operating system** | POSIX shell command injection |
+| **Windows operating system** | Windows-specific attacks (PowerShell injection, WMI exploitation) |
+| **PHP application** | PHP-specific attacks (function injection, config exposure) |
+| **WordPress application** | WordPress plugin/theme exploitation |
+| **Amazon IP reputation list** | Blocks IPs on AWS-curated malicious IP list |
+| **Anonymous IP list** | Blocks Tor, VPN, and hosting-provider IPs |
+| **AWS WAF Bot Control** — **Common Bot Control** | Common bots (crawlers, scrapers, status monitors) via bot-category labelling |
+| **AWS WAF Bot Control** — **Targeted Bot Control** | Sophisticated distributed / rotating bots via ML + fingerprinting + JS challenge + CAPTCHA (extra cost) |
+| **Account Takeover Prevention (ATP)** | Credential stuffing, brute-force login on sign-in endpoints |
+| **Account Creation Fraud Prevention (ACFP)** | Fake account signup at scale |
+| **Anti-DDoS** (2024-2025 addition) | L7 flood mitigation — pairs with Shield Advanced for application-layer DDoS |
+
+**Third-party managed rules** — also available in AWS Marketplace (F5, Fortinet, Cyber Security Cloud, Imperva, etc.) — subscribe + pay per Web ACL.
+
+**Managed rules give you two exam-winning properties:**
+
+1. **Auto-updated** — AWS ships new patterns; you don't retune.
+2. **No rule authoring** — subscribe, don't write regex.
+
+Whenever an exam stem says *"minimal ongoing tuning"* + *"web attack pattern (SQLi / bots / OWASP Top 10)"* → **AWS Managed Rules**, every time.
+
+#### Custom rule primitives (only if managed rules don't cover it)
+
+- **String / regex match** on any field (URI, query, header, body, cookie).
+- **Rate-based rule** — track requests per source IP over a 5-minute window; block if count exceeds threshold. Standard L7 rate-limit primitive.
+- **Geographic match** — block by country code (`aws:geo:CountryCode` from GeoIP).
+- **IP set match** — allow/deny by CIDR list.
+- **Size constraint** — reject requests where a component exceeds N bytes.
+- **CAPTCHA / challenge action** — instead of block, present a CAPTCHA (human) or silent JS challenge (browser fingerprint).
+
+#### AWS Shield — DDoS mitigation layer
+
+| | Shield Standard | Shield Advanced |
+|---|---|---|
+| Cost | **Free**, auto-applied to all AWS resources | **~$3,000/month per organization** + data transfer |
+| Protection layer | L3/L4 automatic (SYN floods, reflection, UDP amplification) | L3/L4 + **L7 (with WAF integration)** |
+| Coverage | All AWS resources | CloudFront, Route 53, Global Accelerator, ALB/NLB/EIP-attached resources |
+| Shield Response Team (SRT) — formerly DDoS Response Team (DRT); legacy API surfaces still use `DRT` naming | ✗ | ✓ 24/7 access during attack |
+| Cost protection | ✗ | ✓ AWS refunds scaling costs caused by an attack |
+| Health-based detection | ✗ | ✓ Application-layer detection tied to Route 53 health checks |
+
+**Shield Standard is on by default — the exam rarely tests it directly.** Shield Advanced is what exam questions mean when they say *"protect against sophisticated DDoS"* + *"engage AWS's DDoS team"* + *"reimburse scaling costs during attack"*.
+
+#### AWS Firewall Manager — the multi-account distribution layer
+
+**Anchored against Cloudflare's single-plane experience.** In Cloudflare, one policy applies to all your zones by default — there's no distribution layer. In AWS, WAF is per-Web-ACL, per-resource, per-region. **Firewall Manager is the piece that gives AWS the single-plane experience** by distributing policies across accounts + resources + regions.
+
+**Firewall Manager is a management plane, not a data plane.** It doesn't inspect traffic — it distributes and enforces policies. The data plane is still WAF / Shield / Network Firewall / DNS Firewall / SG audits, each doing what they normally do.
+
+**The six FMS policy types (each maps to a class of exam question):**
+
+| Policy type | What it distributes | Exam trigger |
+|---|---|---|
+| **AWS WAF policy** | Web ACL definition (rules + managed groups) → attaches to CloudFront / ALB / API GW / App Runner / AppSync / Cognito | *"Deploy WAF org-wide + minimal ongoing effort"* |
+| **AWS Shield Advanced policy** | Shield Advanced protections + DRT access | *"Enable Shield Advanced across all in-scope resources"* |
+| **Security Group policy** | Audit SG rules, enforce baseline SGs, detect unused SGs | *"Audit for open ports 22/3389 across all VPCs"* |
+| **AWS Network Firewall policy** | Deploy Network Firewall + rule groups to VPCs | *"Deep-packet inspection between VPCs / VPC + internet, org-wide"* |
+| **Route 53 Resolver DNS Firewall policy** | Block malicious domains at the DNS resolver | *"Prevent DNS resolution of known-bad domains org-wide"* |
+| **Third-party firewall policy** | **Palo Alto Networks Cloud NGFW** and **Fortigate Cloud Native Firewall (CNF)** via Marketplace (Check Point is NOT an FMS third-party policy vendor) | *"Partner NGFW deployed org-wide via a marketplace policy"* |
+
+**Firewall Manager prerequisites:**
+
+1. **AWS Organizations** in **All Features** mode (Consolidated Billing alone is insufficient).
+2. **AWS Config** enabled in every target account in every target region (FMS uses Config to detect resource state).
+3. **Designated FMS admin account** — the Organizations management account calls **`fms:PutAdminAccount`** (or uses the FMS console). FMS then **automatically registers that account as the delegated administrator for `fms.amazonaws.com`** in Organizations on your behalf. You do NOT call `organizations register-delegated-administrator` directly for FMS — the FMS API handles it.
+4. **Trusted access** for `fms.amazonaws.com` in Organizations (auto-enabled by the FMS admin-account setup).
+
+**Auto-remediation semantics (opt-in per policy):**
+
+Auto-remediation is a **policy setting** (`RemediationEnabled: true`), NOT mandatory. A policy can be created in *"identify non-compliant resources only"* mode where drift is reported but not fixed.
+
+When enabled:
+
+- **New in-scope resources** — FMS auto-attaches the policy to them at creation time. No per-account action.
+- **Drift** — if someone locally detaches a Web ACL from a resource that should have it, FMS re-attaches on the next evaluation cycle.
+- **New accounts joining the org** — FMS applies the policy automatically if the scope includes their OU.
+- **Retrofit mode** — FMS also supports keeping a resource's existing Web ACL and layering the FMS rule groups into it, rather than replacing the association wholesale.
+
+**The specific exam pattern:** *"18 accounts + API Gateway + SQLi + bots + minimal ongoing effort"* → **FMS WAF policy** with **Managed Rules for SQL databases + Bot Control**, scoped to `AWS::ApiGateway::Stage` across the Organization.
+
+#### The three-layer stack — how they compose
+
+```text
+        ┌─────────────────────────────────────────────────────────┐
+        │  AWS Firewall Manager  (management plane, org-wide)     │
+        │  ─────────────────────                                  │
+        │  Policies distributed to member accounts via AWS        │
+        │  Organizations + Config detection + auto-remediation.   │
+        └────────────────────────────┬────────────────────────────┘
+                                     │ distributes
+                ┌────────────────────┼────────────────────┐
+                ▼                    ▼                    ▼
+        ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+        │   AWS WAF    │     │  AWS Shield  │     │  Network     │
+        │              │     │  Advanced    │     │  Firewall    │
+        │  L7 rules    │     │  DDoS L3/L4  │     │  L3/L4/L7    │
+        │  (SQLi, XSS, │     │  + L7 with   │     │  Suricata    │
+        │  bots, IP    │     │  WAF integ.  │     │  inline in   │
+        │  reputation, │     │              │     │  VPC         │
+        │  rate limit) │     │              │     │              │
+        └──────┬───────┘     └──────┬───────┘     └──────┬───────┘
+               │                    │                    │
+               ▼                    ▼                    ▼
+       CloudFront/ALB/       CloudFront/ALB/       VPC / TGW
+       API GW/AppSync/       NLB/EIP/Global        firewall
+       App Runner/           Accelerator/          subnet
+       Cognito/              Route 53
+       Verified Access
+```
+
+#### What each service is NOT — disambiguation
+
+| It's not… | Actual mechanic |
+|---|---|
+| **WAF for NLB / EC2 / S3 / Lambda direct** | WAF attaches to CloudFront / ALB / API GW stage / AppSync / App Runner / Cognito / Verified Access only. |
+| **Shield Advanced for L7 app-layer attacks alone** | Shield Advanced *does* cover L7, but only in conjunction with WAF — L7 protection is a WAF Web ACL that Shield's DDoS Response Team helps you tune. |
+| **Firewall Manager as a traffic inspector** | FMS distributes policies; WAF/Shield/NFW/DNS Firewall inspect. |
+| **Firewall Manager in a single account** | FMS requires AWS Organizations. Single-account = use WAF directly. |
+| **Network Firewall for HTTP inspection at the app tier** | Network Firewall is VPC-level L3/L4/L7 (Suricata rules on network flows). WAF is the answer for HTTP payload inspection. |
+| **Managed rules that never need tuning** | Auto-updated, but you may still need false-positive tuning (exclusions on specific paths). "Minimal" ≠ "zero". |
+
+#### Common Anti-patterns (exam wrong answers)
+
+- *"Manually create a WAF Web ACL in each of 18 accounts and attach to API Gateway"* — solves the WAF part but fails "minimal ongoing effort" for multi-account distribution.
+- *"Use Shield Advanced to block SQL injection"* — Shield is DDoS. SQLi is a WAF concern.
+- *"Use Network Firewall to block SQL injection at the API Gateway boundary"* — NFW is L3/L4/L7 network-level; not attached to API Gateway; not the tool for HTTP payload inspection.
+- *"Use API Gateway resource policies for bot / SQLi defence"* — resource policies control **who can invoke**, not **what payloads are allowed**.
+- *"Use Cognito for bot protection"* — Cognito is authentication, not bot detection. (Though a Cognito user pool CAN have a WAF Web ACL attached to *it* — for that pool's sign-in surface.)
+- *"Author custom WAF rules for SQL injection"* — reinvents the SQL databases managed rule group; higher ongoing effort.
+- *"Use Lambda authorizers to inspect payloads for attacks"* — reinvents WAF at code layer.
+- *"Use CloudFront geo-restriction to block bots"* — geo-blocks by country only, not by bot signature.
+- *"Use GuardDuty to protect against SQLi"* — GuardDuty detects account/workload compromise, not HTTP payload attacks.
+
+#### Exam Triggers
+
+- *"Multi-account WAF / Shield / SG / NFW distribution"* → **AWS Firewall Manager**.
+- *"Minimal ongoing tuning" + "web attacks"* → **AWS Managed Rules** (Bot Control + SQL databases + Core + Known Bad Inputs).
+- *"Defend against sophisticated bots"* → **AWS WAF Bot Control** (Targeted for sophistication).
+- *"SQL injection defence"* → **AWS Managed Rules for SQL databases** (in a WAF Web ACL).
+- *"Auto-apply WAF policy to newly created API Gateway stages"* → **Firewall Manager auto-remediation** with resource-type `AWS::ApiGateway::Stage`.
+- *"Reimburse scaling costs during a DDoS attack"* → **Shield Advanced cost protection**.
+- *"Engage AWS's Shield Response Team (SRT, formerly DRT)"* → **Shield Advanced SRT access**.
+- *"Rate-limit requests by source IP"* → **WAF rate-based rule** (5-minute window).
+- *"Block Tor / anonymising proxies"* → **AWS Managed Rules Anonymous IP list**.
+- *"Prevent drift where someone locally detaches WAF"* → **Firewall Manager auto-remediation**.
+- *"Block credential stuffing on sign-in"* → **AWS Managed Rules Account Takeover Prevention (ATP)**.
+- *"Deep-packet inspection between VPCs"* → **AWS Network Firewall** (not WAF — WAF is HTTP-only).
+
+> *Mental model: **WAF = L7 rules per HTTP request; Shield = L3/L4/L7 DDoS mitigation; Firewall Manager = org-wide distribution + governance for both.** Cloudflare's single-plane experience is native; AWS builds the same experience by layering Firewall Manager on top of per-resource WAF/Shield/NFW/DNS Firewall data planes. AWS Managed Rules (Bot Control, SQL databases, Core, Known Bad Inputs, IP Reputation, Anonymous IP, ATP, ACFP) give you auto-updating attack coverage without authoring rules — pair them with Firewall Manager for the "minimal ongoing effort" property the exam repeatedly tests. **Three phrases that pin the FMS + Managed Rules answer: multi-account + named managed attack vector + minimal ongoing effort.** Missing any of the three and the answer is different (single account → WAF directly; DDoS-only → Shield Advanced; deep-packet + between-VPC → Network Firewall).*
 
 ### Network Firewall
 
