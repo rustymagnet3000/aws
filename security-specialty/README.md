@@ -773,6 +773,166 @@ Browse them in the console under **Systems Manager → Documents → Owned by Am
 
 > *Mental model: the stolen creds are hostages. Deleting the role knocks down the whole building; a bucket-policy Deny cuts the water main. The **TokenIssueTime revocation** is a targeted taser — every session issued before the timestamp goes limp instantly, legitimate ones minted after keep working.*
 
+#### Compromised EC2 with attached role — the three-layer combined lockdown runbook
+
+**The canonical SCS-C03 "fastest way to completely block access from a possibly-compromised EC2 that must stay running" question.** Distinct from the two adjacent playbooks — *revoke sessions* (single lever) and *isolate for live forensics* (network-level, all-services) — this pattern is about **completely locking out an IAM role's access to a target resource** while keeping the instance available and running. The exam wants **all three layers applied together**, not a single fastest option.
+
+**Why one action isn't enough — the three temporal windows:**
+
+```text
+     PAST                     PRESENT                    FUTURE
+────────────────────────────────────────────────────────────────►
+ already-issued           ongoing S3 calls          new creds requests
+ STS creds cached          from cached creds         via IMDS
+       │                          │                        │
+       ▼                          ▼                        ▼
+ Layer 1: revoke        Layer 2: bucket-policy   Layer 3: detach role
+ sessions (aws:         Deny on role ARN         from instance profile
+ TokenIssueTime)
+```
+
+Each layer closes a different temporal or scope gap. Any single layer alone leaves a window open.
+
+**The three layers side-by-side:**
+
+| # | Action | What it closes | Closes what gap the others don't |
+|---|---|---|---|
+| **1** | **Revoke all active sessions for the IAM role** (`aws:TokenIssueTime < NOW` inline Deny) | Existing cached STS creds — the ones an attacker may have already exfiltrated | Layer 3 doesn't kill cached creds (they remain valid ~6h); Layer 2 doesn't cover non-S3 access |
+| **2** | **Update the S3 bucket policy to Deny the role's ARN** | Bucket-side authorisation lock scoped to this specific resource | Layer 1 protects the role globally but the bucket keeps trusting the role otherwise; adds defence in depth even if Layer 1 rolls back |
+| **3** | **Remove the IAM role from the EC2 instance profile** (`DisassociateIamInstanceProfile`) | Future credential issuance via IMDS — no new STS tokens minted for the compromised instance | Layer 1 kills existing creds but IMDS immediately mints new ones (with new `TokenIssueTime`) unless the profile association is severed |
+
+**The JSON each layer produces:**
+
+**Layer 1 — inline Deny on the role (the console's "Revoke sessions" button generates this):**
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "RevokeAllOutstandingSessions",
+    "Effect": "Deny",
+    "Action": "*",
+    "Resource": "*",
+    "Condition": {
+      "DateLessThan": {
+        "aws:TokenIssueTime": "2026-08-17T14:30:00Z"
+      }
+    }
+  }]
+}
+```
+
+Attached via `iam:PutRolePolicy` on the compromised role. Kills every session issued before the timestamp; sessions minted after (which shouldn't happen once Layer 3 is applied) work normally.
+
+**Layer 2 — S3 bucket policy addition (in the bucket-owning account):**
+
+```json
+{
+  "Sid": "DenyCompromisedRoleAccess",
+  "Effect": "Deny",
+  "Principal": { "AWS": "arn:aws:iam::<acct>:role/EC2-App-Role" },
+  "Action": "s3:*",
+  "Resource": [
+    "arn:aws:s3:::sensitive-bucket",
+    "arn:aws:s3:::sensitive-bucket/*"
+  ]
+}
+```
+
+Applied via `s3:PutBucketPolicy`. Bucket-side Deny that fires on every `GetObject` from the role, regardless of Layer 1 state.
+
+**Layer 3 — API call, no JSON:**
+
+```bash
+# Find the association ID
+aws ec2 describe-iam-instance-profile-associations \
+  --filters "Name=instance-id,Values=<i-xxxxxxxxxxxx>"
+
+# Disassociate
+aws ec2 disassociate-iam-instance-profile \
+  --association-id <association-id>
+```
+
+Instance is now running with no attached IAM role — IMDS returns no credentials on any subsequent request.
+
+**Numbered runtime flow — the runbook (fire in parallel, sequentially in seconds):**
+
+1. Security engineer determines the instance is compromised.
+2. **Fire all three actions in parallel** via a script or the CLI in rapid sequence:
+   - `iam:PutRolePolicy` — Layer 1 inline Deny with `aws:TokenIssueTime`.
+   - `s3:PutBucketPolicy` — Layer 2 bucket policy Deny.
+   - `ec2:DisassociateIamInstanceProfile` — Layer 3 detach.
+3. Every existing S3 call from the instance fails (Layer 1 or Layer 2 catches it — whichever evaluates first).
+4. Instance tries to fetch new creds via IMDS → no role association → IMDS returns nothing → SDK errors out (Layer 3).
+5. Complete blocked state, seconds after issuing the three API calls.
+6. Instance keeps *running* (satisfies the stem's "cannot immediately terminate") but has zero AWS API access.
+
+**Why "fire in parallel" — the propagation-timing caveat:**
+
+IAM is **eventually consistent**, not instant. Typical propagation is **1–5 seconds**; occasional worst case is tens of seconds during control-plane load. Individual layers:
+
+- Layer 1 (IAM policy change) — propagates to IAM authorisation plane in ~seconds.
+- Layer 2 (S3 bucket policy) — evaluated at S3; in practice often faster than IAM propagation for the specific service.
+- Layer 3 (instance profile disassociation) — takes effect immediately (no more IMDS creds).
+
+Firing all three in parallel means the earliest-propagating one starts blocking within seconds, and each subsequent layer completes independently. Sequential execution would still work but stretches the exposure window.
+
+**Comparison with the two adjacent IR playbooks:**
+
+| Playbook | When to reach for it | Uses |
+|---|---|---|
+| **Revoke sessions** (single lever, earlier subsection) | Small-scope incident; role compromise where the instance itself will be replaced immediately | Layer 1 alone |
+| **This three-layer runbook** | Instance must stay running; complete role lockdown across all temporal windows | Layers 1 + 2 + 3 combined |
+| **Isolate for live forensics (NACL)** | Memory preservation for forensic analysis; block ALL network traffic | Subnet NACL Deny — network-level, not IAM-level |
+
+The three-layer runbook is the **IAM-level equivalent** of the NACL isolate pattern — where NACL blocks all network, the three-layer runbook blocks all IAM access via the role.
+
+**The role-chaining edge case:**
+
+If the compromised workload has chained `AssumeRole` from the instance role into a *different* role, Layer 1's `aws:TokenIssueTime` policy on the instance role does **not** touch the chained role's cached credentials. The attacker could still use the downstream role.
+
+**Mitigation:** trace via CloudTrail for recent `AssumeRole` events originating from the compromised instance's role. Apply the three-layer runbook to every role in the chain.
+
+**The clock-skew edge case:**
+
+Layer 1's `DateLessThan: aws:TokenIssueTime` uses a wall-clock timestamp. If the timestamp written into the policy is stale (behind the actual TokenIssueTime of the most recently issued token), that token slips through. The IAM Console's "Revoke sessions" button handles this correctly; hand-crafted policies with a stale timestamp can miss. **Always use current time or slightly-future time.**
+
+**What "fastest" means in this stem — subtle:**
+
+The stem says *"fastest way to block further access."* This does NOT mean "which single action is fastest" — it means "how fast can we get to the completely-blocked state." Since IAM is eventually consistent (not instant), the fastest path to *complete* blocking is:
+
+- Fire all three actions **in parallel**, not sequentially.
+- Accept that each layer has its own few-seconds propagation.
+- Confirm blocked state via CloudTrail (`errorCode: AccessDenied` on subsequent calls from the instance).
+
+**What the plausible-looking wrong answers get wrong:**
+
+- ***"Detach the IAM role from the EC2 instance"*** (single action) — leaves ~6h window while cached STS creds remain valid. Directionally right as **one** of three, but insufficient alone.
+- ***"Revoke sessions only"*** — kills current sessions but IMDS immediately mints new ones with fresh `TokenIssueTime`, unless Layer 3 is applied.
+- ***"S3 bucket policy Deny only"*** — blocks S3 but the role's cached creds still work against other AWS services.
+- ***"Terminate the EC2 instance"*** — stem explicitly says instance cannot be terminated.
+- ***"Isolate with a Deny NACL"*** — works but breaks the critical application (network-level isolation).
+- ***"Rotate the IAM role's trust policy"*** — doesn't kill existing sessions; would take effect on next `AssumeRole`.
+- ***"Delete the IAM role"*** — destructive; breaks other consumers; requires deleting attached policies + instance profile associations first, so it's slow.
+
+**Exam Triggers:**
+
+- *"Fastest way to block further access from compromised EC2 with attached role, keep instance running"* → **three-layer runbook** (revoke sessions + bucket policy Deny + detach role)
+- *"Compromised EC2, immediate lockdown of IAM role"* → **three-layer runbook**
+- *"Kill outstanding sessions from a compromised role"* → **Layer 1 only** (`aws:TokenIssueTime` inline Deny)
+- *"Block instance's network traffic for forensics"* → **NACL isolate** (different playbook — see earlier subsection)
+- *"Bucket-side lock against a specific role"* → **Layer 2 only** (bucket policy Deny with principal ARN)
+
+**Common Anti-patterns:**
+
+- Treating this as a single-action question — the exam wants the runbook, not one lever.
+- Assuming "instant" propagation — IAM is seconds-latent; fire in parallel to minimise window.
+- Missing role chaining — an attacker who chained roles keeps downstream access unless you revoke there too.
+- Forgetting Layer 3 — cached creds get killed by Layer 1, but IMDS mints new ones unless you detach.
+- Forgetting Layer 2 — makes the response depend entirely on IAM propagation; bucket-side Deny adds independent defence.
+
+> *Mental model: **a compromised EC2 with an attached IAM role has three separate access surfaces that a complete response must close**: (1) already-cached STS tokens, (2) the target resource's authorisation, and (3) IMDS's ability to mint fresh tokens. Layer 1 (revoke sessions via `aws:TokenIssueTime`), Layer 2 (bucket-policy Deny on role ARN), and Layer 3 (detach role from instance profile) address these three surfaces respectively. The exam's "fastest way to block further access" means fastest to the **completely-blocked state** — which requires all three fired in parallel, not any single "fastest" lever. Miss any layer and you leave a temporal or resource-scoped window. The IAM-level equivalent of the NACL isolate pattern.*
+
 #### Isolate a compromised EC2 for live forensics — NACL beats Security Group
 
 **The canonical SCS-C03 "isolate but preserve memory" question.** Stem hints:
