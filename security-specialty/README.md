@@ -4168,6 +4168,175 @@ Cross-account is the **primary** layer for cyber-attack scenarios; the others ar
 - **ACM Private CA** — hierarchy of your own CAs for internal mTLS / IoT. Paid per CA + per cert issued.
 - **Import external cert to ACM** — one-way, no auto-rotation. You must re-import before expiry.
 
+### Amazon Macie — sensitive data discovery in S3 at scale
+
+**Anchored against a general PII/PHI scanner over a data lake.** Macie is AWS's managed sensitive-data discovery service for **S3 only** — it identifies PII, PHI, credentials, financial data, and custom patterns across your buckets. It's **detection, not enforcement** (findings flow to EventBridge → Lambda / Security Hub / SIEM for automated response).
+
+#### The three-loop architecture at scale
+
+Macie doesn't read every byte of every object every day — that would be economically infeasible at petabyte scale. Instead it operates as **three concentric loops** with different frequencies, depths, and costs:
+
+```text
+            ┌─────────────────────────────────────────────────────┐
+            │   Loop 1: Bucket inventory (continuous, metadata)   │
+            │   ─────────────────────────────────────────────     │
+            │   Every general-purpose bucket in every enabled     │
+            │   account, refreshed daily. Metadata only: size,    │
+            │   count, encryption, public access, replication,    │
+            │   versioning, tags. Cap: 10,000 buckets per         │
+            │   account per region.                               │
+            │                                                     │
+            │       ┌───────────────────────────────────────────┐ │
+            │       │  Loop 2: Automated sensitive data         │ │
+            │       │  discovery — continuous sampling          │ │
+            │       │  ────────────────────────────────         │ │
+            │       │  Metadata-clustered representative        │ │
+            │       │  sampling across ALL enabled buckets.     │ │
+            │       │  Priority: breadth-first + newness +      │ │
+            │       │  diversity (NOT risk-based).              │ │
+            │       │  Findings emit to EventBridge as they     │ │
+            │       │  land + populate a per-bucket sensitivity │ │
+            │       │  score.                                   │ │
+            │       │                                           │ │
+            │       │      ┌───────────────────────────────┐    │ │
+            │       │      │  Loop 3: Discovery jobs       │    │ │
+            │       │      │  ──────────────────────       │    │ │
+            │       │      │  User-initiated deep scan of  │    │ │
+            │       │      │  specific buckets. One-time   │    │ │
+            │       │      │  or scheduled. Full byte-     │    │ │
+            │       │      │  range read of matching       │    │ │
+            │       │      │  objects (bounded by per-     │    │ │
+            │       │      │  format size limits).         │    │ │
+            │       │      └───────────────────────────────┘    │ │
+            │       └───────────────────────────────────────────┘ │
+            └─────────────────────────────────────────────────────┘
+```
+
+#### The two-loop exam pattern
+
+The canonical *"identify likely-sensitive buckets, then deep-scan only those"* setup:
+
+1. Enable Macie (delegated admin + auto-enable across the org).
+2. Turn on **automated sensitive data discovery** — samples the estate continuously at low cost.
+3. Wait / observe — Macie populates **per-bucket sensitivity scores** (0-100) and emits **sensitive data findings** where it detects PII/PHI/credentials.
+4. Create a **discovery job** scoped to just the high-scoring buckets (explicit list, or bucket criteria such as tag or name pattern).
+5. Deep-scan runs → exhaustive findings for those buckets.
+
+This beats *"discovery job over everything"* on both cost and administrative effort — and is the exam-canonical answer to *"low overhead + deeper analysis only on likely-sensitive buckets."*
+
+#### Priority queue reality — NOT risk-based (exam trap)
+
+Intuition says: *"public / unencrypted / larger buckets get scanned first."* **Wrong.** The actual automated-discovery selection strategy:
+
+- **Breadth-first** — spreads samples across as many buckets as possible.
+- **Newness and change-driven** — newer buckets and recently changed objects get prioritised.
+- **Diversity of object types** — Macie samples different content shapes to broaden coverage.
+
+Public/unencrypted state feeds the bucket's **sensitivity score** and generates separate **policy findings** — but it does NOT boost that bucket's position in the discovery queue. Admins can manually pin a bucket's sensitivity score to 100 to raise priority.
+
+#### Findings dedup asymmetry (exam trap)
+
+Two finding categories with different dedup behaviour — the exam tests this:
+
+| Finding category | Dedup behaviour |
+|---|---|
+| **Policy findings** (bucket-level: public, unencrypted, replicated externally) | Updates existing finding + increments occurrences count — **deduped** |
+| **Sensitive data findings** (object-level: SSN, credit card, custom identifier) | *"All sensitive data findings are treated as new (unique)"* — **NOT deduped**, each detection creates a new finding, even for the same object in a subsequent run |
+
+Consequence at scale: sensitive-data-heavy environments really do produce large finding volumes. Route findings via EventBridge → SQS → SIEM to manage flow.
+
+#### Encryption compatibility table
+
+| S3 encryption | Macie can classify? | Requirement |
+|---|---|---|
+| **SSE-S3** | ✓ | No configuration needed |
+| **SSE-KMS with `aws/s3` (AWS-managed KMS key)** | ✓ | Built-in grant to service-linked role |
+| **SSE-KMS with customer-managed CMK** | ✓ (with grant) | **Grant `kms:Decrypt` to `AWSServiceRoleForAmazonMacie`** in the CMK key policy. Cross-account also needs `kms:CreateGrant`. |
+| **DSSE-KMS with customer-managed CMK** | ✓ (with grant) | Same as SSE-KMS |
+| **SSE-C (customer-provided keys)** | ✗ | Fundamentally opaque — Macie has no way to obtain the customer key |
+| **Client-side encryption** | ✗ | Same — Macie sees only ciphertext |
+
+**The single most common Macie multi-account bug: missing `kms:Decrypt` on customer CMKs.** Bucket shows up in inventory but classification fails.
+
+#### Storage class handling
+
+- **Standard / IA / One Zone-IA / Intelligent-Tiering (non-archive tiers)** → classified.
+- **Glacier / Deep Archive / Intelligent-Tiering Archive Access + Deep Archive Access** → **skipped** — Macie does not initiate restores. Must restore first, then re-scan.
+
+#### The three cost dimensions
+
+Macie has **three separate billing dimensions**, all of which bill after the 30-day free trial:
+
+| Dimension | What you pay for | Rough rate |
+|---|---|---|
+| **S3 bucket evaluations** | Enabling Macie's inventory + monitoring on a bucket (Loop 1) | **~$0.10 per bucket per month** |
+| **Automated sensitive data discovery** | GB analysed by continuous sampling (Loop 2) | Tiered per-GB, ~$1/GB at low volume, drops with usage |
+| **Discovery jobs** | GB analysed by user-initiated deep scans (Loop 3) | Tiered per-GB, similar structure |
+
+**The cost trap enterprises hit:** 10,000 buckets × $0.10/month × 12 = **$12k/year floor cost** before any GB is analysed. Worth knowing for both exam distractors and real-world design.
+
+**Free trial:** new accounts get 30 days free of monitoring + ~150 GB free automated-discovery per account.
+
+#### Cost-management levers (worth memorising)
+
+1. **Exclude buckets from automated discovery** — via automated-discovery configuration in the delegated admin (exclusion by bucket tag or name pattern). Buckets stay in inventory (Loop 1) but skip continuous sampling (Loop 2).
+2. **Disable automated discovery org-wide** and rely only on scheduled discovery jobs against known-sensitive prefixes.
+3. **Discovery job scope refinement** — object criteria (file extension, size, storage class, last-modified) cut GB analysed dramatically.
+4. **Sampling depth in discovery jobs** — configurable bytes-per-object cap for breadth-over-depth.
+5. **Regional discipline** — enable Macie only in regions where you host S3 data (Macie is regional).
+
+#### Delegated-administrator org setup
+
+Follows the same **`<service>.amazonaws.com` delegated-admin pattern** as GuardDuty, Security Hub, Inspector, Detective, Access Analyzer, Config, and IAM Identity Center. Service principal: **`macie.amazonaws.com`**.
+
+1. Management account: `aws organizations register-delegated-administrator --service-principal macie.amazonaws.com --account-id <security-account>`.
+2. Delegated admin: toggle **"Auto-enable Macie for new AWS accounts"** ON. Enable Macie for existing member accounts.
+3. Delegated admin: grant `kms:Decrypt` on any customer-managed CMKs used for S3 encryption.
+4. Configure discovery (automated + optional scheduled jobs) and wire findings via EventBridge to your response pipeline.
+
+#### Custom detection primitives
+
+- **Managed data identifiers** — 100+ built-in (SSN, credit card, AWS access key, driver's licence, HIPAA identifiers, etc.).
+- **Custom data identifiers** — user-defined regex + optional keywords + severity + max-match distance.
+- **Allow lists** — regex or S3-hosted term list to reduce false positives on known-benign patterns.
+
+#### What Macie is NOT — disambiguation
+
+| It's not… | Actual mechanic |
+|---|---|
+| **Real-time / event-driven** | Periodic (continuous sampling in Loop 2, on-demand in Loop 3). Real-time upload PII detection needs S3 event → Lambda + Comprehend or custom identifier. |
+| **Multi-service scanner (EBS, RDS, DynamoDB, EFS)** | **S3 only.** For RDS/DDB PII discovery, use Glue crawlers + custom logic. |
+| **A prevention or enforcement service** | Detection-only. Enforcement is your EventBridge → Lambda / SSM Automation. |
+| **Same as Inspector** | Inspector = EC2/ECR/Lambda vulnerability scanning; Macie = S3 sensitive-data classification. |
+| **Same as GuardDuty S3 Protection** | GuardDuty detects suspicious *access patterns* to S3; Macie detects sensitive-data *content*. |
+| **Auto-decrypts SSE-C** | Fundamentally opaque — no path exists. |
+| **Deduplicates sensitive-data findings** | Only policy findings dedupe; sensitive-data findings are always unique per detection. |
+
+#### Common Anti-patterns (exam wrong answers)
+
+- *"Run a Macie discovery job over the entire S3 estate to find sensitive data"* — high cost + high admin effort. The correct pattern is Loop 2 (sampling) → then Loop 3 scoped to flagged buckets.
+- *"Use Macie to scan RDS databases for PII"* — S3-only.
+- *"Macie decrypts customer CMK-encrypted objects automatically"* — needs explicit `kms:Decrypt` grant.
+- *"Configure S3 Event Notifications → Lambda to trigger Macie on every object upload"* — Macie is not event-driven.
+- *"Register two delegated admins for redundancy"* — only one per service.
+- *"Public buckets get scanned first by automated discovery"* — no; scheduling is breadth-first + newness + diversity, not risk-based.
+- *"Sensitive-data findings dedupe like policy findings"* — no; each detection is unique.
+
+#### Exam Triggers
+
+- *"Discover PII / PHI / credentials in S3 across all accounts"* → **Macie + delegated administrator**.
+- *"Identify **likely-sensitive** buckets + deep-scan **only those** with least admin effort"* → **automated sensitive data discovery** → **targeted discovery job**.
+- *"Sensitivity score"* → **automated discovery** output.
+- *"Full-scan specific buckets on a schedule"* → **scheduled discovery job with bucket criteria**.
+- *"Macie inventoried but classification says access denied"* → **missing `kms:Decrypt` on customer-managed CMK**.
+- *"Custom regex + keyword pattern (e.g., proprietary employee ID format)"* → **custom data identifier**.
+- *"Reduce false positives on known-benign pattern"* → **allow list**.
+- *"Cap Macie costs by skipping specific buckets"* → **automated discovery exclusion by tag or name pattern**.
+- *"Scan objects in Glacier"* → **restore first**, then run a discovery job — Macie does not restore.
+- *"Real-time PII detection on upload"* → **not Macie** — use S3 event → Lambda + Comprehend / custom identifier.
+
+> *Mental model: **Macie at scale = three loops with different depth-frequency-cost tradeoffs.** Loop 1 (inventory, $0.10/bucket/month, daily, metadata-only) gives estate visibility. Loop 2 (automated discovery, per-GB, continuous, sampled — breadth-first + newness-driven, NOT risk-based) surfaces first-signal sensitive-data hits. Loop 3 (discovery jobs, per-GB, user-scoped, exhaustive within limits) deep-dives on flagged buckets. The exam's most-tested pattern is **Loop 2 → Loop 3** ("triage cheaply, then focus"). The three killers of coverage at scale: **missing `kms:Decrypt` on customer CMKs, SSE-C objects fundamentally opaque, Glacier objects invisible without restore.** The three cost dimensions ($0.10/bucket + per-GB automated + per-GB jobs) mean $12k/year floor at 10k buckets before analysis — worth knowing for both exam distractors and real-world design conversations.*
+
 ## Domain 6 — Management and Security Governance (14%)
 
 ### Organizations, SCPs, Control Tower
