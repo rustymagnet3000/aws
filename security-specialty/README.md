@@ -1769,6 +1769,147 @@ For MFA enforcement: **always `BoolIfExists`**, never bare `Bool` — the missin
 - **Permission boundaries** — apply to an IAM user/role; used for delegation (dev creates roles but can't exceed the boundary).
 - **Session policies** — apply per-STS-session, further narrow the assumed-role permissions.
 
+#### SCP deep dive — behaviour, coverage, and structural patterns
+
+**The three exam-canonical facts about SCPs (memorise this trio):**
+
+1. **SCP is a ceiling — actions not allowed or explicitly denied by the effective SCP cannot be performed, even if the IAM identity policy grants them.** SCPs bound the maximum; they never grant. Removing an SCP restriction just raises the ceiling; identity policies still need to allow the action.
+2. **SCPs affect every user and role in a member account — including the root user of that member account.** Root of a member account is *not* exempt. This lets you Deny-lock even root from disabling CloudTrail, GuardDuty, Config, etc.
+3. **SCPs do NOT affect service-linked roles (SLRs).** SLRs are AWS-managed roles that services use to integrate with each other and with Organizations — AWS reserves the right for them to function even in accounts with restrictive SCPs. This is the *most-missed* SCP fact on the exam.
+
+**Full "who's affected vs who isn't" matrix:**
+
+| Principal / mechanism | Affected by SCPs? |
+|---|---|
+| IAM users in a member account | ✅ Yes |
+| IAM roles (regular, customer-managed) in a member account | ✅ Yes |
+| **Root user of a member account** | ✅ Yes |
+| **Service-linked roles (SLRs)** | ❌ **No — exempt** |
+| **Root user of the management account** | ❌ No — exempt |
+| Any principal in the management account | ❌ No — exempt |
+| Cross-account access via *resource-based* policy on a resource in your account | ❌ Not governed by SCPs — that's what **RCPs** handle |
+| AWS-managed operations tied to Organizations itself | ❌ Exempt |
+
+Common SLRs the exam names (know the pattern — they all start with `AWSServiceRoleFor…`):
+
+- `AWSServiceRoleForAutoScaling`
+- `AWSServiceRoleForOrganizations`
+- `AWSServiceRoleForConfig`
+- `AWSServiceRoleForSecurityHub`
+- `AWSServiceRoleForTrustedAdvisor`
+- `AWSServiceRoleForECS`
+- `AWSServiceRoleForRDS`
+
+An SCP that denies `iam:CreateRole` won't block SLR creation. An SCP that denies `ec2:RunInstances` won't stop Auto Scaling from launching instances via its SLR.
+
+**Seven behavioural rules (memorise all seven):**
+
+| # | Rule | Implication |
+|---|---|---|
+| 1 | SCPs **only restrict**, never grant | Identity policies must still allow actions |
+| 2 | SCPs are **inherited down the tree** (root → OU → account) | Effective SCP = intersection of every layer |
+| 3 | SCPs affect **all IAM principals in member accounts**, including root | Root user of a member account is not exempt |
+| 4 | SCPs do **NOT** affect the **management account** | Never run workloads in the management account |
+| 5 | SCPs do **NOT** affect **service-linked roles** | AWS services keep functioning via their SLRs |
+| 6 | SCPs require **AWS Organizations with All Features mode** | Consolidated-billing mode doesn't support SCPs |
+| 7 | Default `FullAWSAccess` SCP is attached at every level until you replace it | Attach Deny-based SCPs to narrow, or replace with a narrower Allow |
+
+**Two structural patterns — memorise the difference:**
+
+- **Denylist pattern** (recommended for most cases): keep the default `FullAWSAccess` SCP at every level, add Deny-based SCPs to restrict specific actions. Simple; only define what you're blocking. Most exam scenarios use this.
+- **Allowlist pattern** (high-security): replace `FullAWSAccess` with a custom Allow-based SCP. Only listed services are usable at all. Rigorous but requires maintaining an exhaustive list; new services silently fail until added.
+
+**Denylist example — restrict regions:**
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "DenyRegionsOutsideEurope",
+    "Effect": "Deny",
+    "Action": "*",
+    "Resource": "*",
+    "Condition": {
+      "StringNotEquals": {
+        "aws:RequestedRegion": ["eu-west-1", "eu-central-1", "eu-west-2"]
+      }
+    }
+  }]
+}
+```
+
+**Allowlist example — only specific services usable:**
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "AllowOnlySpecificServices",
+    "Effect": "Allow",
+    "Action": [
+      "ec2:*",
+      "s3:*",
+      "rds:*",
+      "iam:*",
+      "sts:*"
+    ],
+    "Resource": "*"
+  }]
+}
+```
+
+**Common SCP idioms worth memorising (each is a testable scenario on its own):**
+
+- **Restrict regions** — `aws:RequestedRegion` StringNotEquals (see above).
+- **Require MFA on sensitive actions** — Deny with `aws:MultiFactorAuthPresent = false` (see [[mfa-enforcement--multifactorauthpresent--multifactorauthage]]).
+- **Prevent leaving the Org** — Deny `organizations:LeaveOrganization`.
+- **Prevent disabling security services** — Deny `guardduty:DeleteDetector`, `config:StopConfigurationRecorder`, `cloudtrail:StopLogging`, `cloudtrail:DeleteTrail`, `securityhub:DisableSecurityHub`.
+- **Force encryption** — Deny `ec2:CreateVolume` / `s3:PutObject` where `ec2:Encrypted = false` or `s3:x-amz-server-side-encryption` is missing (see [[ebs-encryption-at-scale]] and [[s3-encryption--bucket-policies]]).
+- **Prevent public S3 buckets** — Deny `s3:PutBucketPolicy` where the granted principal is outside the org (via `aws:PrincipalOrgID` condition, see [[aws-principalorgid-vs-awsresourceorgid--the-two-arrow-model]]).
+- **Prevent org data exfil** — Deny actions where `aws:ResourceOrgID != <my-org-id>`.
+- **Prevent root-user access-key creation** — Deny `iam:CreateAccessKey` with `aws:PrincipalArn` matching root ARN. Because SCPs affect root in member accounts (Rule #3), this actually works.
+- **Force use of a specific deployment path** — Deny `ec2:RunInstances` unless `aws:CalledVia` includes `servicecatalog.amazonaws.com` (see [[service-catalog]]).
+- **Prevent Lambda function URLs with `AuthType = NONE`** — Deny with `lambda:FunctionUrlAuthType = NONE` (see [[preventive-vs-detective-vs-responsive--the-three-tier-framework]]).
+
+**How SCPs interact with the other IAM ceilings:**
+
+SCPs are one of six ceilings the request must clear (see [[iam-policy-evaluation-logic]]):
+
+1. Explicit Deny anywhere → Deny wins.
+2. **SCP** — the org-scale ceiling (this section).
+3. Resource-based policy — required for cross-account.
+4. Identity policy — the intent.
+5. Permission boundary — per-entity ceiling.
+6. Session policy — per-session ceiling.
+7. VPC endpoint policy — network-path ceiling.
+
+An admin can still get `AccessDenied` because the SCP two layers up denies the action, or because an SLR exemption doesn't apply. Read CloudTrail's `errorMessage` field — it names the responsible layer.
+
+**Common Anti-patterns (exam wrong answers):**
+
+- *"SCPs grant permissions"* — no; SCPs cap the maximum, never grant.
+- *"SCPs affect the management account"* — no; management account exempt.
+- *"SCPs affect service-linked roles"* — no; SLRs exempt (the most-missed fact).
+- *"SCPs work without AWS Organizations"* — no; require Organizations with All Features mode.
+- *"Consolidated-billing mode supports SCPs"* — no; needs All Features.
+- *"Root user of any account is exempt from SCPs"* — no; only management-account root is exempt. Member-account root is bounded.
+- *"SCPs can be used to grant cross-account access"* — no; they never grant. Cross-account = identity policy + resource-based policy.
+- *"SCPs control what an S3 bucket policy can grant to external principals"* — no; SCPs govern in-org identities, not the resource side. Use **RCPs** for that.
+- *"SCPs affect already-established connections"* — no; policy evaluation happens on new API calls, not on in-flight TCP sessions.
+
+**Exam Triggers:**
+
+- *"Central control over maximum permissions for accounts in the Org"* → **SCPs**
+- *"Prevent every user (including root) in member accounts from doing X"* → **SCP** with a Deny statement
+- *"AWS services must keep working via their SLRs even with restrictive SCPs"* → **SLR exemption** — no SCP change needed
+- *"Restrict regions across all accounts"* → **SCP** with `aws:RequestedRegion` StringNotEquals
+- *"Prevent leaving the Org / disabling CloudTrail"* → **SCP** with specific action Denies
+- *"Force use of Service Catalog / specific deploy path"* → **SCP** with `aws:CalledVia` condition
+- *"Delegate role-creation to devs but cap their permissions"* → **permission boundary**, not SCP
+- *"Narrow permissions for a specific STS AssumeRole session"* → **session policy**, not SCP
+
+> *Mental model: **SCPs are a ceiling stack across the Organization**. They bound every IAM principal in every member account — root included — except two categories: the management account (fully exempt) and service-linked roles (functional exemption so AWS services keep working). Effective SCP = intersection of every layer from Org root down. Denylist patterns (`FullAWSAccess` + Deny statements) are the standard; allowlist patterns lock down to a whitelist of services. Anything that expects SCPs to grant, to affect the management account, or to restrict SLRs is a trap the exam plants.*
+
 #### `aws:PrincipalOrgID` vs `aws:ResourceOrgID` — the two-arrow model
 
 Both are global IAM condition keys carrying an AWS Organizations ID (`o-xxxxx`). Every S3 (and most other) API request stamps **both** into the request context — you pick which one to condition on based on which direction of leakage you're trying to prevent.
