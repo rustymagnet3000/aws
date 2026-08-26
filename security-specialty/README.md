@@ -89,6 +89,18 @@ Quick-hit flashcard version of the confusable-service traps — "X is the answer
 - **Works while running (metadata-plane changes):** security-group swap (RAM preserved — this is the forensic-isolation lever), IAM instance profile change, secondary ENI attach/detach, EBS Elastic Volume resize / type / IOPS change, tag update.
 - **Mnemonic:** *"Root sleeps, data walks. Bones need rest, skin can shift."*
 
+**Bonus — mTLS with server-side TLS termination (Open Banking / PCI-DSS pattern):**
+
+- **When the stem says "the server must terminate the client's TLS connection"** (Open Banking / PSD2 / OBIE UK / stricter PCI-DSS readings / any regulatory pattern that forbids intermediate decryption) → the LB must be **TLS-unaware** and forward TCP bytes without decrypting. **Only one AWS load balancer does this: NLB with a TCP listener + target-group protocol TCP (passthrough).**
+- **The client + EC2 share a single end-to-end TLS session; NLB is invisible at Layer 4.** The EC2 web server does the mTLS handshake (`ssl_verify_client on` in nginx) using a **local trust store of client-CA certs** installed on the instance filesystem.
+- **Every other LB / edge service terminates TLS at itself** — auto-wrong for this scenario:
+  - ALB HTTPS listener (including ALB mTLS with Trust Store) → ALB terminates.
+  - NLB **TLS listener** → NLB terminates.
+  - API Gateway HTTPS (including its mTLS mode) → API Gateway terminates.
+  - CloudFront HTTPS → CloudFront edge terminates.
+- **Contrast with ALB mTLS (still a real feature):** ALB mTLS is correct when the LB *is allowed* to terminate TLS and you want L7 features (WAF, path routing, host-based routing, header inspection) alongside client-cert validation. It fails only when compliance mandates server-side termination.
+- **Mnemonic:** *"Server terminates → NLB is dumb (TCP passthrough). LB terminates → ALB mTLS."*
+
 ## Exam Overview
 
 | Field | Value |
