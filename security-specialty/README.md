@@ -55,6 +55,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [Audit Manager](#audit-manager)
   - [Service Catalog](#service-catalog)
   - [CloudFormation Service Role (deploy least privilege)](#cloudformation-service-role-deploy-least-privilege)
+- [Top 10 Rapid-Fire Gotchas](#top-10-rapid-fire-gotchas)
 - [Cross-cutting Traps and Anti-patterns](#cross-cutting-traps-and-anti-patterns)
 - [Study Order Recommendation](#study-order-recommendation)
 
@@ -3699,6 +3700,63 @@ A **customer-managed KMS key (CMK)** answers ownership only. The key material st
 
 > *Mental model: "Customer-managed" = **who holds the policy**. "Client-side" = **where the encryption code runs**. Two independent axes — always disambiguate before picking an answer.*
 
+#### KMS custom key store (CloudHSM-backed) — the "FIPS 140-2 Level 3, keys I manage myself" answer
+
+The mode matrix above assumes key material lives in **AWS KMS's own HSMs**. A **custom key store** is the exception: a KMS key store whose backing key material lives in **your own AWS CloudHSM cluster** instead. You keep KMS's service integration (S3 SSE-KMS, EBS, etc.) *and* get single-tenant, **FIPS 140-2 Level 3**, self-managed HSMs.
+
+**When it's the answer** — the stem stacks three requirements that no single service meets alone:
+
+- key material must be in a **FIPS 140-2 Level 3** HSM → **CloudHSM** (KMS's default HSMs aren't the "self-managed, Level 3" the stem demands)
+- the customer must **generate and manage the key material themselves** → **CloudHSM** (single-tenant, you own it)
+- but they still want **server-side encryption of S3** → must go through **KMS** (S3 SSE needs a *KMS* key; CloudHSM alone is client-side only)
+
+Only a **KMS custom key store backed by CloudHSM** satisfies all three at once.
+
+**Analogy:** KMS = the front desk S3 already knows how to phone · CloudHSM = your private vault holding the key · custom key store = the secure line from the desk to the vault. S3 just calls the front desk; the key never leaves your vault.
+
+```
+  Amazon S3 ──(SSE-KMS, normal API)──► AWS KMS   ← the "front desk"
+                                          │
+                                   custom key store   ← the bridge
+                                          │
+                                          ▼
+                            AWS CloudHSM cluster (YOU manage)
+                            FIPS 140-2 Level 3, single-tenant
+                            ★ real key material lives HERE ★
+```
+
+**Envelope encryption (why object size — 15 KB to 5 MB, or GBs — is irrelevant):**
+
+1. S3 asks KMS for a data key.
+2. KMS uses the CMK **inside your CloudHSM** to produce one, returning it two ways: `[plaintext DEK]` + `[encrypted DEK]`.
+3. S3 encrypts the object with the plaintext DEK, discards the plaintext, and stores the encrypted DEK beside the object.
+
+Only the tiny **data key** ever touches KMS — never the object. So the "KMS only encrypts <= 4 KB" worry never applies to S3 SSE-KMS.
+
+**Multi-Region — the gotcha:** custom-key-store KMS keys **cannot be Multi-Region keys**. You can't tick "MRK." Instead you replicate at the **HSM layer**: back up the CloudHSM cluster and restore it in the other Region, then create a custom key store there.
+
+```
+   REGION A                              REGION B
+ S3 → KMS (custom key store)          S3 → KMS (custom key store)
+        │                                     │
+        ▼          copy CloudHSM              ▼
+   CloudHSM ──────  backup, restore  ──────► CloudHSM
+  (key material)     in Region B           (same key material)
+```
+
+**Distractors (why the other options fail):**
+
+| Option | Why it's wrong |
+|---|---|
+| SSE-KMS with a Multi-Region KMS key | key material sits in **AWS-managed** HSMs — fails "FIPS L3, we manage it ourselves" |
+| SSE-C with HSM-generated keys | you send the key on every request; no AWS-side integration/storage; no clean multi-Region key management |
+| CloudHSM encrypts the objects directly | that is **client-side**, not the required **server-side** (SSE); CloudHSM can't be an S3 SSE source without the custom-key-store bridge |
+| SSE-S3 | keys fully AWS-managed — nowhere near FIPS L3 self-managed |
+
+**Exam triggers:** "FIPS 140-2 **Level 3**", "generate/store key material in an HSM **we manage/control**", "single-tenant HSM", "our own HSM" **+** "server-side encryption" → **KMS custom key store + CloudHSM**. Add "**multiple Regions**" → **copy the CloudHSM backup across Regions** (not a Multi-Region key).
+
+> *Mental model: CloudHSM = your vault (FIPS L3, self-managed). KMS = the door S3 knows how to use. Custom key store = the wire between them. Multi-Region = ship a backup of the vault — custom-key-store keys can't be Multi-Region KMS keys.*
+
 #### KMS deletion mechanics — scheduling, disabling, and MRK per-region coordination
 
 **Two exam-canonical traps in the same topic:**
@@ -5670,6 +5728,27 @@ Every resource permission collapses to a single reviewable role. No human role h
 - *"Update each stack to use the CloudFormation service role"* → the completion step people miss
 
 > *Mental model: without a service role, CFN is a **wrapper around whatever perms the caller has** — inconsistent by design. With a service role, CFN is a **contract**: "I will use this exact role's permissions for every deployment, no more, no less." Creating the role isn't enough — each stack has to be updated so CFN **records** the role on the stack itself. Missing that last step is why "some team members can deploy" persists.*
+
+## Top 10 Rapid-Fire Gotchas
+
+Quick-hit flashcard version of the confusable-service traps — "X is the answer for Y, not Z." Most have deeper coverage in the domain sections above; this is the pre-exam skim list.
+
+1. **Deep packet inspection** → **VPC Traffic Mirroring** (full packet payload), *not* VPC Flow Logs (metadata only: 5-tuple + action).
+2. **Real-time alert on failed console logins** → CloudTrail → CloudWatch Logs **metric filter** (`ConsoleLogin` / `Failed authentication`) → Alarm → SNS; **or** an **EventBridge** rule (`source: aws.signin`, `ConsoleLogin = Failure`) → SNS. EventBridge = more real-time; metric filter = count/threshold.
+3. **Block a specific malicious IP/CIDR** → **NACL** (stateless, supports numbered DENY), *not* a Security Group (stateful, allow-only — can't deny).
+4. **Policy Allows it but the request is denied** → an **explicit Deny beats every Allow**, in any policy type. Order: implicit-deny → Allow → explicit Deny.
+5. **Cap a delegated role's max permissions (single account, no Organizations)** → **IAM Permissions Boundary**, *not* an SCP (org-wide, needs Organizations, never grants).
+6. **Grant KMS key access** → the **key policy is primary/mandatory**; `kms:*` in IAM grants nothing unless the key policy's `Enable IAM User Permissions` (root ARN) delegates to the account. KMS has **no implicit owner** — neither the creator nor root has inherent access; the key policy is the sole source of truth (you can lock even root out).
+7. **S3 encrypts but AWS must never store the key** → **SSE-C** (you send the key on each request; S3 uses it in memory then discards), *not* SSE-KMS/SSE-S3.
+8. **Auto-rotate DB credentials with no rotation code** → **Secrets Manager** (built-in scheduled rotation), *not* SSM Parameter Store (cheap/free, but no native rotation).
+9. **Private S3/DynamoDB access, no NAT, free** → **Gateway Endpoint** (route-table entry, free, S3 + DynamoDB only), *not* an Interface Endpoint (PrivateLink ENI, priced). S3 supports both; DynamoDB is gateway-only.
+10. **24/7 Shield Response Team + DDoS cost reimbursement** → **Shield Advanced** (~$3k/mo, 1-yr commit, L7, WAF included). Gotcha: engaging the SRT *also* requires a Business/Enterprise Support plan.
+
+**Bonus — detection service disambiguation:**
+
+- **Config** = resource *state* & compliance over time · **CloudTrail** = *who/when* (API audit) · **CloudWatch** = metrics/logs. Different questions, different services.
+- **GuardDuty** = *detect* threats from logs (findings) · **Inspector** = *scan* for CVEs/vulnerabilities · **Detective** = *investigate* a finding (behaviour graph). Three different jobs.
+- **Prove who read/deleted a specific S3 object** → CloudTrail **data events** (object-level; OFF by default, billed extra), *not* management events (control-plane only) or S3 server access logs.
 
 ## Cross-cutting Traps and Anti-patterns
 
