@@ -82,6 +82,13 @@ Quick-hit flashcard version of the confusable-service traps — "X is the answer
 - **GuardDuty** = *detect* threats from logs (findings) · **Inspector** = *scan* for CVEs/vulnerabilities · **Detective** = *investigate* a finding (behaviour graph). Three different jobs.
 - **Prove who read/deleted a specific S3 object** → CloudTrail **data events** (object-level; OFF by default, billed extra), *not* management events (control-plane only) or S3 server access logs.
 
+**Bonus — EC2 state-transition gotchas ("Root sleeps, data walks"):**
+
+- **Root EBS volume cannot be detached from a running instance** — must stop first. Non-root (data) volumes CAN detach while running (unmount cleanly first). Also applies to `CreateSnapshot` from within the instance for consistency reasons, but not to plain `CreateSnapshot` from the API which works on any state. **Trap:** exam options combining *"keep running"* + *"detach root volume"* are auto-wrong (lost-SSH-key recovery is the canonical scenario).
+- **Same "requires stopped" rule applies to:** changing instance type, changing kernel / RAM disk, changing ENA / SR-IOV flags, changing the EBS-optimised flag. Anything that changes the *bones* of the instance needs stopped.
+- **Works while running (metadata-plane changes):** security-group swap (RAM preserved — this is the forensic-isolation lever), IAM instance profile change, secondary ENI attach/detach, EBS Elastic Volume resize / type / IOPS change, tag update.
+- **Mnemonic:** *"Root sleeps, data walks. Bones need rest, skin can shift."*
+
 ## Exam Overview
 
 | Field | Value |
