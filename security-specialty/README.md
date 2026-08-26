@@ -4,6 +4,7 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
 
 <!-- TOC depthfrom:2 depthto:3 withlinks:true updateonsave:true orderedlist:false -->
 
+- [Top 10 Rapid-Fire Gotchas](#top-10-rapid-fire-gotchas)
 - [Exam Overview](#exam-overview)
 - [Domain Map (SCS-C03 blueprint)](#domain-map-scs-c03-blueprint)
 - [AWS Organizations — foundational structure](#aws-organizations--foundational-structure)
@@ -55,11 +56,31 @@ Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent
   - [Audit Manager](#audit-manager)
   - [Service Catalog](#service-catalog)
   - [CloudFormation Service Role (deploy least privilege)](#cloudformation-service-role-deploy-least-privilege)
-- [Top 10 Rapid-Fire Gotchas](#top-10-rapid-fire-gotchas)
 - [Cross-cutting Traps and Anti-patterns](#cross-cutting-traps-and-anti-patterns)
 - [Study Order Recommendation](#study-order-recommendation)
 
 <!-- /TOC -->
+
+## Top 10 Rapid-Fire Gotchas
+
+Quick-hit flashcard version of the confusable-service traps — "X is the answer for Y, not Z." Most have deeper coverage in the domain sections below; this is the pre-exam skim list.
+
+1. **Deep packet inspection** → **VPC Traffic Mirroring** (full packet payload), *not* VPC Flow Logs (metadata only: 5-tuple + action).
+2. **Real-time alert on failed console logins** → CloudTrail → CloudWatch Logs **metric filter** (`ConsoleLogin` / `Failed authentication`) → Alarm → SNS; **or** an **EventBridge** rule (`source: aws.signin`, `ConsoleLogin = Failure`) → SNS. EventBridge = more real-time; metric filter = count/threshold.
+3. **Block a specific malicious IP/CIDR** → **NACL** (stateless, supports numbered DENY), *not* a Security Group (stateful, allow-only — can't deny).
+4. **Policy Allows it but the request is denied** → an **explicit Deny beats every Allow**, in any policy type. Order: implicit-deny → Allow → explicit Deny.
+5. **Cap a delegated role's max permissions (single account, no Organizations)** → **IAM Permissions Boundary**, *not* an SCP (org-wide, needs Organizations, never grants).
+6. **Grant KMS key access** → the **key policy is primary/mandatory**; `kms:*` in IAM grants nothing unless the key policy's `Enable IAM User Permissions` (root ARN) delegates to the account. KMS has **no implicit owner** — neither the creator nor root has inherent access; the key policy is the sole source of truth (you can lock even root out).
+7. **S3 encrypts but AWS must never store the key** → **SSE-C** (you send the key on each request; S3 uses it in memory then discards), *not* SSE-KMS/SSE-S3.
+8. **Auto-rotate DB credentials with no rotation code** → **Secrets Manager** (built-in scheduled rotation), *not* SSM Parameter Store (cheap/free, but no native rotation).
+9. **Private S3/DynamoDB access, no NAT, free** → **Gateway Endpoint** (route-table entry, free, S3 + DynamoDB only), *not* an Interface Endpoint (PrivateLink ENI, priced). S3 supports both; DynamoDB is gateway-only.
+10. **24/7 Shield Response Team + DDoS cost reimbursement** → **Shield Advanced** (~$3k/mo, 1-yr commit, L7, WAF included). Gotcha: engaging the SRT *also* requires a Business/Enterprise Support plan.
+
+**Bonus — detection service disambiguation:**
+
+- **Config** = resource *state* & compliance over time · **CloudTrail** = *who/when* (API audit) · **CloudWatch** = metrics/logs. Different questions, different services.
+- **GuardDuty** = *detect* threats from logs (findings) · **Inspector** = *scan* for CVEs/vulnerabilities · **Detective** = *investigate* a finding (behaviour graph). Three different jobs.
+- **Prove who read/deleted a specific S3 object** → CloudTrail **data events** (object-level; OFF by default, billed extra), *not* management events (control-plane only) or S3 server access logs.
 
 ## Exam Overview
 
@@ -350,7 +371,7 @@ Three GuardDuty knobs sound similar and get confused on the exam. Each has a dis
 - *"Hide known false-positive findings without stopping generation"* → **suppression rule**.
 - *"Add our own threat intel"* → **threat IP list**.
 
-**Trusted IP list — file format and example**
+##### Trusted IP list — file format and example
 
 Plain-text, one IP or CIDR per line. Blank lines and `#` comments allowed. Upload to S3, then reference the S3 URI from GuardDuty.
 
@@ -1179,7 +1200,7 @@ Exam options that contain phrasing like *"...use SSM Run Command to collect memo
 - *"Update instance metadata with ticket ID"* → **`ec2:CreateTags`** on the instance.
 - *"Session Manager or SSH/RDP alternative"* option → **auto-wrong** (poison-pill "or" pattern).
 
-> *Mental model: **SSM-native forensic isolation is per-ENI SG-swap + Session Manager with logging + LiME/WinPmem, three primitives combined into three exam-visible actions (snapshot + SG-swap+tag + Session Manager).*** The whole design pivots on the SSM Agent being able to phone home while every other network path is severed — which is why the isolation SG must allow outbound to SSM VPC endpoints (`ssm` + `ssmmessages` strictly, `ec2messages` legacy). **Any answer that stops, reboots, terminates, or detaches root volumes destroys volatile memory — auto-wrong. Any answer using SSH / bastion / EC2 Instance Connect adds overhead vs SSM Session Manager, which is already available. Any answer changing IAM to strip permissions also cuts off the responder — SSM needs the agent's IAM role intact.*** AWS ships this as the **`AWSSupport-ContainEC2Instance`** SSM Automation runbook. Least overhead = SSM primitives all the way down; NACL Deny is a sibling pattern reserved for subnet-alone + kill-in-flight scenarios.*
+> *Mental model: **SSM-native forensic isolation is per-ENI SG-swap + Session Manager with logging + LiME/WinPmem, three primitives combined into three exam-visible actions (snapshot + SG-swap+tag + Session Manager).** The whole design pivots on the SSM Agent being able to phone home while every other network path is severed — which is why the isolation SG must allow outbound to SSM VPC endpoints (`ssm` + `ssmmessages` strictly, `ec2messages` legacy). **Any answer that stops, reboots, terminates, or detaches root volumes destroys volatile memory — auto-wrong. Any answer using SSH / bastion / EC2 Instance Connect adds overhead vs SSM Session Manager, which is already available. Any answer changing IAM to strip permissions also cuts off the responder — SSM needs the agent's IAM role intact.** AWS ships this as the **`AWSSupport-ContainEC2Instance`** SSM Automation runbook. Least overhead = SSM primitives all the way down; NACL Deny is a sibling pattern reserved for subnet-alone + kill-in-flight scenarios.*
 
 #### AWS-notified-you-of-compromise — the 6-step account-compromise playbook
 
@@ -1517,7 +1538,7 @@ The exam punishes anyone who conflates "delete after N years" across services. T
 - *"Never Expire + Lambda that deletes old logs manually"* → drift-prone, reinventing native retention.
 
 > *Mental model: CloudWatch Agent is a **fire hose that never sleeps**; any "every N minutes/hours" upload is a **bucket brigade** — buckets get dropped when the runner (instance) trips.*
-
+>
 > *Terminology mental model: "**Retention**" is CloudWatch Logs vocabulary. "**Lifecycle policy**" is S3 vocabulary. "**Object Lock**" is S3 WORM/legal-hold. Picking the wrong term reveals you chose the wrong storage backend — even if your instinct about "delete after N years" was correct.*
 
 #### Lambda + CloudWatch Logs — write-side vs read-side troubleshooting
@@ -5641,7 +5662,7 @@ Now even a dev with `ec2:*` in their identity policy can only launch via Service
 - *"CloudFormation Guard / OPA on the template"* → catches template drift but doesn't stop imperative `RunInstances` calls.
 
 > *Mental model: Service Catalog turns "please use the approved image" from a policy document into a **mechanical impossibility**. The dev's IAM identity lacks EC2 permissions; the launch role has them but can only be invoked via the product. No path around it exists.*
-
+>
 > *Mental model: Service Catalog = a curated app store for CloudFormation. Portfolio = an aisle. Product = an item on the shelf. Launch constraint = the item is installed by a robot with the right keys, not by the shopper.*
 
 ### CloudFormation Service Role (deploy least privilege)
@@ -5728,27 +5749,6 @@ Every resource permission collapses to a single reviewable role. No human role h
 - *"Update each stack to use the CloudFormation service role"* → the completion step people miss
 
 > *Mental model: without a service role, CFN is a **wrapper around whatever perms the caller has** — inconsistent by design. With a service role, CFN is a **contract**: "I will use this exact role's permissions for every deployment, no more, no less." Creating the role isn't enough — each stack has to be updated so CFN **records** the role on the stack itself. Missing that last step is why "some team members can deploy" persists.*
-
-## Top 10 Rapid-Fire Gotchas
-
-Quick-hit flashcard version of the confusable-service traps — "X is the answer for Y, not Z." Most have deeper coverage in the domain sections above; this is the pre-exam skim list.
-
-1. **Deep packet inspection** → **VPC Traffic Mirroring** (full packet payload), *not* VPC Flow Logs (metadata only: 5-tuple + action).
-2. **Real-time alert on failed console logins** → CloudTrail → CloudWatch Logs **metric filter** (`ConsoleLogin` / `Failed authentication`) → Alarm → SNS; **or** an **EventBridge** rule (`source: aws.signin`, `ConsoleLogin = Failure`) → SNS. EventBridge = more real-time; metric filter = count/threshold.
-3. **Block a specific malicious IP/CIDR** → **NACL** (stateless, supports numbered DENY), *not* a Security Group (stateful, allow-only — can't deny).
-4. **Policy Allows it but the request is denied** → an **explicit Deny beats every Allow**, in any policy type. Order: implicit-deny → Allow → explicit Deny.
-5. **Cap a delegated role's max permissions (single account, no Organizations)** → **IAM Permissions Boundary**, *not* an SCP (org-wide, needs Organizations, never grants).
-6. **Grant KMS key access** → the **key policy is primary/mandatory**; `kms:*` in IAM grants nothing unless the key policy's `Enable IAM User Permissions` (root ARN) delegates to the account. KMS has **no implicit owner** — neither the creator nor root has inherent access; the key policy is the sole source of truth (you can lock even root out).
-7. **S3 encrypts but AWS must never store the key** → **SSE-C** (you send the key on each request; S3 uses it in memory then discards), *not* SSE-KMS/SSE-S3.
-8. **Auto-rotate DB credentials with no rotation code** → **Secrets Manager** (built-in scheduled rotation), *not* SSM Parameter Store (cheap/free, but no native rotation).
-9. **Private S3/DynamoDB access, no NAT, free** → **Gateway Endpoint** (route-table entry, free, S3 + DynamoDB only), *not* an Interface Endpoint (PrivateLink ENI, priced). S3 supports both; DynamoDB is gateway-only.
-10. **24/7 Shield Response Team + DDoS cost reimbursement** → **Shield Advanced** (~$3k/mo, 1-yr commit, L7, WAF included). Gotcha: engaging the SRT *also* requires a Business/Enterprise Support plan.
-
-**Bonus — detection service disambiguation:**
-
-- **Config** = resource *state* & compliance over time · **CloudTrail** = *who/when* (API audit) · **CloudWatch** = metrics/logs. Different questions, different services.
-- **GuardDuty** = *detect* threats from logs (findings) · **Inspector** = *scan* for CVEs/vulnerabilities · **Detective** = *investigate* a finding (behaviour graph). Three different jobs.
-- **Prove who read/deleted a specific S3 object** → CloudTrail **data events** (object-level; OFF by default, billed extra), *not* management events (control-plane only) or S3 server access logs.
 
 ## Cross-cutting Traps and Anti-patterns
 
