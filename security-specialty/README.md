@@ -101,6 +101,21 @@ Quick-hit flashcard version of the confusable-service traps — "X is the answer
 - **Contrast with ALB mTLS (still a real feature):** ALB mTLS is correct when the LB *is allowed* to terminate TLS and you want L7 features (WAF, path routing, host-based routing, header inspection) alongside client-cert validation. It fails only when compliance mandates server-side termination.
 - **Mnemonic:** *"Server terminates → NLB is dumb (TCP passthrough). LB terminates → ALB mTLS."*
 
+**Bonus — the "assess + audit + monitor" compliance pair (Config + CloudTrail):**
+
+When the stem uses three verbs together — *"continuously **assess**, **audit**, and **monitor** the configurations of AWS resources"* — split the verbs and pick the two foundational services:
+
+| Verb in the stem | Service |
+|---|---|
+| ***"Assessing"*** configurations against a rule | **AWS Config** (Config Rules) |
+| ***"Monitoring"*** configuration state / drift over time | **AWS Config** (recorder + timeline) |
+| ***"Auditing"*** — who did what, when, from where | **AWS CloudTrail** (multi-region / org trail) |
+
+- **Config + CloudTrail is the compliance foundation pair** — required together for HIPAA, PCI-DSS, SOC 2, HITRUST, SOX, FedRAMP, NIST 800-53. Neither alone is sufficient: Config tells you *what state*, CloudTrail tells you *who changed it and when*.
+- The word **"trail(s)"** in an option is CloudTrail vocabulary — when compliance context is present, that option is almost always correct.
+- **Trap:** Security Hub, Audit Manager, and Trusted Advisor all feel like they satisfy "assess + audit + monitor" — but they're **one layer up**, consuming Config + CloudTrail as data sources. Options that name Security Hub or Audit Manager INSTEAD of Config + CloudTrail are auto-wrong. Options that name them IN ADDITION to Config + CloudTrail are fine (Audit Manager → auditor-ready framework reports, Security Hub → cross-service findings dashboard).
+- **Mnemonic:** *"Config sees the state. CloudTrail sees the actor. Everything else sits on top."*
+
 ## Exam Overview
 
 | Field | Value |
