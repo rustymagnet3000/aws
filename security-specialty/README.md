@@ -116,6 +116,22 @@ When the stem uses three verbs together — *"continuously **assess**, **audit**
 - **Trap:** Security Hub, Audit Manager, and Trusted Advisor all feel like they satisfy "assess + audit + monitor" — but they're **one layer up**, consuming Config + CloudTrail as data sources. Options that name Security Hub or Audit Manager INSTEAD of Config + CloudTrail are auto-wrong. Options that name them IN ADDITION to Config + CloudTrail are fine (Audit Manager → auditor-ready framework reports, Security Hub → cross-service findings dashboard).
 - **Mnemonic:** *"Config sees the state. CloudTrail sees the actor. Everything else sits on top."*
 
+**Bonus — reading "Deny + Not*" policies (the double-negative allowlist pattern):**
+
+AWS's canonical idiom for writing an **allowlist as a Deny statement**. The Deny only fires when **all `Not*` conditions are simultaneously true** — any single exception exempts the request. Read every `NotX` as *"except X"*:
+
+| Policy element | Read as |
+|---|---|
+| `Effect: Deny` | Block the request... |
+| `NotAction: [iam:*, cloudfront:*, route53:*, support:*]` | ...**except** for these global-service actions |
+| `StringNotEquals aws:RequestedRegion: [eu-central-1, eu-west-1]` | ...**except** when the region is in the allowed list |
+| `ArnNotLike aws:PrincipalARN: [break-glass-role]` | ...**except** for bypass principals |
+
+- **Applies to:** region restrictions (`aws:RequestedRegion`), IP allowlists (`aws:SourceIp` + `NotIpAddress`), MFA guardrails (`BoolIfExists aws:MultiFactorAuthPresent`), SCP org-wide allowlists (`NotAction`), VPC-only enforcement (`aws:SourceVpce` + `StringNotEquals`), time-based restrictions (`DateGreaterThan` / `DateLessThan` around business hours).
+- **Trap:** forgetting to `NotAction` global services (IAM, CloudFront, Route 53, Support, Organizations, global STS) makes those APIs fail from every principal in every region — because global services report their own fixed region in `aws:RequestedRegion`, which won't match your allowlist.
+- **Design rationale:** SCPs can't grant (only bound), and explicit Deny wins over any Allow — so guardrails are written as Deny with negated conditions. Scales automatically to future AWS services (no enumeration needed).
+- **Mnemonic:** *"Every 'Not' is a hole in the Deny — the request escapes through any hole. All holes closed → the Deny fires."*
+
 ## Exam Overview
 
 | Field | Value |
