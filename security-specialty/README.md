@@ -221,6 +221,54 @@ When a KMS CMK has been **deleted** (past the 7–30-day pending window), data e
 - **Prevention:** SCP denying `kms:ScheduleKeyDeletion` on production CMKs + EventBridge alarm on the `ScheduleKeyDeletion` CloudTrail event to catch scheduling attempts within the pending window.
 - **Mnemonic:** *"Running EBS still reads (cached key in RAM). Stop, detach, or S3 read → data gone. The hypervisor cache is your only escape hatch."*
 
+**Bonus — Security Hub integration directions (10 senders IN, 6 receivers OUT):**
+
+Security Hub is a **regional** aggregator. Every AWS-service integration is one-directional; memorising which services sit on which side is the specific gotcha the exam repeatedly tests.
+
+```text
+   ┌──────────────────────────────────────┐
+   │  10 SENDERS (into Security Hub)      │
+   ├──────────────────────────────────────┤
+   │  • AWS Config                        │
+   │  • AWS Firewall Manager              │
+   │  • Amazon GuardDuty                  │
+   │  • AWS Health                        │
+   │  • IAM Access Analyzer               │
+   │  • Amazon Inspector                  │
+   │  • AWS IoT Device Defender           │
+   │  • Amazon Macie                      │
+   │  • Amazon Route 53 Resolver DNS FW   │
+   │  • AWS Systems Manager Patch Manager │
+   └──────────────────┬───────────────────┘
+                      ▼
+              ┌────────────────┐
+              │  SECURITY HUB  │
+              │  (REGIONAL)    │
+              │  + FSBP / CIS  │
+              │  / PCI / NIST  │
+              │   standards    │
+              └────────┬───────┘
+                       ▼
+   ┌──────────────────────────────────────┐
+   │  6 RECEIVERS (from Security Hub)     │
+   ├──────────────────────────────────────┤
+   │  • AWS Trusted Advisor  ← FSBP       │
+   │  • AWS Audit Manager    ← evidence   │
+   │  • Amazon Detective     ← investig.  │
+   │  • Amazon Security Lake ← archival   │
+   │  • Systems Manager Explorer/OpsCenter│
+   │  • Amazon Q in chat apps             │
+   └──────────────────────────────────────┘
+```
+
+- **The three most-confused DOWNSTREAM (receiver) services:** **Trusted Advisor, Audit Manager, Detective**. All three FEEL like they'd feed Security Hub — but they RECEIVE FROM it. Options saying they SEND findings to Security Hub are auto-wrong.
+- **Security Hub is regional** — not global. Cross-region view requires the opt-in **Cross-Region Aggregator** (findings consolidate into a designated aggregation region).
+- **No retroactive backfill** — Security Hub aggregates from enable-time forward only; findings that existed before enable never appear.
+- **No native S3 export** — findings live in Security Hub; S3 destination requires EventBridge → Firehose → S3 plumbing.
+- **Trusted Advisor integration (Security Hub → TA)** surfaces FSBP results in the Trusted Advisor console alongside TA's own security-pillar checks. Requires **Business+ Support / Enterprise Support / Unified Operations plan**. Up to 24h delay for findings to appear in TA after Security Hub emits them.
+- **ACM is NOT in either list** — ACM findings reach Security Hub only indirectly via Config rules (`acm-certificate-expiration-check`), not as a native source.
+- **Mnemonic:** *"10 in, 6 out. Trusted Advisor, Audit Manager, Detective all sit DOWNSTREAM — never upstream."*
+
 ## Exam Overview
 
 | Field | Value |
