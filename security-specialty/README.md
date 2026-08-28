@@ -269,6 +269,28 @@ Security Hub is a **regional** aggregator. Every AWS-service integration is one-
 - **ACM is NOT in either list** — ACM findings reach Security Hub only indirectly via Config rules (`acm-certificate-expiration-check`), not as a native source.
 - **Mnemonic:** *"10 in, 6 out. Trusted Advisor, Audit Manager, Detective all sit DOWNSTREAM — never upstream."*
 
+**Bonus — Multi-VPC connectivity decision matrix ("How many VPCs, and what am I doing with them?"):**
+
+The first-cut question for any multi-VPC connectivity stem: **count the VPCs and name the action**.
+
+| Stem says… | Answer |
+|---|---|
+| Share ONE VPC's subnets across accounts | **VPC Sharing (RAM)** |
+| Connect MANY VPCs/accounts at scale (hub-and-spoke, transitive) | **Transit Gateway** |
+| Connect a FEW VPCs point-to-point (no CIDR overlap) | **VPC Peering** |
+| Expose ONE service privately cross-account (CIDR-agnostic, one-way) | **PrivateLink** |
+
+**Caveats worth memorising:**
+
+- **Owner routes** — only the owner account controls route tables / NACLs / gateways in a RAM-shared VPC. Participant accounts run their own EC2/RDS/Lambda in the shared subnet but never own the network config.
+- **RAM shares** — VPC Sharing subnets and Transit Gateway attachments are shared via **AWS RAM** (works only within an AWS Organization).
+- **SGs separate** — network isolation between participant accounts isn't automatic; each account creates its own SGs in the shared subnet.
+- **SCP blocks** — an SCP is what actually stops departments creating their own VPC (`Deny ec2:CreateVpc` / `ec2:CreateDefaultVpc`) — paired with VPC Sharing, this forces all workloads into the security-team-owned VPC.
+- **Peering non-transitive + CIDR-fragile** — A↔B and B↔C don't give A↔C, and overlapping CIDRs break peering entirely. Fine at 2-5 VPCs; falls apart above ~10.
+- **PrivateLink one-way + CIDR-agnostic** — consumer sees only the endpoint ENI, provider VPC is hidden; overlapping CIDRs are fine (this is often the deciding factor over peering in M&A scenarios).
+- **Peering can beat TGW** when the stem says *"lowest cost / lowest latency for exactly 3 VPCs"* — TGW is ~$0.05/hour per attachment plus data processing; peering is free.
+- **Mnemonic:** *"Count the VPCs, name the action. One-share = RAM. Many-connect = TGW. Few-connect = Peering. One-expose = PrivateLink."*
+
 ## Exam Overview
 
 | Field | Value |
