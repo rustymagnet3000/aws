@@ -195,6 +195,32 @@ For an EC2 in a private subnet (no NAT / no IGW) to be SSM-managed, both require
 - **Private DNS disabled on the endpoint:** apps calling `ssm.<region>.amazonaws.com` still hit the public endpoint.
 - **Mnemonic:** *"SSM needs IAM + network. Miss either and the agent goes silent."*
 
+**Bonus — CMK-deleted data recovery (the "running EBS" one-way escape hatch):**
+
+When a KMS CMK has been **deleted** (past the 7–30-day pending window), data encrypted with it is cryptographically unrecoverable BY DESIGN — this is "crypto-shredding" and it's what enables single-command data destruction across AWS. **One narrow exception:** an EBS volume attached to a **running** EC2 instance.
+
+**The mechanic:** the hypervisor caches the plaintext data key **in memory** the moment the encrypted volume is attached. Every disk I/O uses the cached key locally — KMS isn't called again while the volume stays attached to that running instance.
+
+| State | Data accessible? |
+|---|---|
+| **EBS attached to running EC2** | ✅ Yes — plaintext data key cached in hypervisor RAM |
+| **EC2 stopped / rebooted** | ❌ Lost — cache released, restart needs KMS |
+| **EBS detached** | ❌ Lost — cache released, re-attach needs KMS |
+| **EBS snapshots** | ❌ Lost — snapshots are also encrypted with the CMK; restore needs KMS |
+| **S3 objects** | ❌ Lost — every `GetObject` calls KMS; no persistent client cache |
+| **DynamoDB / RDS / Aurora** | ❌ Lost — same as S3 |
+
+**Correct response when a CMK is deleted and you have data on an attached EBS volume:**
+
+1. **DO NOT stop, reboot, or detach** the instance. Every state change destroys the cache.
+2. **Log in via SSM Session Manager** (or existing SSH) while the instance is running.
+3. **Copy the data files** out to a new location encrypted with a different, active CMK.
+4. Only after the copy completes can the original instance be retired.
+
+- **Recovery window before deletion completes:** `kms:CancelKeyDeletion` during the 7–30 day pending window is the ONLY reinstate mechanism. After that, AWS Support cannot restore — deletion is irreversible by design.
+- **Prevention:** SCP denying `kms:ScheduleKeyDeletion` on production CMKs + EventBridge alarm on the `ScheduleKeyDeletion` CloudTrail event to catch scheduling attempts within the pending window.
+- **Mnemonic:** *"Running EBS still reads (cached key in RAM). Stop, detach, or S3 read → data gone. The hypervisor cache is your only escape hatch."*
+
 ## Exam Overview
 
 | Field | Value |
