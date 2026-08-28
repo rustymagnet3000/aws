@@ -82,6 +82,119 @@ Quick-hit flashcard version of the confusable-service traps — "X is the answer
 - **GuardDuty** = *detect* threats from logs (findings) · **Inspector** = *scan* for CVEs/vulnerabilities · **Detective** = *investigate* a finding (behaviour graph). Three different jobs.
 - **Prove who read/deleted a specific S3 object** → CloudTrail **data events** (object-level; OFF by default, billed extra), *not* management events (control-plane only) or S3 server access logs.
 
+**Bonus — EC2 state-transition gotchas ("Root sleeps, data walks"):**
+
+- **Root EBS volume cannot be detached from a running instance** — must stop first. Non-root (data) volumes CAN detach while running (unmount cleanly first). Also applies to `CreateSnapshot` from within the instance for consistency reasons, but not to plain `CreateSnapshot` from the API which works on any state. **Trap:** exam options combining *"keep running"* + *"detach root volume"* are auto-wrong (lost-SSH-key recovery is the canonical scenario).
+- **Same "requires stopped" rule applies to:** changing instance type, changing kernel / RAM disk, changing ENA / SR-IOV flags, changing the EBS-optimised flag. Anything that changes the *bones* of the instance needs stopped.
+- **Works while running (metadata-plane changes):** security-group swap (RAM preserved — this is the forensic-isolation lever), IAM instance profile change, secondary ENI attach/detach, EBS Elastic Volume resize / type / IOPS change, tag update.
+- **Mnemonic:** *"Root sleeps, data walks. Bones need rest, skin can shift."*
+
+**Bonus — mTLS with server-side TLS termination (Open Banking / PCI-DSS pattern):**
+
+- **When the stem says "the server must terminate the client's TLS connection"** (Open Banking / PSD2 / OBIE UK / stricter PCI-DSS readings / any regulatory pattern that forbids intermediate decryption) → the LB must be **TLS-unaware** and forward TCP bytes without decrypting. **Only one AWS load balancer does this: NLB with a TCP listener + target-group protocol TCP (passthrough).**
+- **The client + EC2 share a single end-to-end TLS session; NLB is invisible at Layer 4.** The EC2 web server does the mTLS handshake (`ssl_verify_client on` in nginx) using a **local trust store of client-CA certs** installed on the instance filesystem.
+- **Every other LB / edge service terminates TLS at itself** — auto-wrong for this scenario:
+  - ALB HTTPS listener (including ALB mTLS with Trust Store) → ALB terminates.
+  - NLB **TLS listener** → NLB terminates.
+  - API Gateway HTTPS (including its mTLS mode) → API Gateway terminates.
+  - CloudFront HTTPS → CloudFront edge terminates.
+- **Contrast with ALB mTLS (still a real feature):** ALB mTLS is correct when the LB *is allowed* to terminate TLS and you want L7 features (WAF, path routing, host-based routing, header inspection) alongside client-cert validation. It fails only when compliance mandates server-side termination.
+- **Mnemonic:** *"Server terminates → NLB is dumb (TCP passthrough). LB terminates → ALB mTLS."*
+
+**Bonus — the "assess + audit + monitor" compliance pair (Config + CloudTrail):**
+
+When the stem uses three verbs together — *"continuously **assess**, **audit**, and **monitor** the configurations of AWS resources"* — split the verbs and pick the two foundational services:
+
+| Verb in the stem | Service |
+|---|---|
+| ***"Assessing"*** configurations against a rule | **AWS Config** (Config Rules) |
+| ***"Monitoring"*** configuration state / drift over time | **AWS Config** (recorder + timeline) |
+| ***"Auditing"*** — who did what, when, from where | **AWS CloudTrail** (multi-region / org trail) |
+
+- **Config + CloudTrail is the compliance foundation pair** — required together for HIPAA, PCI-DSS, SOC 2, HITRUST, SOX, FedRAMP, NIST 800-53. Neither alone is sufficient: Config tells you *what state*, CloudTrail tells you *who changed it and when*.
+- The word **"trail(s)"** in an option is CloudTrail vocabulary — when compliance context is present, that option is almost always correct.
+- **Trap:** Security Hub, Audit Manager, and Trusted Advisor all feel like they satisfy "assess + audit + monitor" — but they're **one layer up**, consuming Config + CloudTrail as data sources. Options that name Security Hub or Audit Manager INSTEAD of Config + CloudTrail are auto-wrong. Options that name them IN ADDITION to Config + CloudTrail are fine (Audit Manager → auditor-ready framework reports, Security Hub → cross-service findings dashboard).
+- **Mnemonic:** *"Config sees the state. CloudTrail sees the actor. Everything else sits on top."*
+
+**Bonus — reading "Deny + Not*" policies (the double-negative allowlist pattern):**
+
+AWS's canonical idiom for writing an **allowlist as a Deny statement**. The Deny only fires when **all `Not*` conditions are simultaneously true** — any single exception exempts the request. Read every `NotX` as *"except X"*:
+
+| Policy element | Read as |
+|---|---|
+| `Effect: Deny` | Block the request... |
+| `NotAction: [iam:*, cloudfront:*, route53:*, support:*]` | ...**except** for these global-service actions |
+| `StringNotEquals aws:RequestedRegion: [eu-central-1, eu-west-1]` | ...**except** when the region is in the allowed list |
+| `ArnNotLike aws:PrincipalARN: [break-glass-role]` | ...**except** for bypass principals |
+
+- **Applies to:** region restrictions (`aws:RequestedRegion`), IP allowlists (`aws:SourceIp` + `NotIpAddress`), MFA guardrails (`BoolIfExists aws:MultiFactorAuthPresent`), SCP org-wide allowlists (`NotAction`), VPC-only enforcement (`aws:SourceVpce` + `StringNotEquals`), time-based restrictions (`DateGreaterThan` / `DateLessThan` around business hours).
+- **Trap:** forgetting to `NotAction` global services (IAM, CloudFront, Route 53, Support, Organizations, global STS) makes those APIs fail from every principal in every region — because global services report their own fixed region in `aws:RequestedRegion`, which won't match your allowlist.
+- **Design rationale:** SCPs can't grant (only bound), and explicit Deny wins over any Allow — so guardrails are written as Deny with negated conditions. Scales automatically to future AWS services (no enumeration needed).
+- **Mnemonic:** *"Every 'Not' is a hole in the Deny — the request escapes through any hole. All holes closed → the Deny fires."*
+
+**Bonus — the delegated-role-creation pattern (`iam:PermissionsBoundary` condition trick):**
+
+When the stem says *"let developers create their own IAM roles without allowing them to escalate privileges"*, the answer is an IAM policy with a **condition that forces every role they create to attach a specific boundary**:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["iam:CreateRole", "iam:AttachRolePolicy", "iam:PutRolePolicy"],
+  "Resource": "*",
+  "Condition": {
+    "StringEquals": {
+      "iam:PermissionsBoundary": "arn:aws:iam::acct:policy/DevBoundary"
+    }
+  }
+}
+```
+
+- **How it works:** the developer can create as many roles as they want, but **any role they create MUST have `DevBoundary` attached as its permissions boundary** — otherwise the `CreateRole` call fails the condition. Every role the developer creates inherits that ceiling, so they cannot indirectly privilege-escalate by "create a role with admin, then assume it."
+- **Also lock down:** `iam:PutUserPermissionsBoundary`, `iam:PutRolePermissionsBoundary`, `iam:DeleteUserPermissionsBoundary`, `iam:DeleteRolePermissionsBoundary` — otherwise the developer could remove or change the boundary post-creation.
+- **Stem-phrase tells:** *"developers create their own IAM roles"* → delegation; *"without granting themselves admin / privilege escalation"* → boundary condition; *"single account, no Organizations"* → boundary (not SCP).
+- **Difference from Top-10 #5:** #5 says *"cap max permissions with a boundary"* (the mechanism); this bonus is the specific **delegation trick** — enforcing the boundary at role-creation time via an IAM condition.
+- **Mnemonic:** *"The developer holds the pen; the boundary holds the ink."*
+
+**Bonus — private-only S3 (or any resource): identity enforces WHO, VPC endpoint conditions enforce WHERE:**
+
+When the stem says *"S3 bucket must be reachable only from a specific VPC / instance, and a user with access to the instance must not be able to reach the bucket from another VPC or laptop"* — you need **network-location enforcement**, not identity-based enforcement, because **IAM role credentials are portable**.
+
+The two-part canonical setup:
+
+| Layer | Policy | What it enforces |
+|---|---|---|
+| **Destination side** | Bucket policy with `aws:SourceVpce` **Deny** (`StringNotEquals` the authorised endpoint ID) | *"This bucket can only be reached from this specific VPC endpoint."* |
+| **Source side** | VPC endpoint policy with `aws:ResourceOrgID` condition | *"Only your org's buckets can be reached through this endpoint."* (data-exfil prevention) |
+
+- **Why IAM role + bucket policy is INSUFFICIENT:** a team member with access to the authorised EC2 can pull temp creds from IMDS (or reattach the same role to a rogue EC2 in another VPC) and access the bucket from anywhere. The role identity is legitimate; the location isn't. Only a location-based control catches this.
+- **`aws:SourceVpce` is populated ONLY when the request came via the specific VPC endpoint** — public S3 endpoint access, other VPCs, and other endpoints all fail the condition → Deny fires.
+- **Related condition keys:** `aws:SourceVpc` (any endpoint in the VPC — broader), `aws:VpcSourceIp` (rare); the exam-canonical answer for "one specific endpoint" is always `aws:SourceVpce`.
+- **Applies beyond S3:** same pattern works in KMS key policies, Secrets Manager resource policies, and any other resource-based policy — restrict by network location, not just by identity.
+- **Mnemonic:** *"IAM controls WHO. Endpoint controls WHERE. Portable identity + rogue location = only WHERE catches it."*
+
+**Bonus — SSM VPC endpoint trio (the "manageable in isolation" pattern):**
+
+For an EC2 in a private subnet (no NAT / no IGW) to be SSM-managed, both requirements must be true:
+
+| Requirement | What it means |
+|---|---|
+| **IAM** | Instance role has `AmazonSSMManagedInstanceCore` (or equivalent `ssm:` + `ssmmessages:` permissions) |
+| **Network** | VPC interface endpoints deployed and reachable from the instance's SG |
+
+**The trio (memorise):**
+
+| Endpoint | Purpose |
+|---|---|
+| `com.amazonaws.<region>.ssm` | SSM service API (Run Command, StartSession, inventory) |
+| `com.amazonaws.<region>.ssmmessages` | Session Manager + Run Command **data channel** — interactive shell traffic |
+| `com.amazonaws.<region>.ec2messages` | **Legacy** — SSM Agent < 3.3.40; regions launched 2024+ only support `ssmmessages` (exam still tests all three) |
+
+- **Adjacent endpoints often needed:** `s3` (gateway, free — session logs / memory dumps), `kms` (encrypted logs / SecureString), `logs` (CWL session logging), `ec2` / `sts` / `secretsmanager` (Automation runbooks).
+- **Forensic isolation:** SG-swap to a forensic SG that allows outbound only to SSM VPC endpoints is the AWS-canonical pattern. **NACL Deny-all kills SSM traffic too** (subnet-wide, stateless) — that's why SG-swap wins for surgical isolation.
+- **Missing `AmazonSSMManagedInstanceCore`:** endpoints work, network is fine, but IAM denies. Both parts are required.
+- **Private DNS disabled on the endpoint:** apps calling `ssm.<region>.amazonaws.com` still hit the public endpoint.
+- **Mnemonic:** *"SSM needs IAM + network. Miss either and the agent goes silent."*
+
 ## Exam Overview
 
 | Field | Value |
