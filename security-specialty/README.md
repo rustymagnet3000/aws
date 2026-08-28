@@ -132,6 +132,29 @@ AWS's canonical idiom for writing an **allowlist as a Deny statement**. The Deny
 - **Design rationale:** SCPs can't grant (only bound), and explicit Deny wins over any Allow — so guardrails are written as Deny with negated conditions. Scales automatically to future AWS services (no enumeration needed).
 - **Mnemonic:** *"Every 'Not' is a hole in the Deny — the request escapes through any hole. All holes closed → the Deny fires."*
 
+**Bonus — the delegated-role-creation pattern (`iam:PermissionsBoundary` condition trick):**
+
+When the stem says *"let developers create their own IAM roles without allowing them to escalate privileges"*, the answer is an IAM policy with a **condition that forces every role they create to attach a specific boundary**:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["iam:CreateRole", "iam:AttachRolePolicy", "iam:PutRolePolicy"],
+  "Resource": "*",
+  "Condition": {
+    "StringEquals": {
+      "iam:PermissionsBoundary": "arn:aws:iam::acct:policy/DevBoundary"
+    }
+  }
+}
+```
+
+- **How it works:** the developer can create as many roles as they want, but **any role they create MUST have `DevBoundary` attached as its permissions boundary** — otherwise the `CreateRole` call fails the condition. Every role the developer creates inherits that ceiling, so they cannot indirectly privilege-escalate by "create a role with admin, then assume it."
+- **Also lock down:** `iam:PutUserPermissionsBoundary`, `iam:PutRolePermissionsBoundary`, `iam:DeleteUserPermissionsBoundary`, `iam:DeleteRolePermissionsBoundary` — otherwise the developer could remove or change the boundary post-creation.
+- **Stem-phrase tells:** *"developers create their own IAM roles"* → delegation; *"without granting themselves admin / privilege escalation"* → boundary condition; *"single account, no Organizations"* → boundary (not SCP).
+- **Difference from Top-10 #5:** #5 says *"cap max permissions with a boundary"* (the mechanism); this bonus is the specific **delegation trick** — enforcing the boundary at role-creation time via an IAM condition.
+- **Mnemonic:** *"The developer holds the pen; the boundary holds the ink."*
+
 ## Exam Overview
 
 | Field | Value |
