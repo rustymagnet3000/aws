@@ -155,6 +155,23 @@ When the stem says *"let developers create their own IAM roles without allowing 
 - **Difference from Top-10 #5:** #5 says *"cap max permissions with a boundary"* (the mechanism); this bonus is the specific **delegation trick** — enforcing the boundary at role-creation time via an IAM condition.
 - **Mnemonic:** *"The developer holds the pen; the boundary holds the ink."*
 
+**Bonus — private-only S3 (or any resource): identity enforces WHO, VPC endpoint conditions enforce WHERE:**
+
+When the stem says *"S3 bucket must be reachable only from a specific VPC / instance, and a user with access to the instance must not be able to reach the bucket from another VPC or laptop"* — you need **network-location enforcement**, not identity-based enforcement, because **IAM role credentials are portable**.
+
+The two-part canonical setup:
+
+| Layer | Policy | What it enforces |
+|---|---|---|
+| **Destination side** | Bucket policy with `aws:SourceVpce` **Deny** (`StringNotEquals` the authorised endpoint ID) | *"This bucket can only be reached from this specific VPC endpoint."* |
+| **Source side** | VPC endpoint policy with `aws:ResourceOrgID` condition | *"Only your org's buckets can be reached through this endpoint."* (data-exfil prevention) |
+
+- **Why IAM role + bucket policy is INSUFFICIENT:** a team member with access to the authorised EC2 can pull temp creds from IMDS (or reattach the same role to a rogue EC2 in another VPC) and access the bucket from anywhere. The role identity is legitimate; the location isn't. Only a location-based control catches this.
+- **`aws:SourceVpce` is populated ONLY when the request came via the specific VPC endpoint** — public S3 endpoint access, other VPCs, and other endpoints all fail the condition → Deny fires.
+- **Related condition keys:** `aws:SourceVpc` (any endpoint in the VPC — broader), `aws:VpcSourceIp` (rare); the exam-canonical answer for "one specific endpoint" is always `aws:SourceVpce`.
+- **Applies beyond S3:** same pattern works in KMS key policies, Secrets Manager resource policies, and any other resource-based policy — restrict by network location, not just by identity.
+- **Mnemonic:** *"IAM controls WHO. Endpoint controls WHERE. Portable identity + rogue location = only WHERE catches it."*
+
 ## Exam Overview
 
 | Field | Value |
