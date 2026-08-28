@@ -172,6 +172,29 @@ The two-part canonical setup:
 - **Applies beyond S3:** same pattern works in KMS key policies, Secrets Manager resource policies, and any other resource-based policy — restrict by network location, not just by identity.
 - **Mnemonic:** *"IAM controls WHO. Endpoint controls WHERE. Portable identity + rogue location = only WHERE catches it."*
 
+**Bonus — SSM VPC endpoint trio (the "manageable in isolation" pattern):**
+
+For an EC2 in a private subnet (no NAT / no IGW) to be SSM-managed, both requirements must be true:
+
+| Requirement | What it means |
+|---|---|
+| **IAM** | Instance role has `AmazonSSMManagedInstanceCore` (or equivalent `ssm:` + `ssmmessages:` permissions) |
+| **Network** | VPC interface endpoints deployed and reachable from the instance's SG |
+
+**The trio (memorise):**
+
+| Endpoint | Purpose |
+|---|---|
+| `com.amazonaws.<region>.ssm` | SSM service API (Run Command, StartSession, inventory) |
+| `com.amazonaws.<region>.ssmmessages` | Session Manager + Run Command **data channel** — interactive shell traffic |
+| `com.amazonaws.<region>.ec2messages` | **Legacy** — SSM Agent < 3.3.40; regions launched 2024+ only support `ssmmessages` (exam still tests all three) |
+
+- **Adjacent endpoints often needed:** `s3` (gateway, free — session logs / memory dumps), `kms` (encrypted logs / SecureString), `logs` (CWL session logging), `ec2` / `sts` / `secretsmanager` (Automation runbooks).
+- **Forensic isolation:** SG-swap to a forensic SG that allows outbound only to SSM VPC endpoints is the AWS-canonical pattern. **NACL Deny-all kills SSM traffic too** (subnet-wide, stateless) — that's why SG-swap wins for surgical isolation.
+- **Missing `AmazonSSMManagedInstanceCore`:** endpoints work, network is fine, but IAM denies. Both parts are required.
+- **Private DNS disabled on the endpoint:** apps calling `ssm.<region>.amazonaws.com` still hit the public endpoint.
+- **Mnemonic:** *"SSM needs IAM + network. Miss either and the agent goes silent."*
+
 ## Exam Overview
 
 | Field | Value |
