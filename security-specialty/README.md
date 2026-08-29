@@ -367,6 +367,36 @@ For *"prevent unauthorised access AND tamper protection"* on centralised CloudTr
 - **S3 Object Lock in compliance mode** is stronger for immutability but only picks the tampering side of a two-threat stem — bucket policy addresses both.
 - **Mnemonic:** *"Validation + KMS + Bucket Policy = the baseline three. Everything else (Object Lock, MFA Delete, cross-account, SCP, alarm) layers ON TOP for specific stems."*
 
+**Bonus — S3 Lifecycle × Versioning × Object Lock × MFA Delete interactions:**
+
+Versioning changes what a lifecycle `Expiration` action actually does:
+
+| Bucket state | `Expiration.Days: 30` does | What accumulates |
+|---|---|---|
+| **Versioning OFF** | Permanent delete | Nothing — objects gone |
+| **Versioning ON** | **Creates a delete marker** on current version (does NOT delete data) | Non-current versions + delete markers (both still cost storage) |
+
+**On a versioned bucket, ALL THREE actions are needed for actual storage cleanup:**
+
+| Action | Purpose |
+|---|---|
+| `Expiration` | Marks current version (creates delete marker) |
+| `NoncurrentVersionExpiration` | **Permanently deletes non-current versions** — this is the action that actually frees storage |
+| `ExpiredObjectDeleteMarker: true` | Cleans up orphaned delete markers (auto-handled when `Days` is also set on `Expiration`; can't be combined with a tag filter) |
+
+**Two hard-rule exceptions the exam tests:**
+
+- **MFA Delete + Lifecycle = mutually EXCLUSIVE.** AWS refuses to accept `PutBucketLifecycleConfiguration` on an MFA-Delete-enabled bucket. If a stem describes all three (versioning + MFA Delete + lifecycle) on one bucket, the setup is invalid.
+- **Object Lock is a PARTIAL override, not a total one.** Lifecycle can still **transition storage classes** and **create delete markers** on locked objects. Only **permanent deletion of the locked version** is blocked until retention expires. Delete markers layered on top are fine.
+
+**Object Lock modes recap:**
+
+- **Governance mode** — bypass via `s3:BypassGovernanceRetention` IAM permission, but lifecycle can't invoke the bypass → lifecycle still blocked from permanent deletion.
+- **Compliance mode** — no bypass, not even root. Per AWS docs: *"The only way to delete an object under compliance mode before retention expires is to delete the AWS account."*
+- **Legal Hold** — indefinite; blocks permanent deletion until manually removed.
+
+**Mnemonic:** *"Versioned Expiration = delete markers, not deletion. Three actions for real cleanup. MFA Delete + Lifecycle: can't coexist. Object Lock blocks the KILL, not the MOVE or MARK."*
+
 ## Exam Overview
 
 | Field | Value |
