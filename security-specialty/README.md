@@ -340,6 +340,33 @@ Five AWS services detect S3 public exposure, but they're NOT interchangeable —
 
 **Mnemonic:** *"Data events = action + ACL. Macie = content. Config = state. Access Analyzer = external. S3 events = lifecycle (blind to ACL)."*
 
+**Bonus — CloudTrail log protection: the baseline three, with additive layers on top:**
+
+For *"prevent unauthorised access AND tamper protection"* on centralised CloudTrail logs, the AWS-canonical **baseline three**:
+
+| Action | Threat addressed |
+|---|---|
+| **CloudTrail log file validation** | Tampering DETECTION (SHA-256 hash + RSA-signed digest files, publicly verifiable via `aws cloudtrail validate-logs`) |
+| **SSE-KMS encryption with a customer-managed CMK** | Encryption at rest + KMS-layer access control (attacker needs bucket-read AND `kms:Decrypt`) |
+| **Least-privilege S3 bucket policy** | Unauthorised access (deny reads) + tamper PREVENTION (attacker who can't write can't tamper) |
+
+**Why bucket policy wins over MFA Delete / Object Lock in a generic stem:** it addresses BOTH clauses of the stem (access AND tampering) in one action. Specialised immutability controls only cover the tampering half.
+
+**Additive layers (join when the stem specifically names them):**
+
+| Additional layer | Stem-phrase trigger |
+|---|---|
+| **S3 Object Lock in compliance mode** | *"Immutability / WORM / regulatory retention / cannot be deleted even by root"* (SEC 17a-4, FINRA, HIPAA WORM) |
+| **MFA Delete** | *"Require MFA for deletion"* — only when specifically named; has root-only invocation limitation |
+| **Cross-account log-archive account** | *"Segregation of duties / separate blast radius / security team owns the logs"* |
+| **SCP denying `cloudtrail:StopLogging`** | *"Prevent CloudTrail from being disabled at all / org-wide guardrail"* |
+| **CloudWatch Alarm on `StopLogging` / `DeleteTrail`** | *"Real-time notification when logging is disabled"* |
+
+- **Exam philosophy — foundational beats specialised:** when the stem is generic (protect logs from access + tampering), prefer the AWS-recommended baseline. Don't over-engineer past AWS's recommended defaults.
+- **MFA Delete has a root-only invocation limitation** that makes it operationally awkward in enterprise setups where root is locked in a vault.
+- **S3 Object Lock in compliance mode** is stronger for immutability but only picks the tampering side of a two-threat stem — bucket policy addresses both.
+- **Mnemonic:** *"Validation + KMS + Bucket Policy = the baseline three. Everything else (Object Lock, MFA Delete, cross-account, SCP, alarm) layers ON TOP for specific stems."*
+
 ## Exam Overview
 
 | Field | Value |
