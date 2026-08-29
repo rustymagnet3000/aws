@@ -309,6 +309,37 @@ Security Hub is a **queryer**, not a scanner. Its FSBP / CIS / PCI DSS / NIST 80
 - **Extends Bonus #3 (Config + CloudTrail compliance pair):** Config records state, CloudTrail records the actor, **Security Hub queries Config records to evaluate compliance frameworks**. The three services are stacked, not parallel.
 - **Mnemonic:** *"Security Hub without Config = a dashboard with the lights on but nothing to show. Config records the state; Security Hub queries it."*
 
+**Bonus — S3 public-detection: five services, five specific stem phrases:**
+
+Five AWS services detect S3 public exposure, but they're NOT interchangeable — each has different granularity, latency, and filter capability. The stem's exact wording picks which one:
+
+| Stem phrasing | Answer | Latency | Granularity |
+|---|---|---|---|
+| *"Detect an OBJECT uploaded with public-read ACL"* (action + ACL) | **CloudTrail data events + EventBridge** filtering on `x-amz-acl` | ~5 min | Object |
+| *"Detect PII / sensitive-data in a public bucket"* (content-aware) | **Amazon Macie** | Hours (sampled) | Object |
+| *"Detect a bucket POLICY changed to public"* (state change) | **Config rule** (`s3-bucket-public-read-prohibited`) OR CloudTrail management events + EventBridge on `PutBucketPolicy` | Minutes | Bucket |
+| *"Detect EXTERNAL principal access to a bucket"* (policy analysis) | **IAM Access Analyzer** | Hours (periodic) | Bucket |
+| *"Trigger on ANY object upload"* (no ACL / content filter) | **S3 event notifications** (`s3:ObjectCreated:*`) | Real-time | Object |
+
+**Traps:**
+
+- **S3 event notifications CAN'T filter on ACL** — every object-put fires the same event. If the stem says *"detect PUBLIC uploads specifically,"* this is auto-wrong.
+- **Access Analyzer is bucket-policy-level, NOT object-level** — right answer for external-access-via-policy questions, wrong for real-time object detection.
+- **Macie is content-aware but NOT real-time** — sampled scan with hours of latency. Wrong when the stem emphasises immediate action-detection.
+- **CloudTrail data events are OFF by default + cost extra** — the exam's phrase *"enable object-level logging"* is the tell.
+- **Access Analyzer doesn't invoke Lambda directly** — findings flow via EventBridge → Lambda.
+
+**The two heuristic questions to ask any S3-detection stem:**
+
+1. **What granularity — bucket or object?** Bucket → Config / Access Analyzer. Object → CloudTrail data events / S3 events / Macie.
+2. **What's the filter dimension — action, ACL, content, policy state, external access?** ACL → CloudTrail data events. Content → Macie. Policy state → Config. External → Access Analyzer. None (blind) → S3 events.
+
+**Auto-remediation targets (regardless of detection service):** Lambda calling `s3:PutPublicAccessBlock` (all 4 sub-settings on) OR `s3:PutObjectAcl --acl private`, OR SSM Automation runbook `AWSConfigRemediation-ConfigureS3PublicAccessBlock`.
+
+**Fan-out pattern:** EventBridge → SNS → (Lambda subscribes to SNS + email/Slack subscribes to SNS). Same event drives notification AND remediation, decoupled by SNS.
+
+**Mnemonic:** *"Data events = action + ACL. Macie = content. Config = state. Access Analyzer = external. S3 events = lifecycle (blind to ACL)."*
+
 ## Exam Overview
 
 | Field | Value |
