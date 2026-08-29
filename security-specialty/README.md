@@ -291,6 +291,24 @@ The first-cut question for any multi-VPC connectivity stem: **count the VPCs and
 - **Peering can beat TGW** when the stem says *"lowest cost / lowest latency for exactly 3 VPCs"* — TGW is ~$0.05/hour per attachment plus data processing; peering is free.
 - **Mnemonic:** *"Count the VPCs, name the action. One-share = RAM. Many-connect = TGW. Few-connect = Peering. One-expose = PrivateLink."*
 
+**Bonus — Security Hub's invisible dependency: AWS Config MUST be enabled first:**
+
+Security Hub is a **queryer**, not a scanner. Its FSBP / CIS / PCI DSS / NIST 800-53 controls run as **queries against AWS Config's records** of your resources. If Config isn't recording, the controls have nothing to evaluate.
+
+| State | What Security Hub does |
+|---|---|
+| **Config enabled + recording** | Standards evaluate, controls produce findings ✅ |
+| **Config disabled** | Standards enabled but controls silently show *"No data available"* — findings never appear |
+
+- **Config must be enabled in EVERY region** where Security Hub is enabled — regional recorders, not global.
+- **Config must record ALL supported resource types** (or at least the types the controls query).
+- **What still works without Config:** aggregation of findings from other native senders (GuardDuty, Inspector, Macie, Firewall Manager, Access Analyzer, DNS Firewall, IoT Device Defender, SSM Patch Manager, Health) — those services produce findings independently. So Security Hub without Config = passthrough dashboard for other services, minus the ~200 standards controls.
+- **The setup order matters:** enable Config FIRST, then Security Hub. Reversed order leaves Security Hub with silent standards for hours until Config catches up.
+- **Cost implication:** Security Hub cost = SH charges + **separate Config charges** (per-configuration-item + per-rule-evaluation). Exam cost questions must include both.
+- **Multi-account:** the full org-wide dependency chain is Organizations All Features → Config recording per account+region → Config Aggregator → Security Hub delegated admin → Security Hub cross-region aggregator. Miss any layer and something is silent.
+- **Extends Bonus #3 (Config + CloudTrail compliance pair):** Config records state, CloudTrail records the actor, **Security Hub queries Config records to evaluate compliance frameworks**. The three services are stacked, not parallel.
+- **Mnemonic:** *"Security Hub without Config = a dashboard with the lights on but nothing to show. Config records the state; Security Hub queries it."*
+
 ## Exam Overview
 
 | Field | Value |
