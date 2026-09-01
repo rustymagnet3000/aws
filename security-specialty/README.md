@@ -397,6 +397,50 @@ Versioning changes what a lifecycle `Expiration` action actually does:
 
 **Mnemonic:** *"Versioned Expiration = delete markers, not deletion. Three actions for real cleanup. MFA Delete + Lifecycle: can't coexist. Object Lock blocks the KILL, not the MOVE or MARK."*
 
+**Bonus — API Gateway `execute-api` private DNS: it's a HIJACK, not a filter:**
+
+Enabling private DNS on an `execute-api` interface VPC endpoint creates a **private hosted zone in your VPC for the entire `execute-api.<region>.amazonaws.com` domain**, wildcarded to every subdomain. Because private AND public API Gateway APIs share the same hostname pattern (`<api-id>.execute-api.<region>.amazonaws.com`), the DNS override catches BOTH — routing all API Gateway traffic through the endpoint, which can only serve private APIs.
+
+```text
+   Without private DNS:              With private DNS ENABLED:
+   ────────────────────              ─────────────────────────
+   *.execute-api.<region>            *.execute-api.<region>
+   .amazonaws.com                    .amazonaws.com
+        │                                 │
+        ▼                                 ▼
+   Public DNS →                      Private hosted zone in VPC →
+        │                                 │
+        ├─► Public API IPs                └─► ALL queries → endpoint IP
+        │                                        │
+        └─► Private API unreachable              ├─► Private API works ✓
+             (need vpce-*.vpce.amazonaws.com)    │
+                                                 └─► Public API BREAKS ✗
+                                                     (endpoint doesn't
+                                                      proxy public APIs)
+```
+
+**Two considerations for creating an `execute-api` interface endpoint (exam-canonical pair):**
+
+| # | Consideration | Layer |
+|---|---|---|
+| 1 | **SG on the endpoint must allow inbound TCP 443** from calling instances | Network |
+| 2 | **Enabling private DNS → PUBLIC API Gateway APIs unreachable from the VPC** | DNS |
+
+**Four in-practice patterns:**
+
+| Pattern | When to use |
+|---|---|
+| **Disable private DNS + endpoint-specific hostname** (`<api-id>-<vpce-id>.execute-api.<region>.vpce.amazonaws.com`) | Simple; app code needs to know endpoint ID |
+| **Enable private DNS + accept losing public API access** | VPC only ever talks to private APIs |
+| **Custom domain names on both public + private APIs** (Route 53 records → CNAME to correct target) | **Enterprise best practice** — you control routing at your own domain layer |
+| **Route 53 Resolver rules** for per-API DNS overrides | Advanced / rare |
+
+**Why the hijack, not the filter?** DNS is hierarchical by domain, not per-hostname. A private hosted zone for `execute-api.<region>.amazonaws.com` overrides the whole zone in your VPC — API IDs (`abc123`, `def456`) are just subdomains that can't be selectively excluded.
+
+**Cross-account private API access adds a third consideration:** the API's resource policy in the OTHER account must allow the caller's VPC endpoint via `aws:SourceVpce`. That's an authorization-layer concern, separate from the endpoint-creation considerations above.
+
+**Mnemonic:** *"Private DNS on `execute-api` is a HIJACK, not a filter. It overrides ALL of `execute-api.<region>.amazonaws.com` — both public and private APIs share the hostname pattern, so enabling private DNS breaks public API access from the VPC. Enterprise best practice: custom domain names on both APIs; DNS stays off the endpoint."*
+
 ## Exam Overview
 
 | Field | Value |
