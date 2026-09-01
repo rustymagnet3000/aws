@@ -195,6 +195,252 @@ For an EC2 in a private subnet (no NAT / no IGW) to be SSM-managed, both require
 - **Private DNS disabled on the endpoint:** apps calling `ssm.<region>.amazonaws.com` still hit the public endpoint.
 - **Mnemonic:** *"SSM needs IAM + network. Miss either and the agent goes silent."*
 
+**Bonus — CMK-deleted data recovery (the "running EBS" one-way escape hatch):**
+
+When a KMS CMK has been **deleted** (past the 7–30-day pending window), data encrypted with it is cryptographically unrecoverable BY DESIGN — this is "crypto-shredding" and it's what enables single-command data destruction across AWS. **One narrow exception:** an EBS volume attached to a **running** EC2 instance.
+
+**The mechanic:** the hypervisor caches the plaintext data key **in memory** the moment the encrypted volume is attached. Every disk I/O uses the cached key locally — KMS isn't called again while the volume stays attached to that running instance.
+
+| State | Data accessible? |
+|---|---|
+| **EBS attached to running EC2** | ✅ Yes — plaintext data key cached in hypervisor RAM |
+| **EC2 stopped / rebooted** | ❌ Lost — cache released, restart needs KMS |
+| **EBS detached** | ❌ Lost — cache released, re-attach needs KMS |
+| **EBS snapshots** | ❌ Lost — snapshots are also encrypted with the CMK; restore needs KMS |
+| **S3 objects** | ❌ Lost — every `GetObject` calls KMS; no persistent client cache |
+| **DynamoDB / RDS / Aurora** | ❌ Lost — same as S3 |
+
+**Correct response when a CMK is deleted and you have data on an attached EBS volume:**
+
+1. **DO NOT stop, reboot, or detach** the instance. Every state change destroys the cache.
+2. **Log in via SSM Session Manager** (or existing SSH) while the instance is running.
+3. **Copy the data files** out to a new location encrypted with a different, active CMK.
+4. Only after the copy completes can the original instance be retired.
+
+- **Recovery window before deletion completes:** `kms:CancelKeyDeletion` during the 7–30 day pending window is the ONLY reinstate mechanism. After that, AWS Support cannot restore — deletion is irreversible by design.
+- **Prevention:** SCP denying `kms:ScheduleKeyDeletion` on production CMKs + EventBridge alarm on the `ScheduleKeyDeletion` CloudTrail event to catch scheduling attempts within the pending window.
+- **Mnemonic:** *"Running EBS still reads (cached key in RAM). Stop, detach, or S3 read → data gone. The hypervisor cache is your only escape hatch."*
+
+**Bonus — Security Hub integration directions (10 senders IN, 6 receivers OUT):**
+
+Security Hub is a **regional** aggregator. Every AWS-service integration is one-directional; memorising which services sit on which side is the specific gotcha the exam repeatedly tests.
+
+```text
+   ┌──────────────────────────────────────┐
+   │  10 SENDERS (into Security Hub)      │
+   ├──────────────────────────────────────┤
+   │  • AWS Config                        │
+   │  • AWS Firewall Manager              │
+   │  • Amazon GuardDuty                  │
+   │  • AWS Health                        │
+   │  • IAM Access Analyzer               │
+   │  • Amazon Inspector                  │
+   │  • AWS IoT Device Defender           │
+   │  • Amazon Macie                      │
+   │  • Amazon Route 53 Resolver DNS FW   │
+   │  • AWS Systems Manager Patch Manager │
+   └──────────────────┬───────────────────┘
+                      ▼
+              ┌────────────────┐
+              │  SECURITY HUB  │
+              │  (REGIONAL)    │
+              │  + FSBP / CIS  │
+              │  / PCI / NIST  │
+              │   standards    │
+              └────────┬───────┘
+                       ▼
+   ┌──────────────────────────────────────┐
+   │  6 RECEIVERS (from Security Hub)     │
+   ├──────────────────────────────────────┤
+   │  • AWS Trusted Advisor  ← FSBP       │
+   │  • AWS Audit Manager    ← evidence   │
+   │  • Amazon Detective     ← investig.  │
+   │  • Amazon Security Lake ← archival   │
+   │  • Systems Manager Explorer/OpsCenter│
+   │  • Amazon Q in chat apps             │
+   └──────────────────────────────────────┘
+```
+
+- **The three most-confused DOWNSTREAM (receiver) services:** **Trusted Advisor, Audit Manager, Detective**. All three FEEL like they'd feed Security Hub — but they RECEIVE FROM it. Options saying they SEND findings to Security Hub are auto-wrong.
+- **Security Hub is regional** — not global. Cross-region view requires the opt-in **Cross-Region Aggregator** (findings consolidate into a designated aggregation region).
+- **No retroactive backfill** — Security Hub aggregates from enable-time forward only; findings that existed before enable never appear.
+- **No native S3 export** — findings live in Security Hub; S3 destination requires EventBridge → Firehose → S3 plumbing.
+- **Trusted Advisor integration (Security Hub → TA)** surfaces FSBP results in the Trusted Advisor console alongside TA's own security-pillar checks. Requires **Business+ Support / Enterprise Support / Unified Operations plan**. Up to 24h delay for findings to appear in TA after Security Hub emits them.
+- **ACM is NOT in either list** — ACM findings reach Security Hub only indirectly via Config rules (`acm-certificate-expiration-check`), not as a native source.
+- **Mnemonic:** *"10 in, 6 out. Trusted Advisor, Audit Manager, Detective all sit DOWNSTREAM — never upstream."*
+
+**Bonus — Multi-VPC connectivity decision matrix ("How many VPCs, and what am I doing with them?"):**
+
+The first-cut question for any multi-VPC connectivity stem: **count the VPCs and name the action**.
+
+| Stem says… | Answer |
+|---|---|
+| Share ONE VPC's subnets across accounts | **VPC Sharing (RAM)** |
+| Connect MANY VPCs/accounts at scale (hub-and-spoke, transitive) | **Transit Gateway** |
+| Connect a FEW VPCs point-to-point (no CIDR overlap) | **VPC Peering** |
+| Expose ONE service privately cross-account (CIDR-agnostic, one-way) | **PrivateLink** |
+
+**Caveats worth memorising:**
+
+- **Owner routes** — only the owner account controls route tables / NACLs / gateways in a RAM-shared VPC. Participant accounts run their own EC2/RDS/Lambda in the shared subnet but never own the network config.
+- **RAM shares** — VPC Sharing subnets and Transit Gateway attachments are shared via **AWS RAM** (works only within an AWS Organization).
+- **SGs separate** — network isolation between participant accounts isn't automatic; each account creates its own SGs in the shared subnet.
+- **SCP blocks** — an SCP is what actually stops departments creating their own VPC (`Deny ec2:CreateVpc` / `ec2:CreateDefaultVpc`) — paired with VPC Sharing, this forces all workloads into the security-team-owned VPC.
+- **Peering non-transitive + CIDR-fragile** — A↔B and B↔C don't give A↔C, and overlapping CIDRs break peering entirely. Fine at 2-5 VPCs; falls apart above ~10.
+- **PrivateLink one-way + CIDR-agnostic** — consumer sees only the endpoint ENI, provider VPC is hidden; overlapping CIDRs are fine (this is often the deciding factor over peering in M&A scenarios).
+- **Peering can beat TGW** when the stem says *"lowest cost / lowest latency for exactly 3 VPCs"* — TGW is ~$0.05/hour per attachment plus data processing; peering is free.
+- **Mnemonic:** *"Count the VPCs, name the action. One-share = RAM. Many-connect = TGW. Few-connect = Peering. One-expose = PrivateLink."*
+
+**Bonus — Security Hub's invisible dependency: AWS Config MUST be enabled first:**
+
+Security Hub is a **queryer**, not a scanner. Its FSBP / CIS / PCI DSS / NIST 800-53 controls run as **queries against AWS Config's records** of your resources. If Config isn't recording, the controls have nothing to evaluate.
+
+| State | What Security Hub does |
+|---|---|
+| **Config enabled + recording** | Standards evaluate, controls produce findings ✅ |
+| **Config disabled** | Standards enabled but controls silently show *"No data available"* — findings never appear |
+
+- **Config must be enabled in EVERY region** where Security Hub is enabled — regional recorders, not global.
+- **Config must record ALL supported resource types** (or at least the types the controls query).
+- **What still works without Config:** aggregation of findings from other native senders (GuardDuty, Inspector, Macie, Firewall Manager, Access Analyzer, DNS Firewall, IoT Device Defender, SSM Patch Manager, Health) — those services produce findings independently. So Security Hub without Config = passthrough dashboard for other services, minus the ~200 standards controls.
+- **The setup order matters:** enable Config FIRST, then Security Hub. Reversed order leaves Security Hub with silent standards for hours until Config catches up.
+- **Cost implication:** Security Hub cost = SH charges + **separate Config charges** (per-configuration-item + per-rule-evaluation). Exam cost questions must include both.
+- **Multi-account:** the full org-wide dependency chain is Organizations All Features → Config recording per account+region → Config Aggregator → Security Hub delegated admin → Security Hub cross-region aggregator. Miss any layer and something is silent.
+- **Extends Bonus #3 (Config + CloudTrail compliance pair):** Config records state, CloudTrail records the actor, **Security Hub queries Config records to evaluate compliance frameworks**. The three services are stacked, not parallel.
+- **Mnemonic:** *"Security Hub without Config = a dashboard with the lights on but nothing to show. Config records the state; Security Hub queries it."*
+
+**Bonus — S3 public-detection: five services, five specific stem phrases:**
+
+Five AWS services detect S3 public exposure, but they're NOT interchangeable — each has different granularity, latency, and filter capability. The stem's exact wording picks which one:
+
+| Stem phrasing | Answer | Latency | Granularity |
+|---|---|---|---|
+| *"Detect an OBJECT uploaded with public-read ACL"* (action + ACL) | **CloudTrail data events + EventBridge** filtering on `x-amz-acl` | ~5 min | Object |
+| *"Detect PII / sensitive-data in a public bucket"* (content-aware) | **Amazon Macie** | Hours (sampled) | Object |
+| *"Detect a bucket POLICY changed to public"* (state change) | **Config rule** (`s3-bucket-public-read-prohibited`) OR CloudTrail management events + EventBridge on `PutBucketPolicy` | Minutes | Bucket |
+| *"Detect EXTERNAL principal access to a bucket"* (policy analysis) | **IAM Access Analyzer** | Hours (periodic) | Bucket |
+| *"Trigger on ANY object upload"* (no ACL / content filter) | **S3 event notifications** (`s3:ObjectCreated:*`) | Real-time | Object |
+
+**Traps:**
+
+- **S3 event notifications CAN'T filter on ACL** — every object-put fires the same event. If the stem says *"detect PUBLIC uploads specifically,"* this is auto-wrong.
+- **Access Analyzer is bucket-policy-level, NOT object-level** — right answer for external-access-via-policy questions, wrong for real-time object detection.
+- **Macie is content-aware but NOT real-time** — sampled scan with hours of latency. Wrong when the stem emphasises immediate action-detection.
+- **CloudTrail data events are OFF by default + cost extra** — the exam's phrase *"enable object-level logging"* is the tell.
+- **Access Analyzer doesn't invoke Lambda directly** — findings flow via EventBridge → Lambda.
+
+**The two heuristic questions to ask any S3-detection stem:**
+
+1. **What granularity — bucket or object?** Bucket → Config / Access Analyzer. Object → CloudTrail data events / S3 events / Macie.
+2. **What's the filter dimension — action, ACL, content, policy state, external access?** ACL → CloudTrail data events. Content → Macie. Policy state → Config. External → Access Analyzer. None (blind) → S3 events.
+
+**Auto-remediation targets (regardless of detection service):** Lambda calling `s3:PutPublicAccessBlock` (all 4 sub-settings on) OR `s3:PutObjectAcl --acl private`, OR SSM Automation runbook `AWSConfigRemediation-ConfigureS3PublicAccessBlock`.
+
+**Fan-out pattern:** EventBridge → SNS → (Lambda subscribes to SNS + email/Slack subscribes to SNS). Same event drives notification AND remediation, decoupled by SNS.
+
+**Mnemonic:** *"Data events = action + ACL. Macie = content. Config = state. Access Analyzer = external. S3 events = lifecycle (blind to ACL)."*
+
+**Bonus — CloudTrail log protection: the baseline three, with additive layers on top:**
+
+For *"prevent unauthorised access AND tamper protection"* on centralised CloudTrail logs, the AWS-canonical **baseline three**:
+
+| Action | Threat addressed |
+|---|---|
+| **CloudTrail log file validation** | Tampering DETECTION (SHA-256 hash + RSA-signed digest files, publicly verifiable via `aws cloudtrail validate-logs`) |
+| **SSE-KMS encryption with a customer-managed CMK** | Encryption at rest + KMS-layer access control (attacker needs bucket-read AND `kms:Decrypt`) |
+| **Least-privilege S3 bucket policy** | Unauthorised access (deny reads) + tamper PREVENTION (attacker who can't write can't tamper) |
+
+**Why bucket policy wins over MFA Delete / Object Lock in a generic stem:** it addresses BOTH clauses of the stem (access AND tampering) in one action. Specialised immutability controls only cover the tampering half.
+
+**Additive layers (join when the stem specifically names them):**
+
+| Additional layer | Stem-phrase trigger |
+|---|---|
+| **S3 Object Lock in compliance mode** | *"Immutability / WORM / regulatory retention / cannot be deleted even by root"* (SEC 17a-4, FINRA, HIPAA WORM) |
+| **MFA Delete** | *"Require MFA for deletion"* — only when specifically named; has root-only invocation limitation |
+| **Cross-account log-archive account** | *"Segregation of duties / separate blast radius / security team owns the logs"* |
+| **SCP denying `cloudtrail:StopLogging`** | *"Prevent CloudTrail from being disabled at all / org-wide guardrail"* |
+| **CloudWatch Alarm on `StopLogging` / `DeleteTrail`** | *"Real-time notification when logging is disabled"* |
+
+- **Exam philosophy — foundational beats specialised:** when the stem is generic (protect logs from access + tampering), prefer the AWS-recommended baseline. Don't over-engineer past AWS's recommended defaults.
+- **MFA Delete has a root-only invocation limitation** that makes it operationally awkward in enterprise setups where root is locked in a vault.
+- **S3 Object Lock in compliance mode** is stronger for immutability but only picks the tampering side of a two-threat stem — bucket policy addresses both.
+- **Mnemonic:** *"Validation + KMS + Bucket Policy = the baseline three. Everything else (Object Lock, MFA Delete, cross-account, SCP, alarm) layers ON TOP for specific stems."*
+
+**Bonus — S3 Lifecycle × Versioning × Object Lock × MFA Delete interactions:**
+
+Versioning changes what a lifecycle `Expiration` action actually does:
+
+| Bucket state | `Expiration.Days: 30` does | What accumulates |
+|---|---|---|
+| **Versioning OFF** | Permanent delete | Nothing — objects gone |
+| **Versioning ON** | **Creates a delete marker** on current version (does NOT delete data) | Non-current versions + delete markers (both still cost storage) |
+
+**On a versioned bucket, ALL THREE actions are needed for actual storage cleanup:**
+
+| Action | Purpose |
+|---|---|
+| `Expiration` | Marks current version (creates delete marker) |
+| `NoncurrentVersionExpiration` | **Permanently deletes non-current versions** — this is the action that actually frees storage |
+| `ExpiredObjectDeleteMarker: true` | Cleans up orphaned delete markers (auto-handled when `Days` is also set on `Expiration`; can't be combined with a tag filter) |
+
+**Two hard-rule exceptions the exam tests:**
+
+- **MFA Delete + Lifecycle = mutually EXCLUSIVE.** AWS refuses to accept `PutBucketLifecycleConfiguration` on an MFA-Delete-enabled bucket. If a stem describes all three (versioning + MFA Delete + lifecycle) on one bucket, the setup is invalid.
+- **Object Lock is a PARTIAL override, not a total one.** Lifecycle can still **transition storage classes** and **create delete markers** on locked objects. Only **permanent deletion of the locked version** is blocked until retention expires. Delete markers layered on top are fine.
+
+**Object Lock modes recap:**
+
+- **Governance mode** — bypass via `s3:BypassGovernanceRetention` IAM permission, but lifecycle can't invoke the bypass → lifecycle still blocked from permanent deletion.
+- **Compliance mode** — no bypass, not even root. Per AWS docs: *"The only way to delete an object under compliance mode before retention expires is to delete the AWS account."*
+- **Legal Hold** — indefinite; blocks permanent deletion until manually removed.
+
+**Mnemonic:** *"Versioned Expiration = delete markers, not deletion. Three actions for real cleanup. MFA Delete + Lifecycle: can't coexist. Object Lock blocks the KILL, not the MOVE or MARK."*
+
+**Bonus — API Gateway `execute-api` private DNS: it's a HIJACK, not a filter:**
+
+Enabling private DNS on an `execute-api` interface VPC endpoint creates a **private hosted zone in your VPC for the entire `execute-api.<region>.amazonaws.com` domain**, wildcarded to every subdomain. Because private AND public API Gateway APIs share the same hostname pattern (`<api-id>.execute-api.<region>.amazonaws.com`), the DNS override catches BOTH — routing all API Gateway traffic through the endpoint, which can only serve private APIs.
+
+```text
+   Without private DNS:              With private DNS ENABLED:
+   ────────────────────              ─────────────────────────
+   *.execute-api.<region>            *.execute-api.<region>
+   .amazonaws.com                    .amazonaws.com
+        │                                 │
+        ▼                                 ▼
+   Public DNS →                      Private hosted zone in VPC →
+        │                                 │
+        ├─► Public API IPs                └─► ALL queries → endpoint IP
+        │                                        │
+        └─► Private API unreachable              ├─► Private API works ✓
+             (need vpce-*.vpce.amazonaws.com)    │
+                                                 └─► Public API BREAKS ✗
+                                                     (endpoint doesn't
+                                                      proxy public APIs)
+```
+
+**Two considerations for creating an `execute-api` interface endpoint (exam-canonical pair):**
+
+| # | Consideration | Layer |
+|---|---|---|
+| 1 | **SG on the endpoint must allow inbound TCP 443** from calling instances | Network |
+| 2 | **Enabling private DNS → PUBLIC API Gateway APIs unreachable from the VPC** | DNS |
+
+**Four in-practice patterns:**
+
+| Pattern | When to use |
+|---|---|
+| **Disable private DNS + endpoint-specific hostname** (`<api-id>-<vpce-id>.execute-api.<region>.vpce.amazonaws.com`) | Simple; app code needs to know endpoint ID |
+| **Enable private DNS + accept losing public API access** | VPC only ever talks to private APIs |
+| **Custom domain names on both public + private APIs** (Route 53 records → CNAME to correct target) | **Enterprise best practice** — you control routing at your own domain layer |
+| **Route 53 Resolver rules** for per-API DNS overrides | Advanced / rare |
+
+**Why the hijack, not the filter?** DNS is hierarchical by domain, not per-hostname. A private hosted zone for `execute-api.<region>.amazonaws.com` overrides the whole zone in your VPC — API IDs (`abc123`, `def456`) are just subdomains that can't be selectively excluded.
+
+**Cross-account private API access adds a third consideration:** the API's resource policy in the OTHER account must allow the caller's VPC endpoint via `aws:SourceVpce`. That's an authorization-layer concern, separate from the endpoint-creation considerations above.
+
+**Mnemonic:** *"Private DNS on `execute-api` is a HIJACK, not a filter. It overrides ALL of `execute-api.<region>.amazonaws.com` — both public and private APIs share the hostname pattern, so enabling private DNS breaks public API access from the VPC. Enterprise best practice: custom domain names on both APIs; DNS stays off the endpoint."*
+
 ## Exam Overview
 
 | Field | Value |
