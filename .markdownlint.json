@@ -3,11 +3,12 @@
   "MD001": false,
   "MD010": { "code_blocks": false },
   "MD013": false,
+  "MD022": false,
   "MD024": false,
+  "MD032": false,
   "MD033": false,
   "MD040": false,
-  "MD022": false,
-  "MD032": false,
   "MD051": false,
-  "MD059": false
+  "MD059": false,
+  "MD060": false
 }
