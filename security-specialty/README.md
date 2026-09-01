@@ -441,6 +441,49 @@ Enabling private DNS on an `execute-api` interface VPC endpoint creates a **priv
 
 **Mnemonic:** *"Private DNS on `execute-api` is a HIJACK, not a filter. It overrides ALL of `execute-api.<region>.amazonaws.com` — both public and private APIs share the hostname pattern, so enabling private DNS breaks public API access from the VPC. Enterprise best practice: custom domain names on both APIs; DNS stays off the endpoint."*
 
+**Bonus — IAM Role Trust Policy: WHO can assume, not WHAT the role can do:**
+
+Every IAM role has **TWO independent policies**:
+
+| Policy | Purpose | When evaluated |
+|---|---|---|
+| **Trust policy** (aka `AssumeRolePolicyDocument`) | Defines WHO can assume the role | At `sts:AssumeRole` time |
+| **Permissions policy** (attached IAM policies) | Defines WHAT the role can do once assumed | On every API call the role makes |
+
+Trust policy is a **resource-based policy** — it's the ONE resource-based policy on IAM itself, and one of ~10 AWS resources that support resource-based policies.
+
+**Principal types trust policies accept:**
+
+| Principal | Format | Use case |
+|---|---|---|
+| **AWS service** | `{"Service": "ec2.amazonaws.com"}` | EC2 instance profiles, Lambda execution roles, ECS task roles |
+| **IAM ARN** | `{"AWS": "arn:aws:iam::acct:role/CIRole"}` | Specific cross-account role |
+| **Account root** | `{"AWS": "arn:aws:iam::acct:root"}` | Any IAM identity in that account (with identity policy allowing `sts:AssumeRole`) |
+| **SAML federated** | `{"Federated": "arn:aws:iam::acct:saml-provider/MyIdP"}` | `sts:AssumeRoleWithSAML` (external IdP federation) |
+| **OIDC federated** | `{"Federated": "arn:aws:iam::acct:oidc-provider/..."}` | GitHub Actions, EKS IRSA, GitLab CI, etc. |
+
+**Common exam-tested trust policy conditions:**
+
+| Condition key | Purpose |
+|---|---|
+| **`sts:ExternalId`** | Third-party cross-account "confused deputy" prevention |
+| **`aws:MultiFactorAuthPresent`** | Require MFA at role assumption |
+| **`aws:PrincipalOrgID`** | Only principals in this Organization can assume |
+| **`sts:SourceIdentity`** | Allow passing an immutable identity attribute for forensic attribution across role chains |
+| **`sts:TagSession`** | Allow passing session tags at AssumeRole time (required for ABAC session-tag patterns) |
+| **`aws:SourceIp`** | Restrict role assumption to specific IPs |
+
+**Traps to memorise:**
+
+- **Trust policy changes do NOT kill active sessions** — they take effect on the NEXT `AssumeRole` call. Existing sessions run to their expiry (max 12h for `AssumeRole`, up to 36h for `AssumeRoleWithSAML`). For immediate revocation, attach an `AWSRevokeOlderSessions` policy with `aws:TokenIssueTime` condition.
+- **Cross-account is a two-side handshake** — trust policy in the TARGET account must allow the caller AND the caller's IAM identity policy must allow `sts:AssumeRole` on the target role ARN. Neither alone is sufficient.
+- **Service-linked roles have AWS-managed trust policies** — you cannot edit them (or the permissions boundary).
+- **Trust policy `Principal: "*"` without conditions is dangerous** — anyone in AWS can attempt to assume; only the permissions policy limits damage.
+- **External ID goes in `Condition`, not in `Principal`** — common misconfiguration. `sts:ExternalId` is a StringEquals condition on the assume request.
+- **`sts:TagSession` in the trust policy is required** to pass session tags at AssumeRole time — without it, session tags fail silently.
+
+**Mnemonic:** *"Trust policy = WHO can wear the role. Permissions policy = WHAT the role does. Trust checked at AssumeRole; permissions on every API call. Trust changes affect FUTURE assumptions, not existing sessions."*
+
 ## Exam Overview
 
 | Field | Value |
