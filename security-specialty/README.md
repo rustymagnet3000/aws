@@ -454,6 +454,24 @@ Every IAM role has TWO policies — trust policy (WHO can assume, evaluated at `
 
 **Mnemonic:** *"Trust = WHO can wear the role. Permissions = WHAT the role does. Trust checked at AssumeRole; permissions on every API call. Trust changes affect FUTURE assumptions, not existing sessions."*
 
+**Bonus — Tag condition keys populated at DIFFERENT lifecycle phases:**
+
+Two IAM tag condition keys look interchangeable but populate at different times — they **cannot both be `StringEquals`-checked in a single statement**:
+
+| Key | Populated when | Use for |
+|---|---|---|
+| **`aws:RequestTag/<key>`** | At CREATE — tag being APPLIED in this request | Restrict tag values at resource creation |
+| **`aws:ResourceTag/<key>`** (or **`ec2:ResourceTag/<key>`**) | On any action targeting an EXISTING tagged resource | Restrict management actions to matching-tagged resources |
+
+**Traps:**
+
+- **Cannot combine both in one `StringEquals` statement** — both keys are never populated simultaneously. A single-statement policy fails BOTH create AND manage cases (missing key = false → all denied).
+- **`StringEqualsIfExists` opens a security hole** — a missing key trivially satisfies the check. `StartInstances` on an UNTAGGED instance passes both (neither key populated) → the role can manage ANY untagged resource. Don't use `IfExists` to "cleverly" merge these.
+- **Correct pattern: TWO statements** — one for create actions with `aws:RequestTag`, one for management actions with `ec2:ResourceTag` / `aws:ResourceTag`.
+- **Additional reason for splitting:** `ec2:RunInstances` implicitly touches 7 resource types (instance + volume + network-interface + subnet + security-group + key-pair + image); management actions only touch `instance/*`. Different Resource ARN scopes force separate statements anyway.
+
+**Mnemonic:** *"RequestTag = creating (populated at request time). ResourceTag = existing (populated on the resource). Different phases, different keys, TWO statements. `IfExists` is a security hole, not a shortcut."*
+
 ## Exam Overview
 
 | Field | Value |
