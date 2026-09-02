@@ -441,6 +441,37 @@ Enabling private DNS on an `execute-api` interface VPC endpoint creates a **priv
 
 **Mnemonic:** *"Private DNS on `execute-api` is a HIJACK, not a filter. It overrides ALL of `execute-api.<region>.amazonaws.com` — both public and private APIs share the hostname pattern, so enabling private DNS breaks public API access from the VPC. Enterprise best practice: custom domain names on both APIs; DNS stays off the endpoint."*
 
+**Bonus — IAM Role Trust Policy traps:**
+
+Every IAM role has TWO policies — trust policy (WHO can assume, evaluated at `AssumeRole` time) and permissions policy (WHAT the role does, evaluated on every API call). The traps the exam tests:
+
+- **Trust policy changes do NOT kill active sessions** — they take effect on the NEXT `AssumeRole` call. Existing sessions run to expiry (max 12h for `AssumeRole`, up to 36h for `AssumeRoleWithSAML`). For immediate revocation, attach an `AWSRevokeOlderSessions` policy with `aws:TokenIssueTime`.
+- **Cross-account is a two-side handshake** — trust policy in the TARGET account must allow the caller AND the caller's IAM identity policy must allow `sts:AssumeRole` on the target role ARN. Neither alone is sufficient.
+- **Service-linked roles have AWS-managed trust policies** — you cannot edit them.
+- **`Principal: "*"` without conditions is dangerous** — anyone in AWS can attempt to assume; only the permissions policy limits damage.
+- **External ID goes in `Condition`, not in `Principal`** — `sts:ExternalId` is a StringEquals condition on the assume request, not a principal.
+- **`sts:TagSession` in the trust policy is required** to pass session tags at AssumeRole — without it, session tags fail silently.
+
+**Mnemonic:** *"Trust = WHO can wear the role. Permissions = WHAT the role does. Trust checked at AssumeRole; permissions on every API call. Trust changes affect FUTURE assumptions, not existing sessions."*
+
+**Bonus — Tag condition keys populated at DIFFERENT lifecycle phases:**
+
+Two IAM tag condition keys look interchangeable but populate at different times — they **cannot both be `StringEquals`-checked in a single statement**:
+
+| Key | Populated when | Use for |
+|---|---|---|
+| **`aws:RequestTag/<key>`** | At CREATE — tag being APPLIED in this request | Restrict tag values at resource creation |
+| **`aws:ResourceTag/<key>`** (or **`ec2:ResourceTag/<key>`**) | On any action targeting an EXISTING tagged resource | Restrict management actions to matching-tagged resources |
+
+**Traps:**
+
+- **Cannot combine both in one `StringEquals` statement** — both keys are never populated simultaneously. A single-statement policy fails BOTH create AND manage cases (missing key = false → all denied).
+- **`StringEqualsIfExists` opens a security hole** — a missing key trivially satisfies the check. `StartInstances` on an UNTAGGED instance passes both (neither key populated) → the role can manage ANY untagged resource. Don't use `IfExists` to "cleverly" merge these.
+- **Correct pattern: TWO statements** — one for create actions with `aws:RequestTag`, one for management actions with `ec2:ResourceTag` / `aws:ResourceTag`.
+- **Additional reason for splitting:** `ec2:RunInstances` implicitly touches 7 resource types (instance + volume + network-interface + subnet + security-group + key-pair + image); management actions only touch `instance/*`. Different Resource ARN scopes force separate statements anyway.
+
+**Mnemonic:** *"RequestTag = creating (populated at request time). ResourceTag = existing (populated on the resource). Different phases, different keys, TWO statements. `IfExists` is a security hole, not a shortcut."*
+
 ## Exam Overview
 
 | Field | Value |
