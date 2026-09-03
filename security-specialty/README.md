@@ -472,6 +472,62 @@ Two IAM tag condition keys look interchangeable but populate at different times 
 
 **Mnemonic:** *"RequestTag = creating (populated at request time). ResourceTag = existing (populated on the resource). Different phases, different keys, TWO statements. `IfExists` is a security hole, not a shortcut."*
 
+**Bonus — Blocking IMDS from non-root SSH users (the iptables owner-module pattern):**
+
+When the stem describes: *"shared EC2 with partner / third-party SSH users needing non-root access — prevent them from stealing instance-profile credentials via IMDS"* — the AWS-documented local defence is an `iptables` rule using the **owner match module** to reject packets to `169.254.169.254` from any non-root UID.
+
+**AWS-documented form** (EC2 User Guide → *"Limit access to the Instance Metadata Service"*):
+
+```bash
+# Root-only IMDS access; all other UIDs get ICMP port-unreachable (fail-fast)
+sudo iptables --append OUTPUT --proto tcp --destination 169.254.169.254 \
+  --match owner ! --uid-owner 0 --jump REJECT
+```
+
+Key choices in the canonical form:
+
+- **`REJECT`, not `DROP`** — REJECT returns ICMP port-unreachable so metadata-dependent apps fail fast; DROP causes them to hang until timeout.
+- **`--proto tcp`** — IMDS is TCP-only (HTTP/80, both v1 and v2); scoping defensively.
+- **Numeric UID `0` beats `root`** — inside user-namespaced containers, `/etc/passwd` may lack a `root` entry.
+- **`OUTPUT` chain only** — the `xt_owner` module reads the originating socket's UID and only works on locally-generated packets (OUTPUT / POSTROUTING). It cannot filter INPUT / FORWARD / PREROUTING.
+
+**Why the "obvious" defences fail for this specific scenario:**
+
+| Defence | Why it doesn't fit |
+|---|---|
+| **IMDSv2 required** | Mitigates SSRF, open proxies, mis-forwarded L3 firewalls, off-host container routing — 4 network-adjacent threats. Doesn't authenticate local callers. A shell user just does the PUT + custom-header + GET themselves. |
+| **Disable IMDS entirely** (`http-endpoint disabled`) | Breaks SDK / SSM Agent / any instance-role usage. Fine only when the instance genuinely needs no IAM role. |
+| **`HttpPutResponseHopLimit=1`** | Blocks CONTAINERS — response TTL decrements when routed across a veth/bridge into the container netns. Root-netns shell users don't traverse a hop. AL2023 defaults hop limit to **2** so containers work OOTB; **`--network=host` containers share root netns and work fine at hop-limit=1**. |
+| **NACL / SG on 169.254.169.254** | IMDS is served by the Nitro card (post-2017) or Xen hypervisor (legacy) — packet never reaches the ENI. SGs / NACLs are structurally blind to IMDS. |
+| **Permissions boundary on the role** | Reduces blast radius of stolen creds; doesn't prevent theft. Compensating, not preventive. |
+
+**AWS's layered recommendation for shared-SSH-users scenarios** (order of preference):
+
+1. **Replace SSH with Session Manager** — no inbound port 22, IAM-authenticated, keystroke logs to S3 / CWL, CloudTrail audit. AWS's #1 recommendation for multi-user access.
+2. **Use EC2 Instance Connect** if SSH is required — short-lived, IAM-controlled ephemeral keys.
+3. **Enforce IMDSv2 required + hop limit 1** — closes SSRF and container second-hop attack surface.
+4. **Scope the instance-profile role tightly** — session policies, `aws:SourceVpc` conditions so exfiltrated creds are less useful.
+5. **iptables owner-module rule** (this bonus) — defence-in-depth layer that specifically addresses the *local shell user* class.
+6. **Detect:** GuardDuty `UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.OutsideAWS` fires when instance-profile creds are used from outside the instance's VPC (post-exfil signal).
+
+**Caveats worth memorising:**
+
+- **iptables rules are NOT persistent across reboots** by default. Persist with `service iptables save` (AL2), `netfilter-persistent save` (Ubuntu), or the equivalent `nftables` config on AL2023.
+- **`--gid-owner` only matches primary group** — supplementary groups aren't checked by default. Trap for shared-SSH setups that use group membership for access control.
+- **IPv6 IMDS at `[fd00:ec2::254]`** if enabled — apply matching `ip6tables` rule.
+- **Edge case: Nitro appliance forwarding** — if a virtual router in-VPC forwards packets destined for `169.254.169.254` to an instance with source/dest check disabled, those packets DO traverse VPC networking and SGs / NACLs on the destination ENI can filter them. Non-standard path; not the normal `curl` flow.
+
+**Stem-phrase tells for this specific answer:**
+
+- *"Shared EC2 / partner organisation / third-party users"* → multi-tenant trust model.
+- *"Non-root SSH access"* → local shell threat, not network / SSRF.
+- *"Prevent an assault on other AWS resources"* → prevent instance-profile credential theft.
+- *"Local firewall rules on the instance"* → the answer text itself uses "iptables" or "OS-level firewall" language.
+
+Only the iptables owner-module answer matches all four phrases simultaneously.
+
+**Mnemonic:** *"IMDSv2 blocks SSRF at the app tier. Hop limit blocks containers. **Only `iptables ... -m owner ! --uid-owner 0 ... -j REJECT` blocks local shell users** — the exam's 'shared EC2 with partner SSH' scenario."*
+
 ## Exam Overview
 
 | Field | Value |
