@@ -561,6 +561,24 @@ Two sibling variants: **MRAP** (one global endpoint across replicated buckets in
 - **"Poisoned truth" compound options** — e.g., *"aliases are interchangeable with bucket names AND can be used as CloudTrail log destinations, but not in IAM policies"* — evaluate each clause independently; two-true-one-false is the classic distractor shape.
 - **"Fake CLI workaround"** — e.g., *"can't change VPC config via console, but the CLI can do it"* — immutability is enforced at ALL layers; delete-and-recreate is the only path.
 
+**Bonus — DDoS mitigation stack (AWS whitepaper: obvious answers vs the ones the exam actually tests):**
+
+**The obvious ones (all correct — architecture layer):**
+
+- **CloudFront (+ Route 53) at the edge** — absorb & disperse volumetric attacks; Shield built-in (**BP1 / BP3**).
+- **AWS WAF** — L7 filtering with **rate-based rules** (**BP2**).
+- **ALB + Auto Scaling** — scale to absorb; keep app / DB tiers private (**BP6 / BP7**).
+- **Shield / Shield Advanced** — managed L3 / L4 / L7 DDoS protection.
+- **Reduce attack surface** — private subnets, tight SGs / NACLs, hide the origin (**BP5**).
+
+**The non-obvious ones the exam actually tests (specific configs):**
+
+- **CloudFront + WAF in front of a regional API Gateway → forward ALL headers.** Forces dynamic content (skips edge caching), passes requests through to API Gateway where throttling applies. Edge protection here = **Shield + WAF, not caching** (**BP4**).
+- **Shield Advanced → register Elastic IPs as Protected Resources.** Protects the EC2 / NLB behind the EIP — regional coverage, lower detection thresholds, health-based detection.
+- **ALB Security Groups configured to NOT use connection tracking.** The all-traffic / `0.0.0.0/0` pattern makes flows "untracked" so a flood **can't exhaust the conntrack table** (attack-surface / **BP5**).
+
+**One-line takeaway:** obvious answers = **architecture** (edge + scale + WAF + Shield); exam answers = **specific configs** (API-GW header forwarding, EIP Protected Resources, untracked SGs). **Oddly-specific wording in an option = pulled straight from the whitepaper — it's usually the correct answer.**
+
 ## Exam Overview
 
 | Field | Value |
