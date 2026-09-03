@@ -534,70 +534,13 @@ Any answer option that says *"attach `AWSServiceRoleFor<Service>` to your users 
 
 **Three ways the trap fails simultaneously — any one kills the option:**
 
-1. **Category error** — you can't "attach" a role to a user. Roles are ASSUMED via `sts:AssumeRole`; only policies are attached. Any option using "attach the role to the user" is grammatically wrong for IAM.
-2. **Trust-policy refusal** — SLR trust policies are AWS-owned, hardcoded to a specific service principal (`guardduty.amazonaws.com`, `autoscaling.amazonaws.com`, etc.). No human user is a valid trusted principal. `iam:UpdateAssumeRolePolicy` is rejected against SLRs.
-3. **Managed-policy attachment refusal** — the SLR's AWS-managed policy (e.g., `AmazonGuardDutyServiceRolePolicy`) is IAM-blocked from being attached to a customer identity. `iam:AttachRolePolicy` returns **`PolicyNotAttachable`** (HTTP 400): *"Policy `arn:aws:iam::aws:policy/aws-service-role/...` is not attachable."*
+1. **Category error** — you can't "attach" a role to a user. Roles are ASSUMED via `sts:AssumeRole`; only policies are attached.
+2. **Trust-policy refusal** — SLR trust policies are AWS-owned, hardcoded to a specific service principal. No human user is a valid trusted principal.
+3. **Managed-policy attachment refusal** — the SLR's AWS-managed policy (e.g., `AmazonGuardDutyServiceRolePolicy`) is IAM-blocked from being attached to a customer identity. `iam:AttachRolePolicy` returns **`PolicyNotAttachable`** (HTTP 400).
 
-**The path is the reliable identifier — `/aws-service-role/`:**
+**What to look for instead:** the customer-facing `Amazon<Service>FullAccess` / `AWS<Service>FullAccess` variants (e.g., `AmazonGuardDutyFullAccess_v2`, `AWSSecurityHubFullAccess`, `AutoScalingFullAccess`). Naming rule: `FullAccess` / `ReadOnlyAccess` = customer-attachable; `ServiceRolePolicy` or ARN path `/aws-service-role/` = SLR-only.
 
-| ARN pattern | What it is |
-|---|---|
-| `arn:aws:iam::<acct>:role/aws-service-role/<svc>.amazonaws.com/AWSServiceRoleFor<Service>` | The SLR (role) |
-| `arn:aws:iam::aws:policy/aws-service-role/<X>ServiceRolePolicy` | The SLR-bound AWS-managed policy |
-
-**Anything in the `/aws-service-role/` path is off-limits for customer identity attachment.** AWS reserves that path for the SLR class and its exclusive policies.
-
-**Trap names that all mean "wrong answer":**
-
-| Pattern in the option | What it actually is |
-|---|---|
-| `AWSServiceRoleFor<Service>` | The SLR itself (a role, not attachable) |
-| `<Service>ServiceRolePolicy` (`AmazonGuardDutyServiceRolePolicy`, `AutoScalingServiceRolePolicy`, `AWSConfigServiceRolePolicy`, `AutoScalingServiceRolePolicy`) | SLR-bound managed policy (IAM refuses attachment) |
-| Anything under `arn:aws:iam::aws:policy/aws-service-role/...` | SLR-only |
-
-**What TO look for instead — the customer-facing admin managed policies:**
-
-| Service | Customer-facing (attachable) | SLR trap |
-|---|---|---|
-| GuardDuty | `AmazonGuardDutyFullAccess_v2` (AWS-recommended) / `AmazonGuardDutyReadOnlyAccess` | `AWSServiceRoleForAmazonGuardDuty` / `AmazonGuardDutyServiceRolePolicy` |
-| Security Hub | `AWSSecurityHubFullAccess` / `AWSSecurityHubReadOnlyAccess` | `AWSServiceRoleForSecurityHub` / `AWSSecurityHubServiceRolePolicy` |
-| Auto Scaling | `AutoScalingFullAccess` / `AmazonEC2AutoScalingFullAccess` | `AWSServiceRoleForAutoScaling` / `AutoScalingServiceRolePolicy` |
-| Config | `AWSConfigUserAccess` (users) / `AWS_ConfigRole` (customer service role) | `AWSServiceRoleForConfig` / `AWSConfigServiceRolePolicy` |
-| Organizations | `AWSOrganizationsFullAccess` / `AWSOrganizationsReadOnlyAccess` | `AWSServiceRoleForOrganizations` |
-| Macie | `AmazonMacieFullAccess` / `AmazonMacieReadOnlyAccess` | `AWSServiceRoleForAmazonMacie` |
-| Inspector v2 | `AmazonInspector2FullAccess` / `AmazonInspector2ReadOnlyAccess` | `AWSServiceRoleForAmazonInspector2` |
-| IAM Access Analyzer | `IAMAccessAnalyzerFullAccess` / `IAMAccessAnalyzerReadOnlyAccess` | `AWSServiceRoleForIAMAccessAnalyzer` |
-
-**Naming heuristic:** anything ending in `FullAccess` / `ReadOnlyAccess` / `UserAccess` is customer-facing and attachable. Anything ending in `ServiceRolePolicy` or starting with `AWSServiceRoleFor` is SLR-only.
-
-**When you legitimately DO reference the SLR ARN — five patterns that are NOT the trap:**
-
-The SLR sits on the RESOURCE side of a policy, or as an operational input — never attached to a user identity:
-
-1. **`iam:CreateServiceLinkedRole` on the user** — pre-enable permission the admin needs before a service that hasn't yet created its SLR (Access Analyzer, some Bedrock integrations). Permission ON the admin, not attaching the SLR TO them.
-2. **SLR ARN as a Principal in a RESOURCE-based policy** — e.g., a KMS key policy in Account B grants `kms:Decrypt` to `AWSServiceRoleForAutoScaling` in Account A so ASG can launch encrypted EBS. Also Macie's `AWSServiceRoleForAmazonMacie` in an SSE-KMS bucket's key policy. **Biggest legitimate cross-account pattern.**
-3. **`iam:PassRole`** — for SERVICE ROLES (EC2 instance profile, Lambda execution role, ECS task role), never for SLRs. SLRs aren't PassRole-able.
-4. **`iam:PutRolePolicy` + `iam:DeleteRolePolicy` scoped to a specific SLR ARN** — the pattern for services that dynamically extend their SLR's inline policies (GuardDuty trusted/threat lists is the canonical example — required alongside `AmazonGuardDutyFullAccess_v2` because the managed policy doesn't include these IAM actions).
-5. **Trust-policy delegation TO an SLR** — rare cross-account pattern where a customer role trusts an SLR as a principal (e.g., delegated-admin flows).
-
-**Detection heuristic when scanning answer options:**
-
-1. See `AWSServiceRoleFor...` in an option → almost certainly the trap.
-2. See `<Service>ServiceRolePolicy` in an option → also the trap.
-3. See `/aws-service-role/` in a policy ARN → SLR-only, off-limits.
-4. See `Amazon<Service>FullAccess` / `Amazon<Service>ReadOnlyAccess` → likely the correct customer-facing policy.
-5. See `iam:PutRolePolicy` / `iam:DeleteRolePolicy` scoped to an SLR ARN → correct pattern for services that mutate their SLR mid-workflow.
-
-**Stem-phrase tells:**
-
-- *"Attach [X] to your users / IAM entities / IAM identities"* → look for `Amazon<Service>FullAccess`, never `AWSServiceRoleForX`.
-- *"Grant full access privileges to an identity"* → identity ≠ SLR; customer-facing policy.
-- *"Which managed policy needs to be added / attached"* → always customer-facing, never SLR.
-- *"Full lifecycle: rename, deactivate, upload, activate, delete"* (GuardDuty lists specifically) → `AmazonGuardDutyFullAccess_v2` **plus** custom inline for `iam:PutRolePolicy` + `iam:DeleteRolePolicy` on the SLR ARN.
-
-**Why AWS designs it this way:** SLR-attached policies are versioned by AWS and expand automatically as services add features. If customers could attach an SLR's policy to arbitrary identities, those identities would gain elevated permissions every time AWS pushed a service update — a silent privilege-escalation channel. Walling off SLR policies keeps the service's permission surface auditable and decoupled from customer-user permissions.
-
-**Mnemonic:** *"`AWSServiceRoleFor...` is a ROLE, not a POLICY. `<Service>ServiceRolePolicy` is SLR-only, IAM-blocked. When the stem says 'attach X to users,' X is always `Amazon<Service>FullAccess` — never anything with `ServiceRole` in the name. Path rule: `/aws-service-role/` = off-limits."*
+**Mnemonic:** *"`AWSServiceRoleFor...` is a ROLE, not a POLICY. When the stem says 'attach X to users,' X is always `Amazon<Service>FullAccess` — never anything with `ServiceRole` in the name."*
 
 ## Exam Overview
 
