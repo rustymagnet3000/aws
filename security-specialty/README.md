@@ -528,6 +528,20 @@ Only the iptables owner-module answer matches all four phrases simultaneously.
 
 **Mnemonic:** *"IMDSv2 blocks SSRF at the app tier. Hop limit blocks containers. **Only `iptables ... -m owner ! --uid-owner 0 ... -j REJECT` blocks local shell users** — the exam's 'shared EC2 with partner SSH' scenario."*
 
+**Bonus — the "`AWSServiceRoleFor...`" attachment trap (recurring across services):**
+
+Any answer option that says *"attach `AWSServiceRoleFor<Service>` to your users / IAM entities"* is virtually always **wrong**. SLRs are ROLES, not policies, and their AWS-managed policies are IAM-blocked at the API layer from being attached to any identity except the SLR itself.
+
+**Three ways the trap fails simultaneously — any one kills the option:**
+
+1. **Category error** — you can't "attach" a role to a user. Roles are ASSUMED via `sts:AssumeRole`; only policies are attached.
+2. **Trust-policy refusal** — SLR trust policies are AWS-owned, hardcoded to a specific service principal. No human user is a valid trusted principal.
+3. **Managed-policy attachment refusal** — the SLR's AWS-managed policy (e.g., `AmazonGuardDutyServiceRolePolicy`) is IAM-blocked from being attached to a customer identity. `iam:AttachRolePolicy` returns **`PolicyNotAttachable`** (HTTP 400).
+
+**What to look for instead:** the customer-facing `Amazon<Service>FullAccess` / `AWS<Service>FullAccess` variants (e.g., `AmazonGuardDutyFullAccess_v2`, `AWSSecurityHubFullAccess`, `AutoScalingFullAccess`). Naming rule: `FullAccess` / `ReadOnlyAccess` = customer-attachable; `ServiceRolePolicy` or ARN path `/aws-service-role/` = SLR-only.
+
+**Mnemonic:** *"`AWSServiceRoleFor...` is a ROLE, not a POLICY. When the stem says 'attach X to users,' X is always `Amazon<Service>FullAccess` — never anything with `ServiceRole` in the name."*
+
 ## Exam Overview
 
 | Field | Value |
