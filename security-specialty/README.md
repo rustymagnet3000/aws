@@ -579,6 +579,24 @@ Two sibling variants: **MRAP** (one global endpoint across replicated buckets in
 
 **One-line takeaway:** obvious answers = **architecture** (edge + scale + WAF + Shield); exam answers = **specific configs** (API-GW header forwarding, EIP Protected Resources, untracked SGs). **Oddly-specific wording in an option = pulled straight from the whitepaper — it's usually the correct answer.**
 
+**Bonus — EBS snapshot protection (ransomware resistance):**
+
+For any stem asking *"protect EBS snapshots from manipulation OR deletion"*, the canonical answer is **cross-account copy to a security-team-owned account** — attacker in workload account can't reach the backup account's KMS or vault. Combines with **AWS Backup Vault Lock (Compliance mode)** for WORM immutability (even root can't delete).
+
+Ranked stack (memorise the ordering):
+
+- **AWS Backup Vault Lock (Compliance mode)** — WORM at vault level; Cohasset-assessed for SEC 17a-4 / FINRA / CFTC.
+- **EBS Snapshot Lock (Compliance mode)** — same WORM at the individual-snapshot level, no AWS Backup required.
+- **Cross-account copy** — separate credentials + trust boundary; defense in depth.
+- **EBS Recycle Bin** — **accidental deletion only**, does NOT protect against privileged / malicious deletion.
+- **EBS Snapshot Archive** — cost tier, **NOT a tamper-protection feature**.
+
+**Killer gotcha:** snapshots encrypted with the AWS-managed default key (`alias/aws/ebs`) **cannot be shared cross-account** — the default key policy is non-editable. First step is always migrating to a customer-managed CMK with a key policy delegating `kms:Decrypt`, `kms:CreateGrant`, `kms:GenerateDataKey*`, `kms:ReEncrypt*`, `kms:DescribeKey` to the backup account.
+
+**Fabricated distractor to spot:** *"Use AWS Systems Manager to move EBS snapshots to S3 → S3 lifecycle → Glacier Vault Lock"* — this workflow doesn't exist. SSM has no EBS-to-S3 primitive, S3 lifecycle doesn't apply to EBS snapshots (they're not S3 objects), and Glacier Vault Lock is for legacy standalone Glacier vaults.
+
+**Mnemonic:** *"Vault Lock > Snapshot Lock > Cross-account > Recycle Bin > Archive. Compliance mode = immutable even to root. Default `alias/aws/ebs` blocks cross-account — customer-managed CMK first. 'SSM moves snapshots to S3' = fabricated."*
+
 ## Exam Overview
 
 | Field | Value |
