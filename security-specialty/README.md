@@ -579,6 +579,58 @@ Two sibling variants: **MRAP** (one global endpoint across replicated buckets in
 
 **One-line takeaway:** obvious answers = **architecture** (edge + scale + WAF + Shield); exam answers = **specific configs** (API-GW header forwarding, EIP Protected Resources, untracked SGs). **Oddly-specific wording in an option = pulled straight from the whitepaper — it's usually the correct answer.**
 
+**Bonus — EBS snapshot protection (ransomware resistance): the 5-control ranked stack:**
+
+For any stem asking *"protect EBS snapshots from manipulation OR deletion"* (post-ransomware recovery scenarios), memorise this ranked stack:
+
+| Rank | Control | Scope | Why |
+|---|---|---|---|
+| **1** | **AWS Backup Vault Lock (Compliance mode)** | Whole vault | **THE exam-canonical WORM answer.** Cohasset-assessed for SEC 17a-4 / FINRA / CFTC. Immutable after 3–72h grace period. **Even root and AWS Support cannot delete.** |
+| **2** | **Native EBS Snapshot Lock (Compliance mode)** | Individual snapshot | Same WORM protection at the snapshot level, no AWS Backup required (`ec2:LockSnapshot`, 2024+) |
+| **3** | **Cross-account copy to security-team-owned account** | Whole account boundary | Defense in depth — attacker in workload account can't reach backup account's KMS or vault |
+| **4** | **EBS Recycle Bin** | Deleted snapshots in retention window | **Accidental deletion only** — does NOT protect against privileged / malicious deletion |
+| **5** | EBS Snapshot Archive | Cost tier | **NOT a tamper-protection feature** — a lower-cost storage tier for infrequently-accessed snapshots |
+
+**Killer gotcha — the `alias/aws/ebs` blocker:**
+
+Snapshots encrypted with the AWS-managed default EBS key (`alias/aws/ebs`) **CANNOT be shared cross-account.** The default managed key policy is non-editable, so no cross-account principal can be added. Cross-account snapshot copy **requires a customer-managed CMK on the source side**, with cross-account permissions in its key policy delegating to the backup account (`kms:Decrypt`, `kms:CreateGrant`, `kms:GenerateDataKey*`, `kms:ReEncrypt*`, `kms:DescribeKey`).
+
+Frequent exam-fail: the stem describes snapshots encrypted with the default managed key and asks how to enable cross-account backup — the FIRST step is migrating to a customer-managed CMK, not creating the backup account.
+
+**EBS Snapshot Archive billing trap:**
+
+Standard EBS snapshots are **incremental** (only changed blocks stored across snapshots of the same volume). **Archive tier stores FULL snapshots** — every block is billed independently in every archived snapshot. Archiving 30 daily snapshots of a 1 TB volume with 1% churn: standard = ~1 TB + deltas; archive = 30 × 1 TB. **Only cost-effective for isolated snapshots retained 90+ days.**
+
+**The four "Lock" features often confused:**
+
+| Lock | Service | Scope |
+|---|---|---|
+| **AWS Backup Vault Lock** | AWS Backup | Whole backup vault (all recovery points) |
+| **EBS Snapshot Lock** | EBS | Individual snapshot |
+| **S3 Object Lock** | S3 | Individual S3 object version (works with Glacier storage classes) |
+| **S3 Glacier Vault Lock** | S3 Glacier (legacy) | Legacy standalone Glacier vault (NOT the modern Glacier storage class) |
+
+**Fabricated distractor to spot:** any option that says *"Use AWS Systems Manager to move EBS snapshots to S3 → S3 lifecycle → S3 Glacier Vault Lock"* — this workflow **doesn't exist**. SSM has no EBS-snapshot-to-S3 primitive (`aws ec2 export-snapshot-to-s3` is not a real command), S3 lifecycle doesn't apply to EBS snapshots (they're not S3 objects), and Glacier Vault Lock is for legacy standalone Glacier vaults, not the ones this fake chain would produce.
+
+**Full "ransomware-resistant snapshot" architecture (all layers):**
+
+1. **Customer-managed CMK** encrypting snapshots (prerequisite for #2/#3).
+2. **AWS Backup Vault Lock (Compliance)** in a dedicated **security account** — WORM at the vault level.
+3. **Cross-account copy** into that security account — separate credentials, separate trust boundary.
+4. **KMS key policy** on the source CMK delegates minimal permissions to the backup account (`Decrypt`, `CreateGrant`, `GenerateDataKey*`, `ReEncrypt*`, `DescribeKey`).
+5. **EBS Recycle Bin** in workload account for accidental-deletion recovery.
+6. **SCPs on the security account** — deny `backup:Delete*`, `ec2:DeleteSnapshot`, `rbin:*` even for account admins.
+
+**Stem-phrase tells:**
+
+- *"Immutable / WORM / SEC 17a-4 / FINRA / prevent even root from deleting"* → **AWS Backup Vault Lock (Compliance mode)** — #1 canonical answer.
+- *"Segregation of duties / security-team-owned"* → **cross-account copy** (#3).
+- *"Recover from accidental deletion"* → **EBS Recycle Bin** (#4).
+- *"Cheap long-term EBS snapshot storage"* → **EBS Snapshot Archive** (#5) — NOT S3 Glacier.
+- *"Ransomware / attacker deletes backups"* → the full stack: #1 + #3 + customer-managed CMK.
+
+**Mnemonic:** *"Vault Lock beats Snapshot Lock beats Cross-account beats Recycle Bin beats Archive. Compliance mode makes it immutable even to root. Default `alias/aws/ebs` key blocks cross-account — always customer-managed CMK first. Archive tier is FULL snapshots, not incremental — expensive for related dailies. Any option that says 'SSM moves snapshots to S3' is fabricated plumbing."*
+
 ## Exam Overview
 
 | Field | Value |
