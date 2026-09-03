@@ -597,6 +597,33 @@ Ranked stack (memorise the ordering):
 
 **Mnemonic:** *"Vault Lock > Snapshot Lock > Cross-account > Recycle Bin > Archive. Compliance mode = immutable even to root. Default `alias/aws/ebs` blocks cross-account — customer-managed CMK first. 'SSM moves snapshots to S3' = fabricated."*
 
+**Bonus — cross-region encrypted replication: the universal decrypt → plaintext → re-encrypt pattern:**
+
+**KMS keys are regional objects** — a key in `eu-west-1` doesn't exist in `eu-west-2`. So any AWS cross-region replication feature involving KMS-encrypted data always follows the same three-step dance: **decrypt at source with source-region key → ship plaintext over the AWS backbone (TLS-in-transit) → re-encrypt at target with target-region key.**
+
+Same pattern across every AWS cross-region encrypted-replication feature:
+
+| Feature | Where the decrypt / re-encrypt happens |
+|---|---|
+| **Secrets Manager replication** | Source region decrypts with source key → target region re-encrypts with target key |
+| **S3 Cross-Region Replication (CRR) with SSE-KMS** | Source S3 decrypts objects → replicates plaintext → target re-encrypts with target-region KMS key |
+| **EBS snapshot copy with `--encrypted`** | Source snapshot decrypts → copies plaintext → target encrypts with target-region CMK |
+| **RDS cross-region read replicas with KMS** | Source decrypts → replicates → target re-encrypts |
+| **DynamoDB Global Tables with encryption** | Same pattern for cross-region item replication |
+| **AWS Backup cross-region copy** | Same pattern for backup vaults |
+
+**The single exception — KMS Multi-Region Keys (MRK):**
+
+MRKs replicate the **key material itself** across regions (same key, different ARN prefix per region). Ciphertext encrypted with the `eu-west-1` replica of an MRK can be decrypted directly by the `eu-west-2` replica **without re-encrypting**. **But MRKs are customer-managed only** — AWS-managed keys (`aws/secretsmanager`, `aws/ebs`, `aws/s3`, etc.) can never be multi-region.
+
+**Stem-phrase tells:**
+
+- *"Replicate encrypted secrets / snapshots / objects to another region"* → **decrypt-replicate-re-encrypt pattern**; each region gets its own KMS key.
+- *"Same key material in both regions"* / *"avoid re-encryption on replication"* → **Multi-Region Key** (customer-managed CMK).
+- *"AWS-managed key with cross-region replication"* → **always the re-encrypt pattern** (AWS-managed keys can't be MRK).
+
+**Mnemonic:** *"KMS keys are regional. Cross-region encrypted replication = decrypt → plaintext-over-backbone → re-encrypt with target-region key. MRK is the ONE exception, and only for customer-managed CMKs. AWS-managed keys always re-encrypt."*
+
 ## Exam Overview
 
 | Field | Value |
