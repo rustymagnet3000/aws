@@ -542,6 +542,25 @@ Any answer option that says *"attach `AWSServiceRoleFor<Service>` to your users 
 
 **Mnemonic:** *"`AWSServiceRoleFor...` is a ROLE, not a POLICY. When the stem says 'attach X to users,' X is always `Amazon<Service>FullAccess` — never anything with `ServiceRole` in the name."*
 
+**Bonus — S3 Access Points, exam-focused summary:**
+
+An **S3 Access Point** is a **named endpoint attached to one bucket in the same Region**, with its own resource policy and network origin (`Internet` or `VPC`), designed to replace an over-crowded bucket policy with **one small policy per consumer**. The exam hammers three points:
+
+1. **Three settings are immutable at creation** — bucket association, network origin, and Block Public Access — with **delete-and-recreate** the only path, no CLI / SDK workaround.
+2. **Access points NARROW access, they don't grant it** — the bucket policy must still delegate to them via `s3:DataAccessPointArn`, and cross-account access requires the bucket owner to authorise the AP (AP policy alone is never sufficient).
+3. They are **HTTPS-only, non-anonymous, virtual-host-style addressing, SigV4-required**, and **cannot be S3 Replication destinations**.
+
+Aliases (`<name>-<hash>-s3alias`) work as bucket-name drop-ins for most object APIs but **NOT** in IAM policies, CloudTrail log destinations, or S3 server access log destinations.
+
+Two sibling variants: **MRAP** (one global endpoint across replicated buckets in multiple Regions) and **Object Lambda Access Points** (transform on GET via Lambda).
+
+**Stem tells:** *"simplify bucket policies,"* *"per-tenant / per-app access,"* *"VPC-only access to a specific consumer,"* or *"bucket policy hitting 20 KB limit"* — all point to Access Points.
+
+**Common trap patterns:**
+
+- **"Poisoned truth" compound options** — e.g., *"aliases are interchangeable with bucket names AND can be used as CloudTrail log destinations, but not in IAM policies"* — evaluate each clause independently; two-true-one-false is the classic distractor shape.
+- **"Fake CLI workaround"** — e.g., *"can't change VPC config via console, but the CLI can do it"* — immutability is enforced at ALL layers; delete-and-recreate is the only path.
+
 ## Exam Overview
 
 | Field | Value |
