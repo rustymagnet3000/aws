@@ -575,7 +575,7 @@ Two sibling variants: **MRAP** (one global endpoint across replicated buckets in
 
 - **CloudFront + WAF in front of a regional API Gateway → forward ALL headers.** Forces dynamic content (skips edge caching), passes requests through to API Gateway where throttling applies. Edge protection here = **Shield + WAF, not caching** (**BP4**).
 - **Shield Advanced → register Elastic IPs as Protected Resources.** Protects the EC2 / NLB behind the EIP — regional coverage, lower detection thresholds, health-based detection.
-- **ALB Security Groups configured to NOT use connection tracking.** The all-traffic / `0.0.0.0/0` pattern makes flows "untracked" so a flood **can't exhaust the conntrack table** (attack-surface / **BP5**).
+- **ALB Security Groups configured to NOT use connection tracking.** Precise rule: return-direction rule must permit `0.0.0.0/0` on ALL ports (0-65535); initiating direction can be narrow-port + `0.0.0.0/0`. Makes flows "untracked" so a flood **can't exhaust the conntrack table** (**BP6 — Elastic Load Balancing**). Caveats: **ICMP is always tracked**; **NLBs are always tracked** (untracked pattern only helps ALB / CLB / plain EC2); rule changes drop untracked flows **immediately** (no state grandfather).
 
 **One-line takeaway:** obvious answers = **architecture** (edge + scale + WAF + Shield); exam answers = **specific configs** (API-GW header forwarding, EIP Protected Resources, untracked SGs). **Oddly-specific wording in an option = pulled straight from the whitepaper — it's usually the correct answer.**
 
