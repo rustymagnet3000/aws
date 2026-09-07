@@ -1,6 +1,6 @@
 # AWS Certified Security – Specialty (SCS-C03)
 
-Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in the parent `README.md` — this doc focuses on the security-specific depth the specialty exam expects.
+Study notes for the SCS-C03 exam. Anchored against SAA-C03 content in [`../solutions-architect/README.md`](../solutions-architect/README.md) — this doc focuses on the security-specific depth the specialty exam expects.
 
 <!-- TOC depthfrom:2 depthto:3 withlinks:true updateonsave:true orderedlist:false -->
 
