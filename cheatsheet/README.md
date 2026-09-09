@@ -46,6 +46,41 @@ aws organizations describe-account --account-id < ACCOUNT ID >
 aws iam get-user
 ```
 
+### Reveal AWS identity from inside a minimal container (no curl / no wget)
+
+Handy for `scratch` / `distroless` / stripped Alpine images that only have Python. Two different endpoints depending on where you are — and they use completely different access-control models.
+
+**Inside an ECS task container** (Fargate or ECS-on-EC2) — fetch the task credentials via the env-var-supplied path:
+
+```bash
+python3 -c "
+import urllib.request, os
+url = 'http://169.254.170.2' + os.environ['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI']
+print(urllib.request.urlopen(url, timeout=5).read().decode())
+"
+```
+
+Returns the temp credentials JSON: `AccessKeyId`, `SecretAccessKey`, `Token`, `Expiration`, `RoleArn`.
+
+**Inside an EC2 instance (or ECS-on-EC2 with hop-limit permitting)** — use IMDSv2 (PUT for a session token, GET with the token header):
+
+```bash
+python3 -c "
+import urllib.request
+req = urllib.request.Request('http://169.254.169.254/latest/api/token', method='PUT', headers={'X-aws-ec2-metadata-token-ttl-seconds': '21600'})
+token = urllib.request.urlopen(req).read().decode()
+req = urllib.request.Request('http://169.254.169.254/latest/meta-data/iam/info', headers={'X-aws-ec2-metadata-token': token})
+print(urllib.request.urlopen(req).read().decode())
+"
+```
+
+**Why the two endpoints have different access-control models:**
+
+- **EC2 IMDS (`169.254.169.254`)** is reachable from *any* process on the whole host. Threat model = SSRF — a vulnerable web app on the box could be tricked into fetching an arbitrary URL. IMDSv2's PUT-for-a-token dance is the mitigation: a plain SSRF-forced GET can't produce a PUT + custom-header sequence.
+- **ECS task credentials endpoint (`169.254.170.2`)** uses **URL secrecy as access control**: `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` is a random per-task GUID (e.g., `/v2/credentials/6b2c1730-f578-41a0-abc2-679a6c50ec7e`) injected as an env var only into that task's own containers. Anyone who knows the exact path can fetch the creds with a plain GET — the secrecy of the URL IS the access control, no request-signing step needed. On top of that, the endpoint is network-scoped so only that task's own containers can even route to it.
+
+The **`Token`** field in the ECS-endpoint response is the **STS session token** — part of the returned credentials you'd use for subsequent AWS API calls. It's unrelated to how you accessed the endpoint. Contrast IMDSv2: there, the token protects the *request* to the metadata service itself.
+
 ## SNS
 
 ```bash
