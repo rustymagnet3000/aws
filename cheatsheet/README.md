@@ -46,6 +46,22 @@ aws organizations describe-account --account-id < ACCOUNT ID >
 aws iam get-user
 ```
 
+### Reveal AWS identity from inside a minimal container (no curl / no wget)
+
+Handy for `scratch` / `distroless` / stripped Alpine images that only have Python. Uses IMDSv2 (PUT token then GET with the token header):
+
+```bash
+python3 -c "
+import urllib.request
+req = urllib.request.Request('http://169.254.169.254/latest/api/token', method='PUT', headers={'X-aws-ec2-metadata-token-ttl-seconds': '21600'})
+token = urllib.request.urlopen(req).read().decode()
+req = urllib.request.Request('http://169.254.169.254/latest/meta-data/iam/info', headers={'X-aws-ec2-metadata-token': token})
+print(urllib.request.urlopen(req).read().decode())
+"
+```
+
+Works on EC2 instances and ECS-on-EC2 containers that can reach the host IMDS (hop-limit permitting). **Does NOT work on Fargate** — Fargate tasks have no host IMDS; use `aws sts get-caller-identity` or the ECS task credential endpoint at `169.254.170.2` instead.
+
 ## SNS
 
 ```bash
