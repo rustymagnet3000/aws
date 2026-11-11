@@ -16957,7 +16957,7 @@ Video uploaded → S3 → Transcribe → SRT/WebVTT subtitles → CloudFront del
 **Anchored against Transcribe.** Transcribe is audio → text (recognition). **Polly is text → audio** (synthesis). Same pre-trained API pattern; opposite direction. They often pair for voice apps.
 
 ```
-"Hello, Bobby. Your delivery has arrived." → Polly → audio bytes (MP3/OGG/PCM)
+"Hello, Alex. Your delivery has arrived." → Polly → audio bytes (MP3/OGG/PCM)
 ```
 
 **Voice engine tiers (matters for cost + quality):**
